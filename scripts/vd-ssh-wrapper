@@ -1,0 +1,22 @@
+#!/bin/bash
+set -eo pipefail
+export VD_HOME="${VD_HOME:-/opt/vibe-deploy}"
+cmd="${SSH_ORIGINAL_COMMAND:-}"
+
+if [[ -z "$cmd" ]]; then
+  echo '{"ok":false,"command":"ssh","error":{"code":"NO_COMMAND","message":"Interactive shell not allowed"}}'
+  exit 1
+fi
+if [[ "$cmd" != vd\ * && "$cmd" != "vd" ]]; then
+  echo '{"ok":false,"command":"ssh","error":{"code":"FORBIDDEN","message":"Only vd commands are allowed"}}'
+  exit 1
+fi
+subcmd="${cmd#vd }"
+case "$subcmd" in
+  exec\ *)
+    echo '{"ok":false,"command":"exec","error":{"code":"FORBIDDEN","message":"vd exec is disabled"}}'
+    exit 1
+    ;;
+esac
+logger -t vd-ssh "user=${LOGNAME:-unknown} cmd=${cmd}" 2>/dev/null || true
+exec /usr/local/bin/vd ${cmd#vd }
