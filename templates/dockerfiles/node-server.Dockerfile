@@ -4,7 +4,7 @@ WORKDIR /app
 
 # Install dependencies first (cache layer)
 COPY package*.json ./
-RUN npm ci --production
+RUN if [ -f package-lock.json ]; then npm ci --production; else npm install --production; fi
 
 # Copy application code
 COPY . .

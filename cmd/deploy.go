@@ -11,6 +11,7 @@ import (
 	"github.com/spf13/cobra"
 	"github.com/vibe-deploy/vd/internal/app"
 	"github.com/vibe-deploy/vd/internal/backup"
+	"github.com/vibe-deploy/vd/internal/db"
 	"github.com/vibe-deploy/vd/internal/docker"
 	"github.com/vibe-deploy/vd/internal/output"
 	"github.com/vibe-deploy/vd/internal/state"
@@ -132,6 +133,55 @@ func runDeploy(srcPath string) {
 		hasEnvFile = true
 	} else if _, err := os.Stat(state.AppEnvPath(deployName)); err == nil {
 		hasEnvFile = true
+	}
+
+	// Provision database if requested
+	if deployDB == "postgres" || deployDB == "prod-ro" {
+		var container, adminUser, access, dbNameToUse string
+
+		if deployDB == "prod-ro" {
+			container = cfg.ProdDBContainer
+			if container == "" {
+				output.Fail("deploy", output.NewError("DB_NOT_FOUND",
+					"No prod DB configured",
+					"Run: vd init --prod-db <container> --prod-db-user <user>"))
+			}
+			adminUser = cfg.ProdDBUser
+			if adminUser == "" {
+				adminUser = "postgres"
+			}
+			access = "ro"
+			dbNameToUse = deployDBName
+			if dbNameToUse == "" {
+				output.Fail("deploy", output.NewError("MISSING_DB_NAME",
+					"--db-name is required for prod-ro",
+					"Example: vd deploy ./app --name myapp --db prod-ro --db-name reporting_platform"))
+			}
+		} else {
+			container = "vd-postgres"
+			adminUser = "vd_admin"
+			access = deployDBAccess
+			dbNameToUse = deployDBName
+			if dbNameToUse == "" {
+				dbNameToUse = deployName
+			}
+		}
+
+		output.Info("Provisioning database (%s)...", deployDB)
+		result, err := db.ProvisionPostgresUser(container, adminUser, deployName, dbNameToUse, access)
+		if err != nil {
+			output.Warn("DB provisioning failed: %v", err)
+		} else {
+			output.Info("Database ready: %s (user: %s)", result.Database, result.User)
+			// Append DATABASE_URL to env file
+			envPath := state.AppEnvPath(deployName)
+			f, _ := os.OpenFile(envPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
+			if f != nil {
+				f.WriteString("DATABASE_URL=" + result.URL + "\n")
+				f.Close()
+			}
+			hasEnvFile = true
+		}
 	}
 
 	// Generate Dockerfile from template
