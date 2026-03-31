@@ -9,13 +9,18 @@ Deploy apps to the server via SSH.
 
 ## Connection Setup
 
-Before deploying, you need the server connection details. Ask the user if not known:
-- **Server IP or hostname** (e.g. `141.105.67.159` or `nashville`)
-- **Path to SSH key** (e.g. `~/.ssh/vd_agent_key`)
+Before deploying, ask the user for ONE of these:
 
-The SSH user is always `vd-user`. Build the SSH command as:
+1. **SSH alias** (e.g. `vd-server`) — if they have it in `~/.ssh/config`
+2. **Server IP + key path** (e.g. `141.105.67.159` + `~/.ssh/vd_agent_key`) — if no alias
+
+Build the SSH command accordingly:
 
 ```bash
+# Option 1: SSH alias
+SSH_CMD="ssh vd-server"
+
+# Option 2: IP + key
 SSH_CMD="ssh -i <key-path> -o StrictHostKeyChecking=accept-new vd-user@<server-ip>"
 ```
 
@@ -24,8 +29,6 @@ All vd commands follow this pattern:
 ```bash
 $SSH_CMD "vd <command> --json"
 ```
-
-If the user has `vd-server` configured in `~/.ssh/config`, use `ssh vd-server` instead.
 
 ## Deploy Workflow
 
