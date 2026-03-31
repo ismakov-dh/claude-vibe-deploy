@@ -1,6 +1,6 @@
 # vibe-deploy
 
-A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binary, designed to be called by AI agents via SSH.
+A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binary, called by AI agents via SSH.
 
 ## Architecture
 
@@ -8,130 +8,144 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 - Docker containers for app isolation
 - Traefik reverse proxy (auto-discovers containers via Docker labels)
 - Host nginx terminates TLS (wildcard cert) and proxies to Traefik
-- Host nginx proxies wildcard domain to Traefik
 - Two PostgreSQL instances:
   - **vd-postgres**: managed by vd, for apps that need their own database
   - **Prod DB**: existing production database, read-only access for dashboards
-- One CLI tool: `vd` (Go binary with embedded Dockerfile templates)
+- CLI tool: `vd` accessed via `ssh vd-server "vd <command> --json"`
+
+---
 
 ## Guide for AI Agents
 
-This section describes how to design, build, and deploy apps using `vd`. Always use `--json` flag in automated workflows.
+**You MUST design and implement apps using ONLY the capabilities described below.** Do not assume any infrastructure, service, or feature that is not listed here. If the user's idea requires something not available (e.g. Redis, S3, WebSockets, background workers outside cron, email sending), you must either find a way to implement it with the available tools or tell the user it's not supported yet.
 
-### Available Infrastructure
+### What You Have
 
-| Resource | How to access | Notes |
-|----------|--------------|-------|
-| **Web routing** | Automatic via Traefik | Subdomain (`app.domain.com`) or path (`domain.com/app`) |
-| **TLS/HTTPS** | Handled by host nginx (wildcard cert) | No per-app TLS setup needed |
-| **Own PostgreSQL** | `vd deploy --db postgres` + `vd db-create` | Fresh database per app on vd-managed postgres |
-| **Prod DB (read-only)** | `vd deploy --db prod-ro` + `vd db-create --type prod-ro --db-name <db>` | Read-only access to existing production data |
-| **Cron jobs** | `vd cron-set` | Scheduled tasks run inside the app container |
-| **Persistent storage** | PostgreSQL only | No local filesystem persistence — containers are ephemeral |
+| Capability | How to use | Details |
+|-----------|-----------|---------|
+| **HTTP app hosting** | `vd deploy` | Any app that listens on an HTTP port. Containers are isolated. |
+| **Subdomain routing** | `--routing subdomain` (default) | App at `<name>.apps.platform.xaidos.com` |
+| **Path routing** | `--routing path` | App at `apps.platform.xaidos.com/<name>` |
+| **TLS/HTTPS** | Automatic | Host nginx has wildcard cert. All apps are HTTPS. No config needed. |
+| **Own PostgreSQL database** | `--db postgres` | Auto-provisioned on deploy. `DATABASE_URL` injected into `.env`. Fresh DB per app. |
+| **Prod DB read-only access** | `--db prod-ro --db-name <db>` | Read-only (SELECT only) access to existing production databases for dashboards. |
+| **Environment variables** | `--env-file` or auto-injected | Pass secrets, API keys, config. `DATABASE_URL` is auto-injected when using `--db`. |
+| **Cron jobs** | `vd cron-set` | Scheduled commands that run inside the app container. |
+| **Health checks** | Automatic | Traefik + Docker check `GET http://127.0.0.1:<port>/` every 30s. |
+| **Auto-rollback** | Automatic | If health check fails after deploy, previous version is restored. |
+| **Manual rollback** | `vd rollback` | Revert to any of the last 5 deployments. |
+| **Logs** | `vd logs-snapshot` | Get container logs for debugging. |
+
+### What You DON'T Have
+
+Do not design apps that require any of these:
+
+- **No Redis/Memcached** — use PostgreSQL for caching if needed (or in-memory within the app)
+- **No S3/file storage** — no persistent filesystem. Store files as bytea in PostgreSQL or use external APIs
+- **No background workers** (beyond cron) — no Celery, Bull, Sidekiq. Use cron for periodic tasks. For async work, process inline or use PostgreSQL as a job queue
+- **No WebSocket support** — HTTP only through Traefik (WebSocket upgrade headers are forwarded, but not tested)
+- **No inter-app communication** — apps cannot call each other by container name. Use public URLs if needed
+- **No email sending** — use external APIs (SendGrid, Resend, etc.) with API keys in env vars
+- **No custom Docker volumes** — containers are ephemeral. All persistent data goes in PostgreSQL
+- **No root access inside containers** — apps run as non-root
+- **No custom ports exposed** — only the app's HTTP port is routed via Traefik
 
 ### How to Design Apps
 
-**General rules:**
-- App must listen on an HTTP port (auto-detected per type, override with `--port`)
-- App must respond to `GET /` for health checks (or any HTTP response on the port)
-- Use `DATABASE_URL` environment variable for database connections
-- No local file writes that need to persist — use the database
-- No hardcoded ports — read from `PORT` env var or use the framework default
-- Keep dependencies in `package.json` / `requirements.txt` / `go.mod`
+**Every app is a Docker container that serves HTTP.** That's it. Design within this constraint.
 
-**Frontend apps (static HTML/JS/CSS):**
-- Put built files in project root or use a build step (vite, CRA, etc.)
-- SPA routing works — nginx serves with `try_files $uri /index.html`
-- Default port: 80 (served by nginx:alpine inside the container)
+**Rules:**
+1. App MUST listen on an HTTP port on `0.0.0.0` (not `127.0.0.1`)
+2. App MUST respond to `GET /` with any HTTP response (health check)
+3. Use `DATABASE_URL` env var for database connections — never hardcode credentials
+4. Use `PORT` env var if the framework supports it, or use the default port
+5. All persistent data MUST go in PostgreSQL — filesystem is wiped on redeploy
+6. Keep dependencies in `package.json` / `requirements.txt` / `go.mod` — no global installs
+7. Do NOT create a Dockerfile unless the built-in templates don't work — auto-detection handles most cases
 
-**Backend APIs (Node/Python/Go):**
-- Use express, fastify, flask, fastapi, django, or any HTTP framework
-- Listen on `0.0.0.0`, not `127.0.0.1`
-- Default ports: node=3000, python=8000, go=8080
+**Default ports by app type:**
+| Type | Port |
+|------|------|
+| Static (HTML/JS/CSS) | 80 |
+| Node.js (express, fastify, next) | 3000 |
+| Python (flask, fastapi, django) | 8000 |
+| Go | 8080 |
 
-**Full-stack apps (Next.js, Nuxt):**
-- Deploy as a single container — the framework serves both frontend and API
-- Default port: 3000
-
-**Dashboard reading prod data:**
-- Build a frontend + backend app
-- Use `--db prod-ro` to get read-only access to production database
-- The `DATABASE_URL` will point to the prod DB with SELECT-only permissions
-- Never assume write access to prod
+**App patterns that work well:**
+- Static frontend (React/Vue/Vite) — auto-detected, served by nginx:alpine, SPA routing works
+- Node.js API + static frontend in one container (express serves both `/api` and static files)
+- Next.js full-stack — auto-detected, single container
+- Python FastAPI/Flask API — auto-detected, gunicorn/uvicorn handles it
+- Dashboard that reads prod data — backend queries prod DB via `DATABASE_URL`, frontend calls backend API
 
 ### App Type Detection
 
-The CLI auto-detects from files present. Override with a `.vd-type` file containing the type name.
+Auto-detected from files. Override with a `.vd-type` file containing the type name.
 
-| Type | Detected by | Default port | Dockerfile template |
-|------|------------|-------------|-------------------|
-| `static-plain` | `index.html` (no package.json) | 80 | nginx:alpine serves files |
+| Type | Detected by | Port | Runtime |
+|------|------------|------|---------|
+| `static-plain` | `index.html` only | 80 | nginx:alpine |
 | `static-build` | package.json + vite/build script | 80 | npm build → nginx:alpine |
 | `node-server` | package.json + express/fastify/koa/hono | 3000 | node:20-alpine |
-| `node-next` | package.json + next dependency | 3000 | multi-stage next build |
-| `python-flask` | requirements.txt + flask imports | 8000 | gunicorn + flask |
-| `python-fastapi` | requirements.txt + fastapi imports | 8000 | uvicorn + fastapi |
+| `node-next` | package.json + next | 3000 | multi-stage next build |
+| `python-flask` | requirements.txt + flask | 8000 | gunicorn |
+| `python-fastapi` | requirements.txt + fastapi | 8000 | uvicorn |
 | `python-django` | manage.py | 8000 | gunicorn + auto-migrate |
-| `python-generic` | requirements.txt (no framework detected) | 8000 | runs app.py or main.py |
+| `python-generic` | requirements.txt only | 8000 | runs app.py or main.py |
 | `go` | go.mod | 8080 | multi-stage static build |
-| `custom` | Dockerfile present | 3000 | uses your Dockerfile as-is |
+| `custom` | Dockerfile present | (your choice) | your Dockerfile |
 
-Detection priority: `.vd-type` > `Dockerfile` > `manage.py` > `requirements.txt` > `package.json` > `index.html` > `go.mod`
+Priority: `.vd-type` > `Dockerfile` > `manage.py` > `requirements.txt` > `package.json` > `index.html` > `go.mod`
 
 ### Deploy Workflow
 
-**Step 1: Generate app code into a directory**
+**Step 1: Write app code into a directory on the server**
 
 ```
-/tmp/my-dashboard/
+/tmp/my-app/
   package.json
-  src/
-    App.jsx
-    ...
-  vite.config.js
+  server.js
+  public/
+    index.html
 ```
 
-**Step 2: Deploy**
+**Step 2: Deploy (one command)**
 
 ```bash
-# Simple static frontend
-vd deploy /tmp/my-dashboard --name my-dashboard --json
+# Static frontend — no database
+vd deploy /tmp/my-app --name my-dashboard --json
 
-# Backend API with its own database
-vd deploy /tmp/my-api --name my-api --db postgres --json
-vd db-create my-api --type postgres --json
+# Backend with its own database — DB auto-provisioned, DATABASE_URL auto-injected
+vd deploy /tmp/my-app --name my-api --db postgres --json
 
 # Dashboard reading production data
-vd deploy /tmp/dash --name dash --db prod-ro --json
-vd db-create dash --type prod-ro --db-name reporting_platform --json
+vd deploy /tmp/my-app --name my-dash --db prod-ro --db-name reporting_platform --json
 
-# Pass environment variables
-vd deploy /tmp/my-app --name my-app --env-file /tmp/my-app/.env --json
+# With extra env vars (API keys, secrets)
+vd deploy /tmp/my-app --name my-app --db postgres --env-file /tmp/my-app/.env --json
 
-# Path-based routing (domain.com/my-app instead of my-app.domain.com)
+# Path-based routing
 vd deploy /tmp/my-app --name my-app --routing path --json
 ```
 
 **Step 3: Verify**
 
 ```bash
-vd status my-dashboard --json
+vd status my-app --json
 ```
 
-**Step 4: If something is wrong**
+**Step 4: If broken**
 
 ```bash
-# Check logs
-vd logs-snapshot my-dashboard --lines 50 --json
-
-# Rollback to previous version
-vd rollback my-dashboard --json
+vd logs-snapshot my-app --lines 50 --json   # check logs
+vd rollback my-app --json                    # revert to previous version
 ```
 
 ### Command Reference
 
 #### `vd deploy <source-dir>`
-Deploy or redeploy an app. Backs up automatically before redeploy.
+
+Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up before redeploy. Auto-rollbacks if health check fails.
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -139,10 +153,42 @@ Deploy or redeploy an app. Backs up automatically before redeploy.
 | `--port` | auto-detected | Internal port the app listens on |
 | `--routing` | `subdomain` | `subdomain` or `path` |
 | `--db` | `none` | `postgres` (own DB), `prod-ro` (read-only prod), or `none` |
-| `--env-file` | none | Path to .env file to inject |
+| `--db-access` | `rw` | `rw` or `ro` (prod-ro always forces `ro`) |
+| `--db-name` | app name | Database name (required for `prod-ro`) |
+| `--env-file` | none | Path to .env file to inject (merged with auto-generated DATABASE_URL) |
+
+#### `vd status <app-name>`
+
+Returns: container state, health, URL, app type, deploy time, database info.
+
+#### `vd list`
+
+All deployed apps with state, health, and URLs.
+
+#### `vd logs-snapshot <app-name>`
+
+One-shot log dump. **Always use this in automation**, not `vd logs` (which streams forever).
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--lines` | 100 | Number of log lines |
+
+#### `vd rollback <app-name>`
+
+Revert to previous deployment. Restores container image, compose file, env, and manifest. Last 5 backups kept.
+
+#### `vd destroy <app-name>`
+
+Stop container, remove app files.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--yes` | false | Skip confirmation (always use in automation) |
+| `--drop-db` | false | Also drop the database and user (vd-managed only, never drops prod) |
 
 #### `vd db-create <app-name>`
-Provision a database user. Returns `DATABASE_URL` in JSON response.
+
+Provision a database user independently (usually not needed — `vd deploy --db` does this automatically).
 
 | Flag | Default | Description |
 |------|---------|-------------|
@@ -150,99 +196,63 @@ Provision a database user. Returns `DATABASE_URL` in JSON response.
 | `--access` | `rw` | `rw` or `ro` (prod-ro always forces `ro`) |
 | `--db-name` | app name | Database name (required for `prod-ro`) |
 
-#### `vd status <app-name>`
-Container state, health, URL, deploy time.
-
-#### `vd list`
-All deployed apps with state and health.
-
-#### `vd logs-snapshot <app-name>`
-One-shot log dump. Use this in automation, not `vd logs` (which streams forever).
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--lines` | 100 | Number of log lines |
-
-#### `vd rollback <app-name>`
-Revert to previous deployment. Restores container image, compose file, env, and manifest.
-
-#### `vd destroy <app-name>`
-Stop container, remove app files. Backups are retained.
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--yes` | false | Skip confirmation (always use in automation) |
-
 #### `vd cron-set <app-name>`
+
 Schedule a recurring command inside the app container.
 
 | Flag | Required | Description |
 |------|----------|-------------|
-| `--schedule` | yes | Cron expression (e.g. `"0 * * * *"`) |
-| `--command` | yes | Command to run inside container |
+| `--schedule` | yes | Cron expression (e.g. `"0 * * * *"` = hourly, `"*/5 * * * *"` = every 5 min) |
+| `--command` | yes | Command to run inside container (e.g. `"node jobs/cleanup.js"`) |
 
 #### `vd cron-rm <app-name>`
+
 Remove all cron jobs for an app.
 
 #### `vd cron-ls`
+
 List all cron jobs. Filter with `--app <name>`.
 
 #### `vd exec <app-name> -- <command>`
-Run a one-off command inside the container.
+
+Run a one-off command inside the container. **Not available via SSH agent access** (blocked by wrapper for security).
 
 ### JSON Output Format
 
-All commands support `--json`. Always use it in automated workflows.
+All commands support `--json`. **Always use it in automated workflows.**
 
 Success:
 ```json
-{
-  "ok": true,
-  "command": "deploy",
-  "data": {
-    "name": "my-app",
-    "url": "https://my-app.apps.example.com",
-    "status": "running",
-    "health": "healthy"
-  }
-}
+{"ok": true, "command": "deploy", "data": {"name": "my-app", "url": "https://my-app.apps.platform.xaidos.com", "status": "running", "health": "healthy"}}
 ```
 
 Error:
 ```json
-{
-  "ok": false,
-  "command": "deploy",
-  "error": {
-    "code": "BUILD_FAILED",
-    "message": "Docker build failed",
-    "hint": "Check Dockerfile and source code",
-    "details": "npm ERR! missing script: build"
-  }
-}
+{"ok": false, "command": "deploy", "error": {"code": "BUILD_FAILED", "message": "Docker build failed", "hint": "Check Dockerfile and source code", "details": "..."}}
 ```
 
-Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `NO_BACKUPS`, `ROLLBACK_FAILED`
+Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`
 
-### Troubleshooting Checklist
+### Troubleshooting
 
-| Problem | What to check |
-|---------|--------------|
-| `DETECTION_FAILED` | Missing package.json/requirements.txt/go.mod. Add a `.vd-type` file. |
-| `BUILD_FAILED` | Check `vd logs-snapshot <name>`. Usually missing dependencies. |
-| `UNHEALTHY` | App doesn't respond on its port. Check it listens on `0.0.0.0`, not `127.0.0.1`. Check the port matches `--port`. |
-| App deploys but not reachable | Check `vd status`. Check DNS points to server. Check host nginx proxies to Traefik port 8080. |
-| Database connection refused | Check `--db` flag was used on deploy. Check `vd db-create` was run. The container must be on `vd-db` network. |
-| Prod DB access denied | Use `--type prod-ro`. Check `vd init --prod-db` was run. The prod container must be on `vd-db` network. |
+| Problem | Fix |
+|---------|-----|
+| `DETECTION_FAILED` | Add a `.vd-type` file with the type name |
+| `BUILD_FAILED` | Check `vd logs-snapshot`. Usually missing dependency or bad import |
+| `UNHEALTHY` | App must listen on `0.0.0.0` (not `127.0.0.1`). Check port matches `--port` |
+| App not reachable | Check `vd status`. Verify DNS `*.apps.platform.xaidos.com` resolves |
+| DB connection refused | Ensure `--db postgres` or `--db prod-ro` was passed to deploy |
+| Prod DB access denied | Use `--db prod-ro --db-name <existing-db-name>` |
+| Stale data after destroy | Use `--drop-db` to also drop the database |
 
-### Constraints
+### Constraints Summary
 
-- App names: lowercase, starts with letter, 2-63 chars, only a-z/0-9/hyphens
-- No local file persistence — containers are ephemeral, use the database
-- No volume mounts — apps cannot access the host filesystem
-- No inter-app communication — apps are isolated on separate networks (except via public URLs)
-- Backups are automatic before redeploy, last 5 kept per app
-- Traefik dashboard: http://127.0.0.1:8099 (localhost only, for debugging)
+- **Naming**: lowercase, starts with letter, 2-63 chars, a-z/0-9/hyphens only
+- **Persistence**: PostgreSQL only. No filesystem persistence.
+- **Networking**: HTTP only. No raw TCP, no UDP, no inter-container networking.
+- **Resources**: No CPU/memory limits yet. Don't deploy crypto miners.
+- **Secrets**: Pass via `--env-file`. Never hardcode in source.
+- **Deploys**: Automatic backup before redeploy. Last 5 kept. Auto-rollback on health failure.
 
 ---
 
@@ -255,6 +265,13 @@ For developers working on the `vd` tool itself.
 ```bash
 make build          # macOS binary
 make build-linux    # Linux amd64 binary for deployment
+```
+
+### Deploy to Server
+
+```bash
+source .env.deploy && AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
+  ./scripts/deploy.sh nashville apps.platform.xaidos.com [prod-db-container] [prod-db-user]
 ```
 
 ### Project Structure
@@ -274,28 +291,15 @@ internal/
 templates/
   dockerfiles/               # 7 Dockerfile templates (embedded in binary)
   compose/                   # App + infrastructure compose templates
+scripts/
+  deploy.sh                  # Server installation script
+  vd-ssh-wrapper             # SSH forced command wrapper
 ```
-
-### Deploy to Server
-
-```bash
-# Full setup (builds binary, creates restricted user, wildcard TLS, nginx, vd init)
-source .env.deploy && AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
-  ./scripts/deploy.sh nashville apps.platform.xaidos.com [prod-db-container] [prod-db-user]
-
-# Or via make
-make deploy SERVER=nashville DOMAIN=apps.platform.xaidos.com
-```
-
-### Scripts
-
-- `scripts/deploy.sh` — Full server installation (binary, user, TLS, nginx, vd init)
-- `scripts/vd-ssh-wrapper` — SSH forced command wrapper (restricts to vd commands only)
 
 ### Tech Stack
 
 - Go 1.26+, single external dependency (cobra)
-- Templates embedded in binary via `//go:embed` — no files to copy to server
-- All Docker operations use CLI shell-out, not SDK
-- State: JSON files at `/opt/vibe-deploy/` (configurable via `VD_HOME` env)
-- TLS handled by host nginx (wildcard cert), not Traefik
+- Templates embedded in binary via `//go:embed`
+- Docker operations via CLI shell-out, not SDK
+- State: JSON files at `/opt/vibe-deploy/`
+- TLS: host nginx wildcard cert, not Traefik
