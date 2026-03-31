@@ -5,59 +5,99 @@ description: Deploy a vibecoded app to the server via vibe-deploy. Use when the 
 
 # Deploy with vibe-deploy
 
-Deploy apps to the server via SSH. All commands go through `ssh vd-server "vd <command> --json"`.
+Deploy apps to the server via SSH.
 
-## Prerequisites
+## Connection Setup
 
-- SSH access configured: `vd-server` host in `~/.ssh/config`
-- App code in a directory on the server (scp it first)
+Before deploying, you need the server connection details. Ask the user if not known:
+- **Server IP or hostname** (e.g. `141.105.67.159` or `nashville`)
+- **Path to SSH key** (e.g. `~/.ssh/vd_agent_key`)
+
+The SSH user is always `vd-user`. Build the SSH command as:
+
+```bash
+SSH_CMD="ssh -i <key-path> -o StrictHostKeyChecking=accept-new vd-user@<server-ip>"
+```
+
+All vd commands follow this pattern:
+
+```bash
+$SSH_CMD "vd <command> --json"
+```
+
+If the user has `vd-server` configured in `~/.ssh/config`, use `ssh vd-server` instead.
 
 ## Deploy Workflow
 
 ### 1. Copy app to server
 
+The `vd-user` SSH key has a forced command — it only allows `vd` commands, not `scp`. Copy files using the server hostname/IP directly with the user's regular SSH access:
+
 ```bash
-scp -r /path/to/app vd-server:/tmp/<app-name>
+scp -r /path/to/app <server-ip>:/tmp/<app-name>
 ```
 
-Note: `scp` to `vd-server` won't work (forced command blocks it). Copy via the regular SSH user first:
-```bash
-scp -r /path/to/app nashville:/tmp/<app-name>
-```
+If the user doesn't have regular SSH access, they need to ask their admin to copy files, or set up a different upload method.
 
 ### 2. Deploy
 
 ```bash
 # Static frontend — no database
-ssh vd-server "vd deploy /tmp/<app-name> --name <app-name> --json"
+$SSH_CMD "vd deploy /tmp/<app-name> --name <app-name> --json"
 
 # With its own PostgreSQL database (auto-provisioned, DATABASE_URL auto-injected)
-ssh vd-server "vd deploy /tmp/<app-name> --name <app-name> --db postgres --json"
+$SSH_CMD "vd deploy /tmp/<app-name> --name <app-name> --db postgres --json"
 
 # Dashboard reading production data (read-only access)
-ssh vd-server "vd deploy /tmp/<app-name> --name <app-name> --db prod-ro --db-name <existing-db> --json"
+$SSH_CMD "vd deploy /tmp/<app-name> --name <app-name> --db prod-ro --db-name <existing-db> --json"
 
-# With extra environment variables
-ssh vd-server "vd deploy /tmp/<app-name> --name <app-name> --db postgres --env-file /tmp/<app-name>/.env --json"
+# With extra environment variables (write .env to server first)
+$SSH_CMD "vd deploy /tmp/<app-name> --name <app-name> --db postgres --env-file /tmp/<app-name>/.env --json"
 
 # Path-based routing instead of subdomain
-ssh vd-server "vd deploy /tmp/<app-name> --name <app-name> --routing path --json"
+$SSH_CMD "vd deploy /tmp/<app-name> --name <app-name> --routing path --json"
 ```
 
 ### 3. Verify
 
 ```bash
-ssh vd-server "vd status <app-name> --json"
+$SSH_CMD "vd status <app-name> --json"
 ```
+
+The URL will be `https://<app-name>.apps.platform.xaidos.com`.
 
 ### 4. If something is wrong
 
 ```bash
 # Check logs
-ssh vd-server "vd logs-snapshot <app-name> --lines 50 --json"
+$SSH_CMD "vd logs-snapshot <app-name> --lines 50 --json"
 
 # Rollback to previous version
-ssh vd-server "vd rollback <app-name> --json"
+$SSH_CMD "vd rollback <app-name> --json"
+```
+
+## Full Example
+
+```bash
+# Set up connection (ask user for these values)
+KEY=~/.ssh/vd_agent_key
+SERVER=141.105.67.159
+SSH_CMD="ssh -i $KEY -o StrictHostKeyChecking=accept-new vd-user@$SERVER"
+
+# Copy app to server (use regular SSH, not vd-user)
+scp -r ./my-app $SERVER:/tmp/my-app
+
+# Deploy with database
+$SSH_CMD "vd deploy /tmp/my-app --name my-app --db postgres --json"
+
+# Check status
+$SSH_CMD "vd status my-app --json"
+
+# Set up a cron job
+$SSH_CMD "vd cron-set my-app --schedule '0 * * * *' --command 'node jobs/cleanup.js' --json"
+
+# Later: destroy with database cleanup
+$SSH_CMD "vd destroy my-app --yes --drop-db --json"
 ```
 
 ## Command Reference
@@ -114,20 +154,16 @@ Always check `ok` field. On error, read `hint` for the fix.
 
 ## Error Codes
 
-| Code | Meaning | Fix |
-|------|---------|-----|
-| `DETECTION_FAILED` | Can't detect app type | Add `.vd-type` file |
-| `BUILD_FAILED` | Docker build failed | Check logs: `vd logs-snapshot <name>` |
-| `UNHEALTHY` | App doesn't respond on port | Listen on `0.0.0.0`, check `--port` |
-| `DB_NOT_FOUND` | No DB container configured | Run `vd init --prod-db <container>` on server |
-| `DB_PROVISION_FAILED` | Can't create DB user | Check postgres container is running |
-| `NOT_FOUND` | App doesn't exist | Check name with `vd list` |
-| `NO_BACKUPS` | No backups for rollback | Only exists after first redeploy |
+| Code | Fix |
+|------|-----|
+| `DETECTION_FAILED` | Add `.vd-type` file |
+| `BUILD_FAILED` | Check logs: `vd logs-snapshot <name>` |
+| `UNHEALTHY` | Listen on `0.0.0.0`, check `--port` |
+| `DB_NOT_FOUND` | Admin needs to run `vd init --prod-db` |
+| `DB_PROVISION_FAILED` | Check postgres container is running |
+| `NOT_FOUND` | Check name with `vd list` |
+| `NO_BACKUPS` | Only exists after first redeploy |
 
 ## App Naming Rules
 
-- Lowercase only
-- Starts with a letter
-- 2-63 characters
-- Only a-z, 0-9, hyphens
-- Examples: `my-dashboard`, `sales-api`, `report-viewer`
+- Lowercase, starts with letter, 2-63 chars, a-z/0-9/hyphens only
