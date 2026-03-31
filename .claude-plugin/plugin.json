@@ -1,0 +1,8 @@
+{
+  "name": "vibe-deploy",
+  "description": "Build and deploy vibecoded apps to bare metal servers. /vibe loads platform constraints for building apps, /deploy handles deployment via SSH.",
+  "author": {
+    "name": "xaid",
+    "email": "support@xaid.ai"
+  }
+}
