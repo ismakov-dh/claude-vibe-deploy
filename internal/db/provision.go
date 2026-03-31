@@ -60,6 +60,18 @@ func ProvisionPostgresUser(container, adminUser, appName, dbName, access string)
 	}, nil
 }
 
+// DropPostgresDB drops a database and its user.
+func DropPostgresDB(container, adminUser, dbName, user string) error {
+	// Terminate active connections
+	execSQL(container, adminUser, fmt.Sprintf(
+		"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '%s' AND pid <> pg_backend_pid()", dbName))
+	// Revoke and drop
+	execSQL(container, adminUser, fmt.Sprintf("REVOKE ALL ON DATABASE %q FROM %s", dbName, user))
+	execSQL(container, adminUser, fmt.Sprintf("DROP DATABASE IF EXISTS %q", dbName))
+	execSQL(container, adminUser, fmt.Sprintf("DROP ROLE IF EXISTS %s", user))
+	return nil
+}
+
 func execSQL(container, adminUser, sql string) error {
 	_, err := shell.Run(30*time.Second, "docker", "exec", container,
 		"psql", "-U", adminUser, "-c", sql)
