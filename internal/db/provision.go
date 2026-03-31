@@ -24,13 +24,15 @@ func ProvisionPostgresUser(container, adminUser, appName, dbName, access string)
 	user := "vd_" + strings.ReplaceAll(appName, "-", "_")
 	password := generatePassword(24)
 
-	// Create database if not exists (ignores error if already exists)
+	// Create database if not exists
 	execSQL(container, adminUser, fmt.Sprintf("CREATE DATABASE %q", dbName))
 
-	// Create user
-	execSQL(container, adminUser, fmt.Sprintf("DROP ROLE IF EXISTS %s", user))
-	if err := execSQL(container, adminUser, fmt.Sprintf("CREATE ROLE %s WITH LOGIN PASSWORD '%s'", user, password)); err != nil {
-		return nil, fmt.Errorf("create role: %w", err)
+	// Create or reset user (idempotent — handles redeploys)
+	// If role exists, reset password instead of drop/recreate (avoids grant dependency issues)
+	err := execSQL(container, adminUser, fmt.Sprintf("CREATE ROLE %s WITH LOGIN PASSWORD '%s'", user, password))
+	if err != nil {
+		// Role likely exists — update password
+		execSQL(container, adminUser, fmt.Sprintf("ALTER ROLE %s WITH LOGIN PASSWORD '%s'", user, password))
 	}
 
 	// Grant permissions
