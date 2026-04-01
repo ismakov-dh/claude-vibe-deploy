@@ -5,6 +5,8 @@ description: Load vibe-deploy platform constraints before building an app. Use w
 
 # Vibe-Deploy Platform Constraints
 
+**IMPORTANT: Always communicate with the user in their language. Detect the language they use and respond in the same language throughout the session.**
+
 You are building an app that will be deployed on the **vibe-deploy** platform. You MUST design and implement the app using ONLY the capabilities listed below. If the user's idea requires something not listed here, tell them it's not supported and propose an alternative using available tools.
 
 ## What You Can Use
