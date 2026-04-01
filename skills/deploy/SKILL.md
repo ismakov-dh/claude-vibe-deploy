@@ -5,7 +5,13 @@ description: Deploy a vibecoded app to the server via vibe-deploy. Use when the 
 
 # Deploy with vibe-deploy
 
-Deploy apps to the server via SSH.
+**IMPORTANT: Always communicate with the user in their language. Detect the language they use and respond in the same language throughout the session.**
+
+Deploy apps to the server via SSH. Always use `--json` flag for parsing, but present results to the user in a clear, human-readable way. After a successful deploy, always tell the user:
+- The app URL
+- App type detected
+- Whether a database was provisioned
+- Health status
 
 ## Connection Setup
 
