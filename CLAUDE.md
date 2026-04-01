@@ -35,6 +35,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Auto-rollback** | Automatic | If health check fails after deploy, previous version is restored. |
 | **Manual rollback** | `vd rollback` | Revert to any of the last 5 deployments. |
 | **Logs** | `vd logs-snapshot` | Get container logs for debugging. |
+| **File upload** | `vd push` | Send files via tar stream through SSH. No scp needed. |
 
 ### What You DON'T Have
 
@@ -99,33 +100,29 @@ Priority: `.vd-type` > `Dockerfile` > `manage.py` > `requirements.txt` > `packag
 
 ### Deploy Workflow
 
-**Step 1: Write app code into a directory on the server**
+**Step 1: Push app files to server**
 
-```
-/tmp/my-app/
-  package.json
-  server.js
-  public/
-    index.html
+```bash
+tar cf - ./my-app | ssh vd-server "vd push my-app --json"
 ```
 
-**Step 2: Deploy (one command)**
+**Step 2: Deploy**
 
 ```bash
 # Static frontend — no database
-vd deploy /tmp/my-app --name my-dashboard --json
+vd deploy /opt/vibe-deploy/push/my-app --name my-dashboard --json
 
 # Backend with its own database — DB auto-provisioned, DATABASE_URL auto-injected
-vd deploy /tmp/my-app --name my-api --db postgres --json
+vd deploy /opt/vibe-deploy/push/my-app --name my-api --db postgres --json
 
 # Dashboard reading production data
-vd deploy /tmp/my-app --name my-dash --db prod-ro --db-name reporting_platform --json
+vd deploy /opt/vibe-deploy/push/my-app --name my-dash --db prod-ro --db-name reporting_platform --json
 
 # With extra env vars (API keys, secrets)
-vd deploy /tmp/my-app --name my-app --db postgres --env-file /tmp/my-app/.env --json
+vd deploy /opt/vibe-deploy/push/my-app --name my-app --db postgres --env-file /opt/vibe-deploy/push/my-app/.env --json
 
 # Path-based routing
-vd deploy /tmp/my-app --name my-app --routing path --json
+vd deploy /opt/vibe-deploy/push/my-app --name my-app --routing path --json
 ```
 
 **Step 3: Verify**
@@ -142,6 +139,16 @@ vd rollback my-app --json                    # revert to previous version
 ```
 
 ### Command Reference
+
+#### `vd push <app-name>`
+
+Receive app files via tar stream on stdin. Use before deploy.
+
+```bash
+tar cf - ./my-app | ssh vd-server "vd push myapp --json"
+```
+
+Files stored at `/opt/vibe-deploy/push/<app-name>`.
 
 #### `vd deploy <source-dir>`
 
@@ -270,8 +277,12 @@ make build-linux    # Linux amd64 binary for deployment
 ### Deploy to Server
 
 ```bash
+# Full setup (binary, user, TLS, nginx, vd init)
 source .env.deploy && AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
-  ./scripts/deploy.sh nashville apps.platform.xaidos.com [prod-db-container] [prod-db-user]
+  ./scripts/deploy.sh root@server apps.example.com
+
+# Connect prod DB (primary for user creation, replica for app connections)
+ssh vd-server "vd init --prod-db <primary> --prod-db-replica <replica> --prod-db-user <admin-user>"
 ```
 
 ### Project Structure
