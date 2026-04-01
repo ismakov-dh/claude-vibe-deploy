@@ -38,6 +38,16 @@ The skills are in the `plugin/skills/` directory:
 | Changed deploy flow | Both skills + `CLAUDE.md` + `README.md` |
 | New audit check | `vibe/SKILL.md` "Inspect Existing Project" section |
 
+## Plugin Versioning
+
+The plugin version is in `plugin/.claude-plugin/plugin.json`. Use semver:
+
+- **PATCH** (1.0.0 → 1.0.1): bug fixes in skills, wording tweaks, typo corrections
+- **MINOR** (1.0.0 → 1.1.0): new capabilities, new commands, new flags, new app types, new error codes
+- **MAJOR** (1.0.0 → 2.0.0): breaking changes to deploy workflow, removed capabilities, changed skill interface
+
+Bump the version in the same commit that updates the skills.
+
 ## Rule
 
-If you change code and don't update the skills, agents will build apps incorrectly or deploy with wrong commands. Always check all four files after any change.
+If you change code and don't update the skills, agents will build apps incorrectly or deploy with wrong commands. Always check all four files and bump the plugin version after any change.
