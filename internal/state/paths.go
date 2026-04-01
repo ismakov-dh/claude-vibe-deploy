@@ -26,3 +26,4 @@ func AppLogsDir(name string) string      { return filepath.Join(LogsDir(), name)
 func ConfigPath() string                 { return filepath.Join(VDHome(), "config.json") }
 func InfraComposePath() string           { return filepath.Join(VDHome(), "infrastructure.yml") }
 func InfraEnvPath() string               { return filepath.Join(VDHome(), ".env") }
+func PushDir(name string) string         { return filepath.Join(VDHome(), "push", name) }

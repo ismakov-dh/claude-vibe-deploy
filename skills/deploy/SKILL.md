@@ -32,33 +32,33 @@ $SSH_CMD "vd <command> --json"
 
 ## Deploy Workflow
 
-### 1. Copy app to server
+### 1. Push app files to server
 
-The `vd-user` SSH key has a forced command — it only allows `vd` commands, not `scp`. Copy files using the server hostname/IP directly with the user's regular SSH access:
+Use `vd push` to send files via tar stream through SSH — no scp needed:
 
 ```bash
-scp -r /path/to/app <server-ip>:/tmp/<app-name>
+tar cf - ./my-app | $SSH_CMD "vd push <app-name> --json"
 ```
 
-If the user doesn't have regular SSH access, they need to ask their admin to copy files, or set up a different upload method.
+Files are stored at `/opt/vibe-deploy/push/<app-name>` on the server.
 
 ### 2. Deploy
 
 ```bash
 # Static frontend — no database
-$SSH_CMD "vd deploy /tmp/<app-name> --name <app-name> --json"
+$SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --json"
 
 # With its own PostgreSQL database (auto-provisioned, DATABASE_URL auto-injected)
-$SSH_CMD "vd deploy /tmp/<app-name> --name <app-name> --db postgres --json"
+$SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db postgres --json"
 
 # Dashboard reading production data (read-only access)
-$SSH_CMD "vd deploy /tmp/<app-name> --name <app-name> --db prod-ro --db-name <existing-db> --json"
+$SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db prod-ro --db-name <existing-db> --json"
 
 # With extra environment variables (write .env to server first)
-$SSH_CMD "vd deploy /tmp/<app-name> --name <app-name> --db postgres --env-file /tmp/<app-name>/.env --json"
+$SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db postgres --env-file /opt/vibe-deploy/push/<app-name>/.env --json"
 
 # Path-based routing instead of subdomain
-$SSH_CMD "vd deploy /tmp/<app-name> --name <app-name> --routing path --json"
+$SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing path --json"
 ```
 
 ### 3. Verify
@@ -87,11 +87,11 @@ KEY=~/.ssh/vd_agent_key
 SERVER=141.105.67.159
 SSH_CMD="ssh -i $KEY -o StrictHostKeyChecking=accept-new vd-user@$SERVER"
 
-# Copy app to server (use regular SSH, not vd-user)
-scp -r ./my-app $SERVER:/tmp/my-app
+# Push app files to server
+tar cf - ./my-app | $SSH_CMD "vd push my-app --json"
 
 # Deploy with database
-$SSH_CMD "vd deploy /tmp/my-app --name my-app --db postgres --json"
+$SSH_CMD "vd deploy /opt/vibe-deploy/push/my-app --name my-app --db postgres --json"
 
 # Check status
 $SSH_CMD "vd status my-app --json"
@@ -104,6 +104,13 @@ $SSH_CMD "vd destroy my-app --yes --drop-db --json"
 ```
 
 ## Command Reference
+
+### `vd push <app-name>`
+Receive app files via tar stream on stdin. Use before deploy.
+```bash
+tar cf - ./my-app | $SSH_CMD "vd push <app-name> --json"
+```
+Files stored at `/opt/vibe-deploy/push/<app-name>`.
 
 ### `vd deploy <source-dir>`
 
