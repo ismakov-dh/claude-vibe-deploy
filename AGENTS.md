@@ -4,16 +4,16 @@ When modifying vibe-deploy capabilities (new features, changed constraints, new 
 
 ## Skills to Update
 
-The skills are in the `skills/` directory at the repo root:
+The skills are in the `plugin/skills/` directory:
 
-- **`skills/vibe/SKILL.md`** — Platform constraints + project audit. Update when:
+- **`plugin/skills/vibe/SKILL.md`** — Platform constraints + project audit. Update when:
   - New capabilities are added (e.g. Redis, new DB type)
   - Existing capabilities change (e.g. new app type, port defaults)
   - Constraints change (e.g. something unavailable becomes available)
   - New app patterns or rules for writing code
   - Audit checklist items change (new compatibility checks needed)
 
-- **`skills/deploy/SKILL.md`** — Deployment commands reference. Update when:
+- **`plugin/skills/deploy/SKILL.md`** — Deployment commands reference. Update when:
   - New `vd` commands are added (e.g. `vd push`)
   - Command flags change (new flags, removed flags, changed defaults)
   - Deploy workflow changes (e.g. push + deploy flow)
