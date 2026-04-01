@@ -30,6 +30,16 @@ All vd commands follow this pattern:
 $SSH_CMD "vd <command> --json"
 ```
 
+### Verify server is ready
+
+Before first deploy, check that vd is initialized:
+
+```bash
+$SSH_CMD "vd list --json"
+```
+
+If this returns `"ok": true`, the server is ready. If it fails with a connection or permission error, the user needs to ask their admin to set up vd on the server.
+
 ## Deploy Workflow
 
 ### 1. Push app files to server
