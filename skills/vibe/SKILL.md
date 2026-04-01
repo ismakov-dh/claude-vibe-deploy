@@ -9,6 +9,20 @@ description: Load vibe-deploy platform constraints before building an app. Use w
 
 You are building an app that will be deployed on the **vibe-deploy** platform. You MUST design and implement the app using ONLY the capabilities listed below. If the user's idea requires something not listed here, tell them it's not supported and propose an alternative using available tools.
 
+## First: Inspect Existing Project
+
+Before writing any code, check if there are existing source files in the current directory. If there are, audit them against the platform requirements below and report:
+
+1. **App type detection** — will vd auto-detect correctly? If not, what `.vd-type` file is needed?
+2. **Port binding** — does the app listen on `0.0.0.0`? Is the port correct for the type?
+3. **Health check** — does `GET /` return a response?
+4. **Database** — if the app uses a database, does it read from `DATABASE_URL` env var? Are there hardcoded credentials?
+5. **Persistence** — does the app write to local filesystem expecting data to survive? It won't.
+6. **Dependencies** — are all dependencies listed in package.json / requirements.txt / go.mod?
+7. **Unsupported features** — does the app use Redis, S3, WebSockets, background workers, or anything not listed in "What You Can Use"?
+
+For each issue found, explain what needs to change and why. Then propose a plan to fix all issues and ask the user to confirm before making changes.
+
 ## What You Can Use
 
 ### HTTP App Hosting
