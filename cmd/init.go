@@ -15,14 +15,16 @@ import (
 )
 
 var (
-	initDomain        string
-	initProdContainer string
-	initProdUser      string
+	initDomain      string
+	initProdPrimary string
+	initProdReplica string
+	initProdUser    string
 )
 
 func init() {
 	initCmd.Flags().StringVar(&initDomain, "domain", "", "base domain for apps (e.g. apps.example.com)")
-	initCmd.Flags().StringVar(&initProdContainer, "prod-db", "", "existing prod postgres container (read-only access for dashboards)")
+	initCmd.Flags().StringVar(&initProdPrimary, "prod-db", "", "prod postgres primary container (for creating users)")
+	initCmd.Flags().StringVar(&initProdReplica, "prod-db-replica", "", "prod postgres replica container (for app connections, defaults to primary)")
 	initCmd.Flags().StringVar(&initProdUser, "prod-db-user", "postgres", "admin user on the prod postgres")
 	rootCmd.AddCommand(initCmd)
 }
@@ -78,15 +80,23 @@ func runInit() {
 		cfg.VDPostgresPassword = generateRandomPassword(32)
 	}
 
-	// Connect existing prod DB container if specified
-	if initProdContainer != "" {
-		if err := docker.NetworkConnect("vd-db", initProdContainer); err != nil {
-			output.Warn("Could not connect %s to vd-db network: %v", initProdContainer, err)
-			output.Warn("Connect manually: docker network connect vd-db %s", initProdContainer)
+	// Connect existing prod DB containers if specified
+	if initProdPrimary != "" {
+		cfg.ProdDBPrimary = initProdPrimary
+		// Connect primary to vd-db network
+		if err := docker.NetworkConnect("vd-db", initProdPrimary); err != nil {
+			output.Warn("Could not connect %s to vd-db: %v", initProdPrimary, err)
 		} else {
-			output.Info("Connected prod DB %s to vd-db network", initProdContainer)
+			output.Info("Connected prod primary %s to vd-db", initProdPrimary)
 		}
-		cfg.ProdDBContainer = initProdContainer
+	}
+	if initProdReplica != "" {
+		cfg.ProdDBReplica = initProdReplica
+		if err := docker.NetworkConnect("vd-db", initProdReplica); err != nil {
+			output.Warn("Could not connect %s to vd-db: %v", initProdReplica, err)
+		} else {
+			output.Info("Connected prod replica %s to vd-db", initProdReplica)
+		}
 	}
 	if initProdUser != "postgres" || cfg.ProdDBUser == "" {
 		cfg.ProdDBUser = initProdUser
@@ -126,8 +136,8 @@ func runInit() {
 	}
 
 	output.Info("vibe-deploy initialized at %s", state.VDHome())
-	if initProdContainer == "" {
-		output.Info("To attach prod DB for dashboards: vd init --prod-db <container-name> --prod-db-user <user>")
+	if cfg.ProdDBPrimary == "" {
+		output.Info("To attach prod DB: vd init --prod-db <primary> [--prod-db-replica <replica>] --prod-db-user <user>")
 	}
 	if cfg.Domain == "" {
 		output.Warn("No domain set. Use: vd init --domain apps.example.com")
@@ -136,7 +146,8 @@ func runInit() {
 	output.Success("init", map[string]any{
 		"home":           state.VDHome(),
 		"domain":         cfg.Domain,
-		"prod_db":        cfg.ProdDBContainer,
+		"prod_db_primary": cfg.ProdDBPrimary,
+		"prod_db_replica": cfg.ProdDBReplica,
 		"vd_postgres":    "vd-postgres",
 		"networks":       []string{"vd-net", "vd-db"},
 	})

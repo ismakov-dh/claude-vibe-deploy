@@ -15,8 +15,9 @@ type Config struct {
 	VDPostgresPassword string `json:"vd_postgres_password,omitempty"`
 
 	// External prod DB (read-only attach for dashboards)
-	ProdDBContainer string `json:"prod_db_container,omitempty"`
-	ProdDBUser      string `json:"prod_db_user,omitempty"`
+	ProdDBPrimary   string `json:"prod_db_primary,omitempty"`   // primary — where users are created
+	ProdDBReplica   string `json:"prod_db_replica,omitempty"`   // replica — where apps connect to read
+	ProdDBUser      string `json:"prod_db_user,omitempty"`      // admin user for creating roles
 
 	CreatedAt string `json:"created_at"`
 }
