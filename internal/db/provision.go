@@ -19,8 +19,10 @@ type ProvisionResult struct {
 }
 
 // ProvisionPostgresUser creates a per-app database user.
-// adminUser is the postgres superuser (e.g. "postgres" or "reporting_user").
-func ProvisionPostgresUser(container, adminUser, appName, dbName, access string) (*ProvisionResult, error) {
+// adminContainer is where roles are created (primary).
+// connectHost is what goes into DATABASE_URL (replica or primary).
+func ProvisionPostgresUser(adminContainer, adminUser, connectHost, appName, dbName, access string) (*ProvisionResult, error) {
+	container := adminContainer
 	user := "vd_" + strings.ReplaceAll(appName, "-", "_")
 	password := generatePassword(24)
 
@@ -50,7 +52,7 @@ func ProvisionPostgresUser(container, adminUser, appName, dbName, access string)
 		execSQLDB(container, adminUser, dbName, fmt.Sprintf("ALTER DEFAULT PRIVILEGES IN SCHEMA public GRANT ALL ON SEQUENCES TO %s", user))
 	}
 
-	url := fmt.Sprintf("postgresql://%s:%s@%s:5432/%s", user, password, container, dbName)
+	url := fmt.Sprintf("postgresql://%s:%s@%s:5432/%s", user, password, connectHost, dbName)
 
 	return &ProvisionResult{
 		User:     user,
@@ -74,7 +76,7 @@ func DropPostgresDB(container, adminUser, dbName, user string) error {
 
 func execSQL(container, adminUser, sql string) error {
 	_, err := shell.Run(30*time.Second, "docker", "exec", container,
-		"psql", "-U", adminUser, "-c", sql)
+		"psql", "-U", adminUser, "-d", "postgres", "-c", sql)
 	return err
 }
 

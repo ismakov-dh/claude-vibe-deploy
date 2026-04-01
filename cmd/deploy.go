@@ -139,12 +139,18 @@ func runDeploy(srcPath string) {
 	if deployDB == "postgres" || deployDB == "prod-ro" {
 		var container, adminUser, access, dbNameToUse string
 
+		var connectHost string
+
 		if deployDB == "prod-ro" {
-			container = cfg.ProdDBContainer
+			container = cfg.ProdDBPrimary
 			if container == "" {
 				output.Fail("deploy", output.NewError("DB_NOT_FOUND",
 					"No prod DB configured",
-					"Run: vd init --prod-db <container> --prod-db-user <user>"))
+					"Run: vd init --prod-db <primary> --prod-db-user <user>"))
+			}
+			connectHost = cfg.ProdDBReplica
+			if connectHost == "" {
+				connectHost = container // fall back to primary
 			}
 			adminUser = cfg.ProdDBUser
 			if adminUser == "" {
@@ -159,6 +165,7 @@ func runDeploy(srcPath string) {
 			}
 		} else {
 			container = "vd-postgres"
+			connectHost = "vd-postgres"
 			adminUser = "vd_admin"
 			access = deployDBAccess
 			dbNameToUse = deployDBName
@@ -168,7 +175,7 @@ func runDeploy(srcPath string) {
 		}
 
 		output.Info("Provisioning database (%s)...", deployDB)
-		result, err := db.ProvisionPostgresUser(container, adminUser, deployName, dbNameToUse, access)
+		result, err := db.ProvisionPostgresUser(container, adminUser, connectHost, deployName, dbNameToUse, access)
 		if err != nil {
 			output.Warn("DB provisioning failed: %v", err)
 		} else {

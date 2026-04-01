@@ -36,31 +36,34 @@ var dbCreateCmd = &cobra.Command{
 			output.Fail("db-create", output.NewError("NOT_INITIALIZED", "Run vd init first", ""))
 		}
 
-		var container, adminUser, access string
+		var container, adminUser, connectHost, access string
 
 		switch dbType {
 		case "prod-ro":
-			// Read-only access to existing prod database
-			container = cfg.ProdDBContainer
+			container = cfg.ProdDBPrimary
 			if container == "" {
 				output.Fail("db-create", output.NewError("DB_NOT_FOUND",
 					"No prod DB configured",
-					"Run: vd init --prod-db <container-name> --prod-db-user <user>"))
+					"Run: vd init --prod-db <primary> --prod-db-user <user>"))
+			}
+			connectHost = cfg.ProdDBReplica
+			if connectHost == "" {
+				connectHost = container
 			}
 			adminUser = cfg.ProdDBUser
 			if adminUser == "" {
 				adminUser = "postgres"
 			}
-			access = "ro" // always read-only for prod
+			access = "ro"
 			if dbName == "" {
 				output.Fail("db-create", output.NewError("MISSING_DB_NAME",
-					"--db-name is required for prod-ro (which database to grant access to?)",
+					"--db-name is required for prod-ro",
 					"Example: vd db-create my-app --type prod-ro --db-name reporting_platform"))
 			}
 
 		case "postgres":
-			// New database on vd-managed postgres
 			container = "vd-postgres"
+			connectHost = "vd-postgres"
 			adminUser = "vd_admin"
 			access = dbAccess
 			if dbName == "" {
@@ -72,7 +75,7 @@ var dbCreateCmd = &cobra.Command{
 				"Unknown db type: "+dbType, "Use: postgres or prod-ro"))
 		}
 
-		result, err := db.ProvisionPostgresUser(container, adminUser, name, dbName, access)
+		result, err := db.ProvisionPostgresUser(container, adminUser, connectHost, name, dbName, access)
 		if err != nil {
 			output.Fail("db-create", output.NewError("DB_PROVISION_FAILED", err.Error(),
 				"Check that the postgres container is running and accessible"))
