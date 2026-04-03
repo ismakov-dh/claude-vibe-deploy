@@ -130,6 +130,7 @@ Deploy with `--db prod-ro --db-name <existing-database>`.
 6. Store all persistent data in PostgreSQL
 7. Use `.vd-type` file to override auto-detection if needed (contains type name, e.g. `node-server`)
 8. **Always use database migrations** — never raw `CREATE TABLE IF NOT EXISTS` (see below)
+9. **NEVER commit secrets or .env files to git.** No API keys, passwords, tokens, or DATABASE_URL values in source code or tracked files. Add `.env` to `.gitignore`. Pass secrets via `--env-file` on deploy
 
 ## Database Migrations
 
