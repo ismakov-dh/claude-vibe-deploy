@@ -70,7 +70,7 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db post
 # Dashboard reading production data (read-only access)
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db prod-ro --db-name <existing-db> --json"
 
-# With extra environment variables (write .env to server first)
+# With extra environment variables (.env is pushed with app files, NEVER commit .env to git)
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db postgres --env-file /opt/vibe-deploy/push/<app-name>/.env --json"
 
 # Path-based routing instead of subdomain
