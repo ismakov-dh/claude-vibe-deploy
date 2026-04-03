@@ -19,7 +19,7 @@ func init() {
 var pushCmd = &cobra.Command{
 	Use:   "push <app-name>",
 	Short: "Receive app files via stdin (tar stream)",
-	Long:  "Usage: tar cf - ./app | ssh vd-server \"vd push myapp\"",
+	Long:  "Usage: tar cf - --exclude='node_modules' --exclude='.git' ./app | ssh vd-server \"vd push myapp\"",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
@@ -38,7 +38,7 @@ var pushCmd = &cobra.Command{
 		if err := tar.Run(); err != nil {
 			os.RemoveAll(destDir)
 			output.Fail("push", output.NewError("PUSH_FAILED",
-				"Failed to extract tar: "+err.Error(), "Pipe a tar stream: tar cf - ./app | ssh vd-server \"vd push myapp\""))
+				"Failed to extract tar: "+err.Error(), "Pipe a tar stream: tar cf - --exclude='node_modules' --exclude='.git' ./app | ssh vd-server \"vd push myapp\""))
 		}
 
 		// Check if tar extracted into a subdirectory (tar cf - ./app creates app/ inside)

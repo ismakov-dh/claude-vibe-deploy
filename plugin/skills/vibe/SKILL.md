@@ -17,9 +17,10 @@ Before writing any code, check if there are existing source files in the current
 2. **Port binding** — does the app listen on `0.0.0.0`? Is the port correct for the type?
 3. **Health check** — does `GET /` return a response?
 4. **Database** — if the app uses a database, does it read from `DATABASE_URL` env var? Are there hardcoded credentials?
-5. **Persistence** — does the app write to local filesystem expecting data to survive? It won't.
-6. **Dependencies** — are all dependencies listed in package.json / requirements.txt / go.mod?
-7. **Unsupported features** — does the app use Redis, S3, WebSockets, background workers, or anything not listed in "What You Can Use"?
+5. **Migrations** — if the app uses a database, does it use a migration tool? Are migrations reversible? Is `migrate`/`upgrade` wired into startup? Raw `CREATE TABLE` is not acceptable.
+6. **Persistence** — does the app write to local filesystem expecting data to survive? It won't.
+7. **Dependencies** — are all dependencies listed in package.json / requirements.txt / go.mod?
+8. **Unsupported features** — does the app use Redis, S3, WebSockets, background workers, or anything not listed in "What You Can Use"?
 
 For each issue found, explain what needs to change and why. Then propose a plan to fix all issues and ask the user to confirm before making changes.
 
@@ -128,7 +129,47 @@ Deploy with `--db prod-ro --db-name <existing-database>`.
 5. Do NOT create a Dockerfile unless auto-detection doesn't work
 6. Store all persistent data in PostgreSQL
 7. Use `.vd-type` file to override auto-detection if needed (contains type name, e.g. `node-server`)
-8. Initialize database tables on app startup (CREATE TABLE IF NOT EXISTS)
+8. **Always use database migrations** — never raw `CREATE TABLE IF NOT EXISTS` (see below)
+
+## Database Migrations
+
+If the app uses a database, you MUST use a migration tool — never create tables with raw SQL or `CREATE TABLE IF NOT EXISTS`. Migrations allow safe schema changes on redeploy and rollback.
+
+**All migrations MUST be reversible** (have a "down" / "rollback" step). This is critical — on rollback, the agent may need to unapply migrations to match the previous code version.
+
+### Migration tool by framework
+
+| Framework | Tool | Setup |
+|-----------|------|-------|
+| Django | Built-in (`manage.py migrate`) | Runs automatically on container start. Create migrations with `manage.py makemigrations` |
+| FastAPI / Flask / plain Python | Alembic | Add `alembic` to requirements.txt. Init with `alembic init migrations`. Add `alembic upgrade head` to app startup or as an entrypoint script |
+| Node.js (Express, Fastify, Hono) | Prisma | Add `prisma` to package.json. Define schema in `prisma/schema.prisma`. Add `npx prisma migrate deploy` to start script |
+| Node.js (alternative) | Knex | Add `knex` to package.json. Create migrations in `migrations/`. Add `npx knex migrate:latest` to start script |
+| Next.js | Prisma | Same as Node.js — add to `package.json` scripts |
+| Go | goose or golang-migrate | Add migration files in `migrations/`. Run on app startup |
+
+### How migrations interact with deploy/rollback
+
+- **Deploy**: migrations run forward on container start (`upgrade head` / `migrate:latest`)
+- **Rollback**: use `vd rollback --restore-db` to restore both container and database to the previous deploy state. Migration downgrade is not supported — full DB restore is the rollback mechanism
+- **Destroy**: database is backed up automatically before `--drop-db`
+
+### Entrypoint pattern for non-Django apps
+
+For frameworks without auto-migration on startup, create an `entrypoint.sh`:
+
+```bash
+#!/bin/sh
+# Run migrations, then start the app
+alembic upgrade head    # or: npx prisma migrate deploy
+exec "$@"
+```
+
+And in the Dockerfile (or override via `.vd-type` = `custom`):
+```dockerfile
+ENTRYPOINT ["./entrypoint.sh"]
+CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
+```
 
 ## Supported App Types
 

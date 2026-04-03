@@ -52,6 +52,21 @@ var destroyCmd = &cobra.Command{
 		appDir := state.AppDir(name)
 		docker.ComposeDown(appDir, "docker-compose.vd.yml")
 
+		// Backup database before dropping
+		if destroyDropDB && m.DB == "postgres" {
+			dbName := m.DBName
+			if dbName == "" {
+				dbName = name
+			}
+			output.Info("Backing up database %s before destroy...", dbName)
+			result := backupAppDB(name, m)
+			if result != nil {
+				output.Info("Backup saved: %s", result.File)
+			} else {
+				output.Warn("Database backup failed — proceeding with destroy")
+			}
+		}
+
 		// Drop database and user if requested
 		dbDropped := false
 		if destroyDropDB && m.DB != "" && m.DB != "none" {

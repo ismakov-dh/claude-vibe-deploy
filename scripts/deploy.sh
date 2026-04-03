@@ -205,7 +205,15 @@ sudo su -s /bin/bash "$VD_USER" -c "sg docker -c 'VD_HOME=$VD_HOME /usr/local/bi
 }
 
 # ---------------------------------------------------------------
-# 7. Summary
+# 7. Daily database backup cron
+# ---------------------------------------------------------------
+echo "[vd] Setting up daily database backup cron..."
+CRON_CMD="0 3 * * * /usr/local/bin/vd db-backup-all 2>&1 | logger -t vd-db-backup"
+(sudo crontab -u "$VD_USER" -l 2>/dev/null | grep -v 'vd db-backup-all'; echo "$CRON_CMD") | sudo crontab -u "$VD_USER" -
+echo "[vd] Daily backup cron installed (3:00 AM)"
+
+# ---------------------------------------------------------------
+# 8. Summary
 # ---------------------------------------------------------------
 echo ""
 echo "==========================================="

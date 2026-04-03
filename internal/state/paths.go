@@ -21,6 +21,8 @@ func AppComposePath(name string) string  { return filepath.Join(AppDir(name), "d
 func AppEnvPath(name string) string      { return filepath.Join(AppSrcDir(name), ".env") }
 func BackupsDir() string                 { return filepath.Join(VDHome(), "backups") }
 func AppBackupsDir(name string) string   { return filepath.Join(BackupsDir(), name) }
+func DBBackupsDir() string               { return filepath.Join(VDHome(), "db-backups") }
+func AppDBBackupsDir(name string) string { return filepath.Join(DBBackupsDir(), name) }
 func LogsDir() string                    { return filepath.Join(VDHome(), "logs") }
 func AppLogsDir(name string) string      { return filepath.Join(LogsDir(), name) }
 func ConfigPath() string                 { return filepath.Join(VDHome(), "config.json") }

@@ -103,8 +103,10 @@ Priority: `.vd-type` > `Dockerfile` > `manage.py` > `requirements.txt` > `packag
 **Step 1: Push app files to server**
 
 ```bash
-tar cf - ./my-app | ssh vd-server "vd push my-app --json"
+tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./my-app | ssh vd-server "vd push my-app --json"
 ```
+
+**Always exclude build artifacts** — `node_modules`, `.git`, `__pycache__`, `.venv`, `venv`, `.next`. These are rebuilt inside Docker.
 
 **Step 2: Deploy**
 
@@ -145,10 +147,10 @@ vd rollback my-app --json                    # revert to previous version
 Receive app files via tar stream on stdin. Use before deploy.
 
 ```bash
-tar cf - ./my-app | ssh vd-server "vd push myapp --json"
+tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./my-app | ssh vd-server "vd push myapp --json"
 ```
 
-Files stored at `/opt/vibe-deploy/push/<app-name>`.
+Files stored at `/opt/vibe-deploy/push/<app-name>`. Always exclude build artifacts — they are rebuilt inside Docker.
 
 #### `vd deploy <source-dir>`
 

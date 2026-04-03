@@ -8,6 +8,7 @@ import (
 	"sort"
 	"time"
 
+	"github.com/vibe-deploy/vd/internal/db"
 	"github.com/vibe-deploy/vd/internal/docker"
 	"github.com/vibe-deploy/vd/internal/state"
 )
@@ -16,11 +17,12 @@ const maxBackups = 5
 
 // Metadata describes a single backup.
 type Metadata struct {
-	App       string          `json:"app"`
-	Timestamp string          `json:"timestamp"`
-	ImageID   string          `json:"image_id"`
-	Created   string          `json:"created"`
-	Manifest  *state.Manifest `json:"manifest"`
+	App          string          `json:"app"`
+	Timestamp    string          `json:"timestamp"`
+	ImageID      string          `json:"image_id"`
+	Created      string          `json:"created"`
+	Manifest     *state.Manifest `json:"manifest"`
+	DBBackupFile string          `json:"db_backup_file,omitempty"`
 }
 
 // Create backs up the current deployment before a new deploy.
@@ -48,14 +50,29 @@ func Create(appName string) error {
 	// Copy env file if exists
 	copyFile(state.AppEnvPath(appName), filepath.Join(backupDir, ".env"))
 
-	// Copy manifest
+	// Backup database if vd-managed
 	manifest, _ := state.LoadManifest(appName)
+	var dbBackupFile string
+	if manifest != nil && manifest.DB == "postgres" {
+		dbName := manifest.DBName
+		if dbName == "" {
+			dbName = appName
+		}
+		result, err := db.DumpDB("vd-postgres", "vd_admin", dbName, backupDir)
+		if err == nil {
+			dbBackupFile = result.File
+		}
+		// non-fatal — continue even if DB backup fails
+	}
+
+	// Copy manifest
 	meta := Metadata{
-		App:       appName,
-		Timestamp: ts,
-		ImageID:   imageID,
-		Created:   time.Now().UTC().Format(time.RFC3339),
-		Manifest:  manifest,
+		App:          appName,
+		Timestamp:    ts,
+		ImageID:      imageID,
+		Created:      time.Now().UTC().Format(time.RFC3339),
+		Manifest:     manifest,
+		DBBackupFile: dbBackupFile,
 	}
 	metaJSON, _ := json.MarshalIndent(meta, "", "  ")
 	os.WriteFile(filepath.Join(backupDir, "metadata.json"), metaJSON, 0644)
