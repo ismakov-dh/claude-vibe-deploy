@@ -50,10 +50,10 @@ If this returns `"ok": true`, the server is ready. If it fails with a connection
 
 ### 1. Push app files to server
 
-Use `vd push` to send files via tar stream through SSH — no scp needed:
+Use `vd push` to send files via tar stream through SSH — no scp needed. **Always exclude build artifacts:**
 
 ```bash
-tar cf - ./my-app | $SSH_CMD "vd push <app-name> --json"
+tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./my-app | $SSH_CMD "vd push <app-name> --json"
 ```
 
 Files are stored at `/opt/vibe-deploy/push/<app-name>` on the server.
@@ -103,8 +103,8 @@ KEY=~/.ssh/vd_agent_key
 SERVER=141.105.67.159
 SSH_CMD="ssh -i $KEY -o StrictHostKeyChecking=accept-new vd-user@$SERVER"
 
-# Push app files to server
-tar cf - ./my-app | $SSH_CMD "vd push my-app --json"
+# Push app files to server (always exclude build artifacts)
+tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./my-app | $SSH_CMD "vd push my-app --json"
 
 # Deploy with database
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/my-app --name my-app --db postgres --json"
@@ -122,9 +122,9 @@ $SSH_CMD "vd destroy my-app --yes --drop-db --json"
 ## Command Reference
 
 ### `vd push <app-name>`
-Receive app files via tar stream on stdin. Use before deploy.
+Receive app files via tar stream on stdin. Use before deploy. **Always exclude build artifacts:**
 ```bash
-tar cf - ./my-app | $SSH_CMD "vd push <app-name> --json"
+tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./my-app | $SSH_CMD "vd push <app-name> --json"
 ```
 Files stored at `/opt/vibe-deploy/push/<app-name>`.
 
@@ -149,11 +149,11 @@ All deployed apps.
 ### `vd logs-snapshot <app-name> [--lines N]`
 One-shot log dump. Default 100 lines. **Always use this, not `vd logs`** (which streams forever).
 
-### `vd rollback <app-name>`
-Revert to previous deployment. Last 5 backups kept.
+### `vd rollback <app-name> [--restore-db]`
+Revert to previous deployment. Last 5 backups kept. If the app has a vd-managed database, **ask the user if they want to also restore the database** — if yes, add `--restore-db`. This restores the database to the state at the time of the previous deploy. Without this flag, only the container is rolled back.
 
 ### `vd destroy <app-name> --yes [--drop-db]`
-Stop and remove app. `--drop-db` also drops the database and user.
+Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping.
 
 ### `vd cron-set <app-name> --schedule "..." --command "..."`
 Add a scheduled task. Runs inside the container.
@@ -163,6 +163,15 @@ Remove all cron jobs for an app.
 
 ### `vd cron-ls [--app <name>]`
 List cron jobs.
+
+### `vd db-backup <app-name>`
+Backup an app's database. Only works for apps with `--db postgres`. Keeps last 7 backups per app.
+
+### `vd db-backups <app-name>`
+List available database backups for an app.
+
+### `vd db-restore <app-name> [--file <backup-path>]`
+Restore an app's database from backup. Restores the latest backup by default. Only works for apps with `--db postgres`. Databases are also backed up daily (automatic) and before `vd destroy --drop-db`.
 
 ## JSON Output
 
@@ -189,6 +198,8 @@ Always check `ok` field. On error, read `hint` for the fix.
 | `DB_PROVISION_FAILED` | Check postgres container is running |
 | `NOT_FOUND` | Check name with `vd list` |
 | `NO_BACKUPS` | Only exists after first redeploy |
+| `NO_DB` | App has no vd-managed database |
+| `RESTORE_FAILED` | Check backup file integrity |
 
 ## App Naming Rules
 
