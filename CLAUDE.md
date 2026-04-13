@@ -316,3 +316,34 @@ scripts/
 - Docker operations via CLI shell-out, not SDK
 - State: JSON files at `/opt/vibe-deploy/`
 - TLS: host nginx wildcard cert, not Traefik
+
+### Keeping Skills in Sync
+
+When modifying vibe-deploy capabilities (new features, changed constraints, new app types, new commands), you MUST also update the corresponding skills so that agents building apps are aware of the changes.
+
+Skills are in `plugin/skills/`:
+
+- **`plugin/skills/vibe/SKILL.md`** — Platform constraints + project audit. Update when capabilities, constraints, app types, ports, or audit checks change.
+- **`plugin/skills/deploy/SKILL.md`** — Deployment commands reference. Update when `vd` commands, flags, deploy workflow, or error codes change.
+
+| Change in vibe-deploy | Update in |
+|----------------------|-----------|
+| New `vd` command | `deploy/SKILL.md` + `CLAUDE.md` + `README.md` |
+| New `--flag` on existing command | `deploy/SKILL.md` + `CLAUDE.md` |
+| New app type supported | `vibe/SKILL.md` + `CLAUDE.md` |
+| New infrastructure (Redis, S3, etc.) | `vibe/SKILL.md` + `CLAUDE.md` |
+| Changed default port | `vibe/SKILL.md` + `CLAUDE.md` |
+| New error code | `deploy/SKILL.md` + `CLAUDE.md` |
+| Changed deploy flow | Both skills + `CLAUDE.md` + `README.md` |
+
+If you change code and don't update the skills, agents will build apps incorrectly or deploy with wrong commands.
+
+### Plugin Versioning
+
+The plugin version is in `plugin/.claude-plugin/plugin.json`. Use semver:
+
+- **PATCH** (1.0.0 → 1.0.1): bug fixes in skills, wording tweaks, typo corrections
+- **MINOR** (1.0.0 → 1.1.0): new capabilities, new commands, new flags, new app types, new error codes
+- **MAJOR** (1.0.0 → 2.0.0): breaking changes to deploy workflow, removed capabilities, changed skill interface
+
+Bump the version in the same commit that updates the skills.
