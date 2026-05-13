@@ -78,11 +78,11 @@ SSH_DIR="/home/$VD_USER/.ssh"
 KEY_PATH="$SSH_DIR/vd_agent_key"
 sudo mkdir -p "$SSH_DIR"
 
-if [[ ! -f "$KEY_PATH" ]] || ! sudo test -f "$KEY_PATH"; then
+if sudo test -f "$KEY_PATH"; then
+    echo "[vd] SSH keypair already exists"
+else
     sudo ssh-keygen -t ed25519 -f "$KEY_PATH" -N "" -C "vd-agent-key"
     echo "[vd] Generated SSH keypair"
-else
-    echo "[vd] SSH keypair already exists"
 fi
 
 AUTH_KEYS="$SSH_DIR/authorized_keys"
