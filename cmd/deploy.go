@@ -92,6 +92,12 @@ func runDeploy(srcPath string) {
 	}
 	output.Info("Detected app type: %s", appType)
 
+	if appType != app.Custom {
+		if _, err := os.Stat(filepath.Join(srcPath, "Dockerfile")); err == nil {
+			output.Warn("Source contains a Dockerfile but it will be ignored. To use a custom Dockerfile, create a .vd-type file containing 'custom'.")
+		}
+	}
+
 	// Set default port from app type if not specified
 	if deployPort == 0 {
 		deployPort = appType.DefaultPort()
