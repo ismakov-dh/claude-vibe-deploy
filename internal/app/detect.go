@@ -17,30 +17,27 @@ func Detect(srcDir string) (AppType, error) {
 		}
 	}
 
-	// 2. Custom Dockerfile
-	if fileExists(filepath.Join(srcDir, "Dockerfile")) {
-		return Custom, nil
-	}
-
-	// 3. Python detection
+	// 2. Python detection
 	if hasPythonProject(srcDir) {
 		return detectPython(srcDir), nil
 	}
 
-	// 4. Node.js detection
+	// 3. Node.js detection
 	if fileExists(filepath.Join(srcDir, "package.json")) {
 		return detectNode(srcDir), nil
 	}
 
-	// 5. Go detection
+	// 4. Go detection
 	if fileExists(filepath.Join(srcDir, "go.mod")) {
 		return GoApp, nil
 	}
 
-	// 6. Plain static site
+	// 5. Plain static site
 	if fileExists(filepath.Join(srcDir, "index.html")) {
 		return StaticPlain, nil
 	}
+
+	// Custom Dockerfile is only honored via explicit .vd-type: custom.
 
 	return "", nil
 }

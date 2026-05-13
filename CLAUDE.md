@@ -96,7 +96,9 @@ Auto-detected from files. Override with a `.vd-type` file containing the type na
 | `go` | go.mod | 8080 | multi-stage static build |
 | `custom` | Dockerfile present | (your choice) | your Dockerfile |
 
-Priority: `.vd-type` > `Dockerfile` > `manage.py` > `requirements.txt` > `package.json` > `index.html` > `go.mod`
+Priority: `.vd-type` > `manage.py` > `requirements.txt` > `package.json` > `index.html` > `go.mod`
+
+A user-provided `Dockerfile` is **only** used when `.vd-type` contains `custom`. Otherwise it is ignored (with a warning) and the matching template is used. This keeps vibecoded apps on the platform's known-good base images and healthcheck setup.
 
 ### Deploy Workflow
 

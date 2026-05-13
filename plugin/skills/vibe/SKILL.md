@@ -126,7 +126,7 @@ Deploy with `--db prod-ro --db-name <existing-database>`.
 2. Read port from `PORT` env var or use framework default
 3. Listen on `0.0.0.0`, not `127.0.0.1`
 4. Keep dependencies in `package.json` / `requirements.txt` / `go.mod`
-5. Do NOT create a Dockerfile unless auto-detection doesn't work
+5. Do NOT create a Dockerfile. vibe-deploy ignores any `Dockerfile` in source unless you also create a `.vd-type` file containing `custom`. The built-in templates handle all standard frameworks
 6. Store all persistent data in PostgreSQL
 7. Use `.vd-type` file to override auto-detection if needed (contains type name, e.g. `node-server`)
 8. **Always use database migrations** — never raw `CREATE TABLE IF NOT EXISTS` (see below)
@@ -185,9 +185,11 @@ CMD ["uvicorn", "app:app", "--host", "0.0.0.0", "--port", "8000"]
 | `python-django` | manage.py | 8000 |
 | `python-generic` | requirements.txt only | 8000 |
 | `go` | go.mod | 8080 |
-| `custom` | Dockerfile present | your choice |
+| `custom` | `.vd-type` contains `custom` (and a `Dockerfile` exists) | your choice |
 
-Detection priority: `.vd-type` > `Dockerfile` > `manage.py` > `requirements.txt` > `package.json` > `index.html` > `go.mod`
+Detection priority: `.vd-type` > `manage.py` > `requirements.txt` > `package.json` > `index.html` > `go.mod`
+
+**Important:** a `Dockerfile` in source is *not* a detection signal. It is only used when `.vd-type: custom` is also present. Otherwise the matching template is used and deploy emits a warning. This keeps apps on the platform's tested base images.
 
 ## When You're Done Building
 
