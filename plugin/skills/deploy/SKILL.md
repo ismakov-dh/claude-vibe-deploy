@@ -139,6 +139,9 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--db-access` | `rw` | `rw` or `ro` |
 | `--db-name` | app name | Database name (required for `prod-ro`) |
 | `--env-file` | none | Path to .env file on server |
+| `--allow-external` | false | Silence warnings about unsupported external services |
+
+**Policy scan on every deploy:** vd scans source for hardcoded secrets and unsupported external services. Hardcoded credentials (API keys, private keys, DB URLs with passwords) **block** the deploy (`POLICY_VIOLATION`) — move them to a `.env` and use `--env-file` (`.env` is never scanned). Unsupported services (Supabase, Firebase, MongoDB, Redis, S3) appear as warnings in the response `warnings` field; pass `--allow-external` only if deliberate.
 
 ### `vd status <app-name>`
 Returns state, health, URL, deploy time.
@@ -200,6 +203,7 @@ Always check `ok` field. On error, read `hint` for the fix.
 | `NO_BACKUPS` | Only exists after first redeploy |
 | `NO_DB` | App has no vd-managed database |
 | `RESTORE_FAILED` | Check backup file integrity |
+| `POLICY_VIOLATION` | Hardcoded secret in source — move it to `.env`, use `--env-file` |
 
 ## App Naming Rules
 

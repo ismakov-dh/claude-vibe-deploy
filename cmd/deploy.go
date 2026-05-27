@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -14,6 +15,7 @@ import (
 	"github.com/vibe-deploy/vd/internal/db"
 	"github.com/vibe-deploy/vd/internal/docker"
 	"github.com/vibe-deploy/vd/internal/output"
+	"github.com/vibe-deploy/vd/internal/policy"
 	"github.com/vibe-deploy/vd/internal/state"
 )
 
@@ -25,6 +27,7 @@ var (
 	deployDBAccess string
 	deployDBName  string
 	deployEnvFile string
+	deployAllowExternal bool
 )
 
 func init() {
@@ -35,6 +38,7 @@ func init() {
 	deployCmd.Flags().StringVar(&deployDBAccess, "db-access", "rw", "database access: rw or ro")
 	deployCmd.Flags().StringVar(&deployDBName, "db-name", "", "database name (default: app name)")
 	deployCmd.Flags().StringVar(&deployEnvFile, "env-file", "", "path to .env file")
+	deployCmd.Flags().BoolVar(&deployAllowExternal, "allow-external", false, "silence warnings about unsupported external services (Supabase, Firebase, etc.)")
 	rootCmd.AddCommand(deployCmd)
 }
 
@@ -95,6 +99,33 @@ func runDeploy(srcPath string) {
 	if appType != app.Custom {
 		if _, err := os.Stat(filepath.Join(srcPath, "Dockerfile")); err == nil {
 			output.Warn("Source contains a Dockerfile but it will be ignored. To use a custom Dockerfile, create a .vd-type file containing 'custom'.")
+		}
+	}
+
+	// Policy scan: block hardcoded secrets, warn on unsupported external services.
+	var policyWarnings []string
+	if scan, _ := policy.Scan(srcPath); scan != nil {
+		if len(scan.Secrets) > 0 {
+			var lines []string
+			for _, f := range scan.Secrets {
+				lines = append(lines, fmt.Sprintf("%s:%d %s (%s)", f.File, f.Line, f.Kind, f.Excerpt))
+			}
+			e := output.NewError("POLICY_VIOLATION",
+				"Hardcoded secret(s) detected in source",
+				"Remove the secret from source. Put secrets in a .env file and pass it with --env-file — never hardcode credentials.")
+			e.Details = strings.Join(lines, "\n")
+			output.Fail("deploy", e)
+		}
+		if len(scan.External) > 0 && !deployAllowExternal {
+			for _, f := range scan.External {
+				loc := f.File
+				if f.Line > 0 {
+					loc = fmt.Sprintf("%s:%d", f.File, f.Line)
+				}
+				w := fmt.Sprintf("%s (%s) — the platform provides PostgreSQL (--db postgres) and read-only prod access (--db prod-ro). If intentional, redeploy with --allow-external.", loc, f.Kind)
+				policyWarnings = append(policyWarnings, w)
+				output.Warn("%s", w)
+			}
 		}
 	}
 
@@ -294,7 +325,7 @@ func runDeploy(srcPath string) {
 	url := "https://" + domain
 	output.Info("Deployed %s → %s", deployName, url)
 
-	output.Success("deploy", map[string]any{
+	data := map[string]any{
 		"name":        deployName,
 		"app_type":    string(appType),
 		"url":         url,
@@ -304,7 +335,12 @@ func runDeploy(srcPath string) {
 		"routing":     deployRouting,
 		"db":          deployDB,
 		"deployed_at": time.Now().UTC().Format(time.RFC3339),
-	})
+	}
+	if len(policyWarnings) > 0 {
+		output.SuccessWithWarnings("deploy", data, policyWarnings)
+	} else {
+		output.Success("deploy", data)
+	}
 }
 
 func buildDomain(name, baseDomain, routing string) string {

@@ -63,6 +63,8 @@ For each issue found, explain what needs to change and why. Then propose a plan 
 
 Do NOT design apps that require any of these:
 
+- **No Supabase / Firebase / external managed databases** — the platform gives you a real PostgreSQL with `--db postgres`. Do NOT add `@supabase/supabase-js`, `firebase`, `mongodb`, `@planetscale/database`, or similar. `vd deploy` warns when it detects these. Use `pg` / `psycopg` / `database/sql` against `DATABASE_URL` instead
+- **No direct prod database access** — do NOT connect a Postgres MCP, a raw connection string, or any client to the production database from your dev environment. The ONLY supported way to read prod data is to build a dashboard app and deploy it with `--db prod-ro --db-name <db>`; vd injects a read-only `DATABASE_URL`
 - **No Redis / Memcached** — use PostgreSQL or in-memory caching
 - **No S3 / file storage** — store files as bytea in PostgreSQL or use external APIs
 - **No background workers** (Celery, Bull, Sidekiq) — use cron for periodic tasks, or process inline, or use PostgreSQL as a job queue
@@ -130,7 +132,18 @@ Deploy with `--db prod-ro --db-name <existing-database>`.
 6. Store all persistent data in PostgreSQL
 7. Use `.vd-type` file to override auto-detection if needed (contains type name, e.g. `node-server`)
 8. **Always use database migrations** — never raw `CREATE TABLE IF NOT EXISTS` (see below)
-9. **NEVER commit secrets or .env files to git.** No API keys, passwords, tokens, or DATABASE_URL values in source code or tracked files. Add `.env` to `.gitignore`. Pass secrets via `--env-file` on deploy
+9. **NEVER commit secrets or .env files to git.** No API keys, passwords, tokens, or DATABASE_URL values in source code or tracked files. Pass secrets via `--env-file` on deploy. `vd deploy` **blocks** when it finds hardcoded credentials in source (`POLICY_VIOLATION`) — keep them in `.env` only
+10. **Always create a `.gitignore` first**, before writing any code, containing at least:
+    ```gitignore
+    .env
+    .env.*
+    *.pem
+    *.key
+    node_modules/
+    __pycache__/
+    .venv/
+    ```
+    Many vibecoders accidentally push secrets to public GitHub repos. A correct `.gitignore` is the first line of defense. See `docs/SECURITY-FOR-VIBECODERS.md` for the full checklist
 
 ## Database Migrations
 

@@ -167,6 +167,9 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--db-access` | `rw` | `rw` or `ro` (prod-ro always forces `ro`) |
 | `--db-name` | app name | Database name (required for `prod-ro`) |
 | `--env-file` | none | Path to .env file to inject (merged with auto-generated DATABASE_URL) |
+| `--allow-external` | false | Silence warnings about unsupported external services (Supabase, Firebase, etc.) |
+
+**Policy scan**: on every deploy, vd scans the source for hardcoded secrets and unsupported external services. Hardcoded credentials (AWS/OpenAI/Anthropic/GitHub/Google/Slack/Stripe keys, private keys, DB URLs with passwords) **block** the deploy with `POLICY_VIOLATION`. `.env` files are never scanned. Unsupported services (Supabase, Firebase, MongoDB, Redis, S3, JWTs) produce warnings in the `warnings` field of the JSON response; `--allow-external` silences them.
 
 #### `vd status <app-name>`
 
@@ -242,7 +245,7 @@ Error:
 {"ok": false, "command": "deploy", "error": {"code": "BUILD_FAILED", "message": "Docker build failed", "hint": "Check Dockerfile and source code", "details": "..."}}
 ```
 
-Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`
+Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`
 
 ### Troubleshooting
 
