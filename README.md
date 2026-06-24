@@ -13,9 +13,10 @@ A platform for non-programmers who build apps with AI (vibecoding) and need to d
 /plugins install vibe-deploy@xaid-plugins
 ```
 
-This adds two skills:
+This adds three skills:
 - **`/vibe`** — Load platform constraints before building an app. If there's existing code, audits it for compatibility and proposes fixes. Claude will only use supported infrastructure.
 - **`/deploy`** — Push files and deploy the app to the server via SSH. Shows human-readable results (URL, health, DB status).
+- **`/auth`** — Add "sign in with the platform account" to an app. Verifies an audience-bound JWT from the platform auth service; the app keeps its own data keyed by user id (`sub`). Load it when the app needs login / accounts / per-user data.
 
 ## What you get
 
@@ -26,6 +27,7 @@ This adds two skills:
 | Prod DB read-only | Dashboards can query existing production data (replica supported) |
 | HTTPS | Automatic via wildcard cert |
 | Cron jobs | Scheduled tasks inside containers |
+| Auth / login | "Sign in with platform account" via audience-bound JWTs — load `/auth` skill |
 | Rollback | Auto-rollback on failed deploy, manual rollback to last 5 versions |
 | File upload | `vd push` — sends files via tar stream, no scp needed |
 
