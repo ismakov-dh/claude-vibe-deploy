@@ -237,7 +237,17 @@ async def userinfo(sub: str, token: str, ttl: int = 300) -> dict | None:
 
 ## 8. Roles (optional) — gate access if the admin gave you one
 
-If the admin created an access role for your app (e.g. `<name>-access`), require it:
+The `roles` claim on the token lists names the platform admin attached to the user. **You don't choose the names** — ask the admin in the §1 registration step which roles exist for your app, then check for them. Two common naming conventions:
+
+**Per-app roles** — scoped to your app by `<name>`, created by the admin when registering or on request:
+- `<name>-access` — basic access gate
+- `<name>-admin`  — app-internal admin
+- `<name>-viewer` — read-only
+
+**Cross-app roles** — platform-wide, not tied to one app:
+- `admin`, `staff`, etc.
+
+Whichever names you're given, check them like this:
 
 ```python
 from fastapi import Depends
@@ -247,9 +257,11 @@ def require_role(role: str):
             raise HTTPException(403, "you don't have access to this app")
         return user
     return dep
+
+# usage: @app.get("/admin", dependencies=[Depends(require_role("auth-demo-admin"))])
 ```
 
-If you don't need role gating, "a valid token for my audience" (§5) is enough to mean "a signed-in platform user." App-internal permission levels (admin vs viewer) you model yourself, keyed by `sub` — the platform does not manage those.
+If you don't need role gating, "a valid token for my audience" (§5) is enough to mean "a signed-in platform user." More fine-grained, app-internal permissions (document ACLs, team scoping, per-resource ownership) you still model yourself, keyed by `sub` — the platform doesn't manage those.
 
 ---
 
