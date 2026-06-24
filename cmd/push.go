@@ -55,11 +55,26 @@ var pushCmd = &cobra.Command{
 			srcDir = destDir + "/" + dirs[0].Name()
 		}
 
-		// Move to the standard push location
+		// Move to the standard push location.
 		finalDir := state.PushDir(name)
-		os.MkdirAll(filepath.Dir(finalDir), 0755)
-		os.RemoveAll(finalDir)
-		os.Rename(srcDir, finalDir)
+		if err := os.MkdirAll(filepath.Dir(finalDir), 0755); err != nil {
+			os.RemoveAll(destDir)
+			output.Fail("push", output.NewError("PUSH_FAILED",
+				"Failed to create push directory: "+err.Error(),
+				"Ensure the vd-user owns "+filepath.Dir(finalDir)+" and that the SSH session runs as vd-user via the agent key."))
+		}
+		if err := os.RemoveAll(finalDir); err != nil {
+			os.RemoveAll(destDir)
+			output.Fail("push", output.NewError("PUSH_FAILED",
+				"Failed to clear previous push at "+finalDir+": "+err.Error(),
+				"The existing directory may be owned by a different user. SSH as vd-user via the agent key."))
+		}
+		if err := os.Rename(srcDir, finalDir); err != nil {
+			os.RemoveAll(destDir)
+			output.Fail("push", output.NewError("PUSH_FAILED",
+				"Failed to move extracted files to "+finalDir+": "+err.Error(),
+				"SSH as vd-user via the agent key — only vd-user can write to "+filepath.Dir(finalDir)+"."))
+		}
 		if srcDir != destDir {
 			os.RemoveAll(destDir)
 		}
