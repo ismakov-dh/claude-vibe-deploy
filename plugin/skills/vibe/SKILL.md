@@ -59,6 +59,11 @@ For each issue found, explain what needs to change and why. Then propose a plan 
 - **Path-based**: `apps.platform.REDACTED/myapp`
 - TLS/HTTPS is automatic (wildcard cert). All apps are HTTPS.
 
+### Sign in with the platform account (optional)
+- The app verifies an audience-bound JWT from the platform auth service. Single container serves UI + API; backend verifies the token.
+- If the user's idea needs **login / accounts / per-user data**, stop here and load the **`/auth`** skill — it has the exact contract (JWKS verify, `client_aud` check, `sub`-keyed migration, `--allow-external` on deploy) plus copy-paste Python/Node snippets.
+- Auth requires **subdomain routing** (the default) and one human step (the admin must register the app's origin and return the audience), so **do not** start writing login code without `/auth` loaded.
+
 ## What You CANNOT Use
 
 Do NOT design apps that require any of these:

@@ -36,6 +36,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Manual rollback** | `vd rollback` | Revert to any of the last 5 deployments. |
 | **Logs** | `vd logs-snapshot` | Get container logs for debugging. |
 | **File upload** | `vd push` | Send files via tar stream through SSH. No scp needed. |
+| **Platform login** | external integration | "Sign in with platform account" — app verifies an audience-bound JWT. Agents load the `/auth` skill for the exact contract. Subdomain routing required; deploy with `--allow-external` to silence the expected JWT scan warning. |
 
 ### What You DON'T Have
 
