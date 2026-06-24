@@ -7,7 +7,7 @@ description: Add "sign in with the platform account" to a vibe-deploy app. Use w
 
 **IMPORTANT: Always communicate with the user in their language. Detect the language they use and respond in the same language throughout the session.**
 
-You are adding "sign in with the platform account" to a vibe-deploy app. You never import the auth server's internals — the app **verifies a signed JWT** and keys its own data by the user id (`sub`). Follow this exactly: the user you're working with cannot debug auth, and the human-in-the-loop step in §1 must happen **before** you write any auth code, or every request returns 401.
+You are adding "sign in with the platform account" to a vibe-deploy app. You never import the auth server's internals — the app **verifies a signed JWT** and keys its own data by the user id (`sub`). Follow this exactly: the user you're working with cannot debug auth. There is **no registration step** — your audience is fixed by your app name (§1). The only human step is making sure the people who sign in have platform accounts (§1).
 
 This is one of vibe-deploy's normal patterns — load `/vibe` for platform constraints and `/deploy` for the deploy step. Auth is an **external integration**, not a new vd capability.
 
@@ -21,23 +21,23 @@ This is one of vibe-deploy's normal patterns — load `/vibe` for platform const
 
 ---
 
-## 1. The one human step — register the app
+## 1. Your audience is fixed by your app name — no registration step
 
-You can't do this yourself. The token only mints for a registered **origin**, and you can only verify tokens once you know the app's **audience**. Do this **before any code**.
+Your audience is derived from the app's origin, so there is nothing to register and no admin round-trip. Deployed at `https://<name>.apps.platform.REDACTED`, your token's `client_aud` is always **`vibe:<name>`**. Pick the name, use the matching audience.
 
-**1.1 — Pick the app name now and never change it.** Lowercase, starts with a letter, 2–63 chars, `a-z 0-9 -`. The deployed origin will be exactly `https://<name>.apps.platform.REDACTED`, and `vd deploy --name <name>` must use the **same** name. Origin mismatch → login broken.
+**Pick the app name now and keep it.** Lowercase, starts with a letter, 2–63 chars, `a-z 0-9 -`. You must later `vd deploy --name <name>` with this **same** name — the origin, and therefore the audience, is derived from it. Change the name and login breaks.
 
-**1.2 — Have the human send this exact message to the platform admin** (fill in `<name>`):
+So your audience is simply:
 
-> Please register a vibe-deploy app as a **public client** on the platform auth service:
-> - **origin:** `https://<name>.apps.platform.REDACTED`
-> - **app/audience name:** `<name>`
->
-> Please reply with the **audience** string I should check (`client_aud`), and confirm whether email verification is required. Also: which users should be able to sign in? They must already have platform accounts — please provision any who don't.
+```
+AUTH_AUDIENCE = vibe:<name>      # e.g. app "trip-notes" → "vibe:trip-notes"
+```
 
-**1.3 — Record the audience.** The reply will include an **audience** value (often just `<name>`). That becomes `AUTH_AUDIENCE` in `.env` (§2). Until you have it, **stop**. Do not guess.
+Put it in `.env` (§2). No need to ask anyone for it.
 
-> Why this matters: the auth service maps your origin to one audience and bars vibe apps from sensitive `reporting`/`prod` audiences. A token minted for your app carries `client_aud = <your audience>` and is useless against any other app — and cannot reach the medical/PHI backend. That isolation is the point; don't work around it.
+**The one human step that remains: accounts.** Public signup is disabled, so the people who will sign in must already have platform accounts. Have the user ask the platform admin to provision anyone who doesn't — and, if the app gates on a specific role (§8), to grant it. You can build and deploy without this; users just can't actually log in until their accounts exist.
+
+> Why this is safe: `vibe:<name>` is bound to your own origin — app `foo` can only ever mint `vibe:foo`, never another app's audience, and the `vibe:` namespace can never be a PHI (`reporting`/`prod`) audience. A token for your app is useless against any other app or the medical backend (separate keys + pool). That isolation is the point; don't work around it.
 
 ---
 
@@ -47,7 +47,7 @@ You can't do this yourself. The token only mints for a registered **origin**, an
 # .env  — pushed with the app, injected via `vd deploy --env-file`. NEVER commit to git.
 AUTH_BASE_URL=https://auth.platform.REDACTED           # prod auth host
 AUTH_ISSUER=https://auth.platform.REDACTED/auth         # exact `iss` in every token
-AUTH_AUDIENCE=<the audience the admin gave you>             # what you check `client_aud` against
+AUTH_AUDIENCE=vibe:<name>                                   # your app name, prefixed — what you check `client_aud` against
 ```
 
 - `AUTH_BASE_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` go in `.env` **only**. The deploy policy scan blocks hardcoded secrets — and these belong in env anyway.
@@ -65,7 +65,7 @@ Your app receives a **Bearer JWT** (RS256) on API calls:
 ```jsonc
 {
   "sub": "8cb2a552-…",            // stable user id — your link key
-  "client_aud": "<your audience>", // YOU MUST check this == AUTH_AUDIENCE
+  "client_aud": "vibe:<name>",     // YOU MUST check this == AUTH_AUDIENCE
   "roles": ["<app>-access"],       // app-access roles (may be empty)
   "email_verified": true,
   "flags": [],                     // advisory UI hints — NEVER use for authorization
@@ -92,7 +92,7 @@ Reject any `alg` other than `RS256` (never `none`, never `HS256`).
 
 ## 4. Browser — sign in and send the token
 
-The app and the auth host are different domains; cookies can't be shared. Use **bearer tokens**.
+Your app runs on a different origin than the auth host, and the auth session cookie is **host-only** (never sent to your app's subdomain) — so your app authenticates with **bearer tokens**, not cookies.
 
 **Strongly preferred: `supertokens-web-js` in header mode.** It stores the access token, runs the refresh-on-401 retry loop, and keeps the user signed in. Access tokens expire in ~5 minutes; **if you hand-roll this and skip refresh, the user is logged out every few minutes** — this is the #1 thing that breaks.
 
@@ -237,9 +237,9 @@ async def userinfo(sub: str, token: str, ttl: int = 300) -> dict | None:
 
 ## 8. Roles (optional) — gate access if the admin gave you one
 
-The `roles` claim on the token lists names the platform admin attached to the user. **You don't choose the names** — ask the admin in the §1 registration step which roles exist for your app, then check for them. Two common naming conventions:
+The `roles` claim on the token lists names the platform admin attached to the user. **You don't choose the names** — ask the admin which roles exist for your app (the account step in §1), then check for them. Two common naming conventions:
 
-**Per-app roles** — scoped to your app by `<name>`, created by the admin when registering or on request:
+**Per-app roles** — scoped to your app by `<name>`, created/granted by the admin on request:
 - `<name>-access` — basic access gate
 - `<name>-admin`  — app-internal admin
 - `<name>-viewer` — read-only
@@ -269,7 +269,7 @@ If you don't need role gating, "a valid token for my audience" (§5) is enough t
 
 Build the app inside the normal `/vibe` constraints, then deploy with `/deploy`. Auth-specific deploy rules:
 
-- **`--name` MUST equal the registered name from §1** (otherwise the live origin won't match).
+- **`--name` MUST equal the name from §1** — the live origin (and thus your `vibe:<name>` audience) is derived from it.
 - **Subdomain routing only** — do **not** pass `--routing path`.
 - Use **`--db postgres`** to get `DATABASE_URL` for your `sub`-keyed table.
 - Pass `.env` with **`--env-file`** (it holds `AUTH_*`). Never commit `.env`.
@@ -295,8 +295,9 @@ forwardauth / Traefik tricks are **not** available here — verify the JWT in yo
 
 ## 10. Pre-flight checklist
 
-- [ ] App **name** chosen; same name used for the registered origin **and** `vd deploy --name`.
-- [ ] Admin registered the origin and gave you the **audience** → it's in `.env` as `AUTH_AUDIENCE`.
+- [ ] App **name** chosen; the **same** name used for `vd deploy --name`.
+- [ ] `AUTH_AUDIENCE=vibe:<name>` in `.env` (derived from the name — no registration needed).
+- [ ] The users who'll sign in have platform accounts (ask the admin to provision any missing).
 - [ ] `.gitignore` exists and lists `.env`; `.env` is **not** committed.
 - [ ] Sign-**in** form only — no signup page.
 - [ ] Backend verifies signature + `iss` + `exp` **and** `client_aud == AUTH_AUDIENCE`.
@@ -312,8 +313,8 @@ forwardauth / Traefik tricks are **not** available here — verify the JWT in yo
 | Symptom | Cause / fix |
 |---|---|
 | Every request 401, token "looks fine" | Wrong `AUTH_BASE_URL` (so `iss` mismatch), or you didn't compare `client_aud`, or clock skew on `exp`. |
-| 401 "wrong audience" | The token's `client_aud` ≠ your `AUTH_AUDIENCE` — it's for a different app, or your origin isn't the one registered (did you deploy under a different `--name`?). |
-| Login fails with a CORS / origin error | You used `--routing path`, or deployed under a name that isn't the registered origin. Use subdomain routing and the registered `--name`. |
+| 401 "wrong audience" | `client_aud` ≠ your `AUTH_AUDIENCE`. Check it's exactly `vibe:<name>` and that you deployed under that same `--name` (the audience is derived from the origin). |
+| Login fails with a CORS / origin error | You used `--routing path`, or deployed under a `--name` whose origin doesn't match your `AUTH_AUDIENCE`. Use subdomain routing and keep `--name` == the `<name>` in `vibe:<name>`. |
 | 403 from `/userinfo` for a real user | Their **email isn't verified** — have the admin/user verify it first. |
 | Logged out every few minutes | No refresh loop — access tokens are ~5 min. Use supertokens-web-js (header mode). |
 | SPA: token is `undefined` | You read the JSON body — tokens are in the `st-access-token` **response header**. |
