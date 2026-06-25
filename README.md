@@ -43,7 +43,7 @@ No Redis, no S3, no background workers, no WebSockets, no file storage, no inter
 3. Describe what you want: *"build me a dashboard that shows sales data from our reporting_platform database"*
 4. Claude builds it within platform limits
 5. Type `/deploy` — Claude pushes files and deploys via SSH
-6. App is live at `https://<name>.apps.platform.REDACTED`
+6. App is live at the URL returned by `vd status <name>` (typically `https://<name>.<apps-domain>` where `<apps-domain>` is the platform's wildcard apps domain)
 
 ### Existing app
 1. Open your project in Claude Code

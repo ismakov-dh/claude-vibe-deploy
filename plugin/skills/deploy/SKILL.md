@@ -83,7 +83,7 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing
 $SSH_CMD "vd status <app-name> --json"
 ```
 
-The URL will be `https://<app-name>.apps.platform.REDACTED`.
+The JSON response's `url` field is the app's live origin (e.g. `https://<app-name>.<apps-domain>` — the actual `<apps-domain>` depends on the platform).
 
 ### 4. If something is wrong
 
@@ -180,7 +180,7 @@ Restore an app's database from backup. Restores the latest backup by default. On
 
 Success:
 ```json
-{"ok": true, "command": "deploy", "data": {"name": "my-app", "url": "https://my-app.apps.platform.REDACTED", ...}}
+{"ok": true, "command": "deploy", "data": {"name": "my-app", "url": "https://my-app.<apps-domain>", ...}}
 ```
 
 Error:

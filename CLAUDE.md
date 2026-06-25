@@ -24,8 +24,8 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | Capability | How to use | Details |
 |-----------|-----------|---------|
 | **HTTP app hosting** | `vd deploy` | Any app that listens on an HTTP port. Containers are isolated. |
-| **Subdomain routing** | `--routing subdomain` (default) | App at `<name>.apps.platform.REDACTED` |
-| **Path routing** | `--routing path` | App at `apps.platform.REDACTED/<name>` |
+| **Subdomain routing** | `--routing subdomain` (default) | App at `<name>.<apps-domain>` (platform's wildcard apps domain) |
+| **Path routing** | `--routing path` | App at `<apps-domain>/<name>` |
 | **TLS/HTTPS** | Automatic | Host nginx has wildcard cert. All apps are HTTPS. No config needed. |
 | **Own PostgreSQL database** | `--db postgres` | Auto-provisioned on deploy. `DATABASE_URL` injected into `.env`. Fresh DB per app. |
 | **Prod DB read-only access** | `--db prod-ro --db-name <db>` | Read-only (SELECT only) access to existing production databases for dashboards. |
@@ -238,7 +238,7 @@ All commands support `--json`. **Always use it in automated workflows.**
 
 Success:
 ```json
-{"ok": true, "command": "deploy", "data": {"name": "my-app", "url": "https://my-app.apps.platform.REDACTED", "status": "running", "health": "healthy"}}
+{"ok": true, "command": "deploy", "data": {"name": "my-app", "url": "https://my-app.<apps-domain>", "status": "running", "health": "healthy"}}
 ```
 
 Error:
@@ -255,7 +255,7 @@ Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, 
 | `DETECTION_FAILED` | Add a `.vd-type` file with the type name |
 | `BUILD_FAILED` | Check `vd logs-snapshot`. Usually missing dependency or bad import |
 | `UNHEALTHY` | App must listen on `0.0.0.0` (not `127.0.0.1`). Check port matches `--port` |
-| App not reachable | Check `vd status`. Verify DNS `*.apps.platform.REDACTED` resolves |
+| App not reachable | Check `vd status`. Verify DNS `*.<apps-domain>` resolves |
 | DB connection refused | Ensure `--db postgres` or `--db prod-ro` was passed to deploy |
 | Prod DB access denied | Use `--db prod-ro --db-name <existing-db-name>` |
 | Stale data after destroy | Use `--drop-db` to also drop the database |

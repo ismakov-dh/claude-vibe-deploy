@@ -16,14 +16,14 @@ This is one of vibe-deploy's normal patterns — load `/vibe` for platform const
 ## 0. Three hard rules — do not negotiate
 
 1. **NO signup screen.** Accounts are provisioned centrally by the platform admin. Public signup is disabled. Build a **sign-IN** form only. If the user asks for "register", explain that new users are added by the platform team (§1).
-2. **Subdomain routing only.** Use the `vd deploy` default. **Never** pass `--routing path` — login depends on the browser origin being `https://<name>.apps.platform.REDACTED`, and path routing breaks the CORS/origin match. Every login will fail.
+2. **Subdomain routing only.** Use the `vd deploy` default. **Never** pass `--routing path` — login depends on the browser origin being `https://<name>.<apps-domain>`, and path routing breaks the CORS/origin match. Every login will fail.
 3. **One container, two jobs.** Serve UI + API from the **same** app (Express + static files, FastAPI + SPA, or Next.js full-stack). The browser does login against the auth host; **your backend verifies the JWT**. vibe-deploy has no inter-app networking — it must be one container.
 
 ---
 
 ## 1. Your audience is fixed by your app name — no registration step
 
-Your audience is derived from the app's origin, so there is nothing to register and no admin round-trip. Deployed at `https://<name>.apps.platform.REDACTED`, your token's `client_aud` is always **`vibe:<name>`**. Pick the name, use the matching audience.
+Your audience is derived from the app's origin, so there is nothing to register and no admin round-trip. Deployed at `https://<name>.<apps-domain>` (the live URL is returned by `vd status <name> --json` in the `url` field), your token's `client_aud` is always **`vibe:<name>`**. Pick the name, use the matching audience.
 
 **Pick the app name now and keep it.** Lowercase, starts with a letter, 2–63 chars, `a-z 0-9 -`. You must later `vd deploy --name <name>` with this **same** name — the origin, and therefore the audience, is derived from it. Change the name and login breaks.
 
@@ -45,14 +45,14 @@ Put it in `.env` (§2). No need to ask anyone for it.
 
 ```bash
 # .env  — pushed with the app, injected via `vd deploy --env-file`. NEVER commit to git.
-AUTH_BASE_URL=https://auth.platform.REDACTED           # prod auth host
-AUTH_ISSUER=https://auth.platform.REDACTED/auth         # exact `iss` in every token
-AUTH_AUDIENCE=vibe:<name>                                   # your app name, prefixed — what you check `client_aud` against
+AUTH_BASE_URL=https://<auth-host>             # ask the platform operator — this is the auth server's public host
+AUTH_ISSUER=https://<auth-host>/auth          # exact `iss` in every token — same host as AUTH_BASE_URL, with /auth appended
+AUTH_AUDIENCE=vibe:<name>                     # your app name, prefixed — what you check `client_aud` against
 ```
 
+- **Ask the user (or the platform operator) for the auth host.** `AUTH_BASE_URL` and `AUTH_ISSUER` aren't hardcoded in this skill on purpose — they're platform-specific. Don't guess; ask. A test host may also be available — ask if you need one.
 - `AUTH_BASE_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` go in `.env` **only**. The deploy policy scan blocks hardcoded secrets — and these belong in env anyway.
 - The **JWKS URL** (`${AUTH_BASE_URL}/auth/jwt/jwks.json`) is public and safe to keep in source.
-- **Test host:** `https://auth.test.platform.REDACTED` (same paths). Use it while building if the admin points you there.
 - Also create `.env.example` (committed) with placeholder values so the human knows what to fill in.
 - Create `.gitignore` **first**, before any code, with at least: `.env`, `.env.*`, `*.pem`, `*.key`, `node_modules/`, `__pycache__/`, `.venv/`.
 
@@ -69,7 +69,7 @@ Your app receives a **Bearer JWT** (RS256) on API calls:
   "roles": ["<app>-access"],       // app-access roles (may be empty)
   "email_verified": true,
   "flags": [],                     // advisory UI hints — NEVER use for authorization
-  "iss": "https://auth.platform.REDACTED/auth",
+  "iss": "https://<auth-host>/auth",   // exactly matches your AUTH_ISSUER
   "iat": 1782133336,
   "exp": 1782133636                // short-lived (~5 min)
 }
@@ -286,7 +286,7 @@ ssh vd-server "vd deploy /opt/vibe-deploy/push/<name> --name <name> --db postgre
   --env-file /opt/vibe-deploy/push/<name>/.env --allow-external --json"
 
 # verify
-ssh vd-server "vd status <name> --json"   # → https://<name>.apps.platform.REDACTED
+ssh vd-server "vd status <name> --json"   # the `url` field in the JSON response is your app's live origin
 ```
 
 forwardauth / Traefik tricks are **not** available here — verify the JWT in your backend (§5). Reach the auth service only by its public `AUTH_BASE_URL`.

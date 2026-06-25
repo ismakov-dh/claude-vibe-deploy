@@ -99,7 +99,7 @@ test:
   stage: test
   script:
     # UI tests via existing agent skill against preview URL
-    - claude-code "/ui-test https://$PREVIEW_NAME.apps.platform.REDACTED
+    - claude-code "/ui-test https://$PREVIEW_NAME.$APPS_DOMAIN
         --creds $TEST_CREDS --context 'notion task $NOTION_PAGE_ID'"
 
 report:
@@ -131,7 +131,7 @@ report:
 ## Preview Environments
 
 - Name: `preview-{pipeline-id}` or `preview-{task-id}`
-- URL: `https://preview-{id}.apps.platform.REDACTED`
+- URL: `https://preview-{id}.<apps-domain>`
 - Each gets its own PostgreSQL database
 - Parallel previews don't conflict (separate containers, separate DBs)
 
@@ -145,7 +145,7 @@ Two mechanisms:
 
 ### Success report (written to Notion):
 ```
-Preview: https://preview-abc-123.apps.platform.REDACTED
+Preview: https://preview-abc-123.<apps-domain>
 Unit tests: 12 passed
 UI tests: 5 passed
 Assumptions made:

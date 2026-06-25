@@ -55,8 +55,8 @@ For each issue found, explain what needs to change and why. Then propose a plan 
 - Use for periodic tasks: cleanup, reports, data sync.
 
 ### Routing
-- **Subdomain**: `myapp.apps.platform.REDACTED` (default)
-- **Path-based**: `apps.platform.REDACTED/myapp`
+- **Subdomain** (default): `<name>.<apps-domain>` — the platform's wildcard apps domain. The actual host depends on the platform; the live URL is returned by `vd status <name> --json` in the `url` field after deploy. Ask the user for the apps domain if you need it before deploying.
+- **Path-based**: `<apps-domain>/<name>`
 - TLS/HTTPS is automatic (wildcard cert). All apps are HTTPS.
 
 ### Sign in with the platform account (optional)
