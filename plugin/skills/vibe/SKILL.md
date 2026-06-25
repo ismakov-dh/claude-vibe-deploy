@@ -62,7 +62,7 @@ For each issue found, explain what needs to change and why. Then propose a plan 
 ### Sign in with the platform account (optional)
 - The app verifies an audience-bound JWT from the platform auth service. Single container serves UI + API; backend verifies the token.
 - If the user's idea needs **login / accounts / per-user data**, stop here and load the **`/auth`** skill — it has the exact contract (JWKS verify, `client_aud` check, `sub`-keyed migration, `--allow-external` on deploy) plus copy-paste Python/Node snippets.
-- Auth requires **subdomain routing** (the default) and one human step (the admin must register the app's origin and return the audience), so **do not** start writing login code without `/auth` loaded.
+- Auth requires **subdomain routing** (the default). The audience is derived from the app's `--name` (`vibe:<name>`), so there's no registration step — the only human step is making sure the people who'll sign in already have platform accounts (the admin provisions them on request). **Do not** start writing login code without `/auth` loaded.
 
 ## What You CANNOT Use
 
