@@ -36,7 +36,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Manual rollback** | `vd rollback` | Revert to any of the last 5 deployments. |
 | **Logs** | `vd logs-snapshot` | Get container logs for debugging. |
 | **File upload** | `vd push` | Send files via tar stream through SSH. No scp needed. |
-| **Platform login** | external integration | "Sign in with platform account" — app verifies an audience-bound JWT. Agents load the `/auth` skill for the exact contract. Subdomain routing required; deploy with `--allow-external` to silence the expected JWT scan warning. |
+| **Platform login** | external integration | "Sign in with platform account" — app verifies an audience-bound JWT. Agents load the `/auth` skill for the exact contract. Subdomain routing required. |
 
 ### What You DON'T Have
 
@@ -170,7 +170,7 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--env-file` | none | Path to .env file to inject (merged with auto-generated DATABASE_URL) |
 | `--allow-external` | false | Silence warnings about unsupported external services (Supabase, Firebase, etc.) |
 
-**Policy scan**: on every deploy, vd scans the source for hardcoded secrets and unsupported external services. Hardcoded credentials (AWS/OpenAI/Anthropic/GitHub/Google/Slack/Stripe keys, private keys, DB URLs with passwords) **block** the deploy with `POLICY_VIOLATION`. `.env` files are never scanned. Unsupported services (Supabase, Firebase, MongoDB, Redis, S3, JWTs) produce warnings in the `warnings` field of the JSON response; `--allow-external` silences them.
+**Policy scan**: on every deploy, vd scans the source for hardcoded secrets and unsupported external services. Hardcoded credentials (AWS/OpenAI/Anthropic/GitHub/Google/Slack/Stripe keys, private keys, DB URLs with passwords) **block** the deploy with `POLICY_VIOLATION`. `.env` files are never scanned. Unsupported services (Supabase, Firebase, MongoDB, Redis, S3) produce warnings in the `warnings` field of the JSON response; `--allow-external` silences them. (A hardcoded JWT-shaped token in source also warns — it's there to catch pasted Supabase anon keys, not to flag the use of a JWT library.)
 
 #### `vd status <app-name>`
 
