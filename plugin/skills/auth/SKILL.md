@@ -273,17 +273,17 @@ Build the app inside the normal `/vibe` constraints, then deploy with `/deploy`.
 - **Subdomain routing only** — do **not** pass `--routing path`.
 - Use **`--db postgres`** to get `DATABASE_URL` for your `sub`-keyed table.
 - Pass `.env` with **`--env-file`** (it holds `AUTH_*`). Never commit `.env`.
-- The policy scan will emit a **warning about "JWTs"** — that's **expected** (you verify a JWT). Pass **`--allow-external`** to silence it.
-- If the scan **blocks** with `POLICY_VIOLATION`, you hardcoded a secret — move it to `.env` and re-deploy.
+- If the scan **blocks** with `POLICY_VIOLATION`, you hardcoded a secret — move it to `.env` and re-deploy. Using `jose`/`pyjwt`/`jsonwebtoken` is **not** flagged; you don't need `--allow-external` for a normal auth app.
+- If you also pull in something the platform doesn't support (e.g. Supabase, Firebase, an S3 SDK) and the scan warns about it, that's a real signal — fix it first; only pass `--allow-external` after you've read the warning and confirmed the dependency is genuinely needed.
 
 ```bash
 # push (exclude build artifacts)
 tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./<name> \
   | ssh vd-server "vd push <name> --json"
 
-# deploy: own DB, env file, allow the JWT warning, subdomain routing (default)
+# deploy: own DB, env file, subdomain routing (default)
 ssh vd-server "vd deploy /opt/vibe-deploy/push/<name> --name <name> --db postgres \
-  --env-file /opt/vibe-deploy/push/<name>/.env --allow-external --json"
+  --env-file /opt/vibe-deploy/push/<name>/.env --json"
 
 # verify
 ssh vd-server "vd status <name> --json"   # the `url` field in the JSON response is your app's live origin
@@ -304,7 +304,7 @@ forwardauth / Traefik tricks are **not** available here — verify the JWT in yo
 - [ ] Browser uses bearer tokens with a **refresh-on-401** loop (supertokens-web-js).
 - [ ] `sub`-keyed table created via a **reversible migration**, run on container start.
 - [ ] No email/name copied into your DB; read from `/userinfo`. No admin key in the app.
-- [ ] Deployed with `--db postgres --env-file … --allow-external`, **subdomain** routing.
+- [ ] Deployed with `--db postgres --env-file …`, **subdomain** routing.
 
 ---
 
@@ -319,7 +319,7 @@ forwardauth / Traefik tricks are **not** available here — verify the JWT in yo
 | Logged out every few minutes | No refresh loop — access tokens are ~5 min. Use supertokens-web-js (header mode). |
 | SPA: token is `undefined` | You read the JSON body — tokens are in the `st-access-token` **response header**. |
 | Intermittent 401 after running a while | You cached JWKS without refetch-on-unknown-`kid`. Use `PyJWKClient` / `createRemoteJWKSet` as shown. |
-| Deploy blocked `POLICY_VIOLATION` | A secret is hardcoded — move it to `.env`, deploy with `--env-file`. (The "JWTs" *warning* is fine; silence with `--allow-external`.) |
+| Deploy blocked `POLICY_VIOLATION` | A secret is hardcoded — move it to `.env`, deploy with `--env-file`. |
 
 ---
 
