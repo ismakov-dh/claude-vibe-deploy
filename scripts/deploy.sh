@@ -47,6 +47,9 @@ AWS_KEY="${4:-}"
 AWS_SECRET="${5:-}"
 VD_USER="vd-user"
 VD_HOME="/opt/vibe-deploy"
+CERTBOT="/opt/certbot/bin/certbot"
+CERTBOT_VERSION="5.7.0"
+AWS_CREDS="/etc/letsencrypt/aws/credentials.ini"
 
 # ---------------------------------------------------------------
 # 1. Install binary
@@ -105,22 +108,61 @@ sudo chmod 644 "${KEY_PATH}.pub"
 if [[ -n "$DOMAIN" && -n "$AWS_KEY" ]]; then
     echo "[vd] Setting up wildcard TLS for *.$DOMAIN..."
 
-    if ! dpkg -l python3-certbot-dns-route53 &>/dev/null 2>&1; then
+    # certbot in its own venv, per upstream's recommended install. Pinned so
+    # hosts provisioned months apart get the same certbot.
+    if ! sudo test -x "$CERTBOT"; then
         sudo apt-get update -qq
-        sudo apt-get install -y -qq python3-certbot-dns-route53
+        sudo apt-get install -y -qq python3-venv
+        sudo python3 -m venv /opt/certbot
+        sudo /opt/certbot/bin/pip install -q --upgrade pip
+        sudo /opt/certbot/bin/pip install -q \
+            "certbot==$CERTBOT_VERSION" "certbot-dns-route53==$CERTBOT_VERSION"
     fi
 
-    # Write AWS credentials for certbot
-    sudo mkdir -p /etc/letsencrypt/aws
+    # An apt or snap certbot would also own a renewal timer, which would keep
+    # failing in the background against the same lineage. Every call below uses
+    # the absolute venv path, so PATH order cannot decide which one runs.
+    if dpkg-query -W -f='${Status}' certbot 2>/dev/null | grep -q '^install ok installed'; then
+        echo "[vd] WARNING: an apt certbot is also installed. Remove it, or its"
+        echo "[vd]          timer will keep failing renewals: sudo apt-get remove"
+        echo "[vd]          -y certbot python3-certbot-dns-route53"
+    fi
+
+    # Write AWS credentials for certbot. certbot-dns-route53 has no
+    # --credentials flag — it only reads boto3's credential chain, which
+    # ignores this path unless AWS_SHARED_CREDENTIALS_FILE points at it.
+    sudo mkdir -p "$(dirname "$AWS_CREDS")"
     echo "[default]
 aws_access_key_id = $AWS_KEY
-aws_secret_access_key = $AWS_SECRET" | sudo tee /etc/letsencrypt/aws/credentials.ini > /dev/null
-    sudo chmod 600 /etc/letsencrypt/aws/credentials.ini
+aws_secret_access_key = $AWS_SECRET" | sudo tee "$AWS_CREDS" > /dev/null
+    sudo chmod 600 "$AWS_CREDS"
 
-    # Request wildcard cert
+    # Renewal. A venv certbot ships no systemd units, so this cron entry is the
+    # only thing that will ever renew the cert. The env line is what makes the
+    # credentials above reachable; without it renewal fails with "Unable to
+    # locate credentials" and the cert silently expires after 90 days.
+    sudo tee /etc/cron.d/vd-certbot > /dev/null <<CRONEOF
+# Managed by vd — do not edit manually
+AWS_SHARED_CREDENTIALS_FILE=$AWS_CREDS
+0 0,12 * * * root /opt/certbot/bin/python -c 'import random,time; time.sleep(random.random() * 3600)' && $CERTBOT renew -q
+CRONEOF
+    sudo chmod 644 /etc/cron.d/vd-certbot
+
+    # Reload nginx after renewal, or it keeps serving the old cert until
+    # something else restarts it. reload-or-restart because a plain reload
+    # fails outright if nginx happens to be stopped. The hooks directory
+    # applies to every lineage, including certs issued before this existed.
+    sudo mkdir -p /etc/letsencrypt/renewal-hooks/deploy
+    printf '#!/bin/sh\nsystemctl reload-or-restart nginx\n' \
+        | sudo tee /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh > /dev/null
+    sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
+
+    # Request wildcard cert. Deliberately via the credentials file rather than
+    # inline env vars, so issuance and renewal resolve credentials identically —
+    # issuance succeeding is then evidence renewal will too.
     if ! sudo test -d "/etc/letsencrypt/live/$DOMAIN"; then
-        sudo AWS_ACCESS_KEY_ID="$AWS_KEY" AWS_SECRET_ACCESS_KEY="$AWS_SECRET" \
-            certbot certonly \
+        sudo AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS" \
+            "$CERTBOT" certonly \
             --dns-route53 \
             -d "*.$DOMAIN" \
             -d "$DOMAIN" \
@@ -131,6 +173,17 @@ aws_secret_access_key = $AWS_SECRET" | sudo tee /etc/letsencrypt/aws/credentials
             || echo "[vd] WARNING: certbot failed. Set up cert manually."
     else
         echo "[vd] Wildcard cert already exists for $DOMAIN"
+    fi
+
+    # Prove renewal works now — otherwise the first symptom is a browser TLS
+    # warning in 90 days. Runs in the same environment cron will have: the
+    # credentials file and nothing else.
+    if sudo test -d "/etc/letsencrypt/live/$DOMAIN"; then
+        echo "[vd] Verifying renewal (staging dry-run, may take a minute)..."
+        sudo AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS" \
+            "$CERTBOT" renew --cert-name "$DOMAIN" --dry-run \
+            && echo "[vd] Renewal verified" \
+            || echo "[vd] WARNING: renewal dry-run failed — cert will expire in 90 days"
     fi
 elif [[ -n "$DOMAIN" ]]; then
     echo "[vd] Skipping TLS setup (no AWS credentials)"
@@ -247,6 +300,10 @@ if [[ -z "$PROD_DB" ]]; then
 fi
 echo ""
 REMOTE_SCRIPT
+
+# Nothing else parses the heredoc above, so a typo in it would only surface
+# part-way through provisioning a live server.
+bash -n "$REMOTE_SETUP" || { echo "ERROR: remote setup script has a syntax error"; exit 1; }
 
 scp "$REMOTE_SETUP" "$SERVER":/tmp/vd-setup.sh
 rm -f "$REMOTE_SETUP"
