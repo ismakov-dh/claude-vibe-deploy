@@ -137,16 +137,46 @@ aws_access_key_id = $AWS_KEY
 aws_secret_access_key = $AWS_SECRET" | sudo tee "$AWS_CREDS" > /dev/null
     sudo chmod 600 "$AWS_CREDS"
 
-    # Renewal. A venv certbot ships no systemd units, so this cron entry is the
-    # only thing that will ever renew the cert. The env line is what makes the
-    # credentials above reachable; without it renewal fails with "Unable to
-    # locate credentials" and the cert silently expires after 90 days.
-    sudo tee /etc/cron.d/vd-certbot > /dev/null <<CRONEOF
+    # Renewal. A venv certbot ships no systemd units of its own, so these are
+    # the only thing that will ever renew the cert. Chosen over a cron entry
+    # for introspection: systemctl list-timers and journalctl -u show whether
+    # renewal ran and whether it worked, which a cron job cannot.
+    sudo tee /etc/systemd/system/certbot-venv.service > /dev/null <<UNITEOF
 # Managed by vd — do not edit manually
-AWS_SHARED_CREDENTIALS_FILE=$AWS_CREDS
-0 0,12 * * * root /opt/certbot/bin/python -c 'import random,time; time.sleep(random.random() * 3600)' && $CERTBOT renew -q
-CRONEOF
-    sudo chmod 644 /etc/cron.d/vd-certbot
+[Unit]
+Description=Certbot renewal (pip venv at /opt/certbot)
+After=network-online.target
+
+[Service]
+Type=oneshot
+# certbot-dns-route53 has no --credentials flag; it uses boto3's chain, which
+# will not find this path without the variable. Its absence is why the wildcard
+# renewal silently failed from issuance onward.
+Environment=AWS_SHARED_CREDENTIALS_FILE=$AWS_CREDS
+ExecStart=$CERTBOT -q renew
+UNITEOF
+
+    sudo tee /etc/systemd/system/certbot-venv.timer > /dev/null <<UNITEOF
+# Managed by vd — do not edit manually
+[Unit]
+Description=Run certbot renewal twice daily
+
+[Timer]
+OnCalendar=*-*-* 00,12:00:00
+RandomizedDelaySec=3600
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+UNITEOF
+
+    sudo systemctl daemon-reload
+    sudo systemctl enable --now certbot-venv.timer \
+        || echo "[vd] WARNING: could not enable certbot-venv.timer"
+
+    # Earlier vd versions installed a cron entry for this. Renewal gets exactly
+    # one owner, or a future change has two places to remember.
+    sudo rm -f /etc/cron.d/vd-certbot
 
     # Reload nginx after renewal, or it keeps serving the old cert until
     # something else restarts it. reload-or-restart because a plain reload
@@ -179,6 +209,9 @@ CRONEOF
     # warning in 90 days. Runs in the same environment cron will have: the
     # credentials file and nothing else.
     if sudo test -d "/etc/letsencrypt/live/$DOMAIN"; then
+        systemctl is-enabled --quiet certbot-venv.timer \
+            || echo "[vd] WARNING: certbot-venv.timer is not enabled — nothing will renew the cert"
+
         echo "[vd] Verifying renewal (staging dry-run, may take a minute)..."
         sudo AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS" \
             "$CERTBOT" renew --cert-name "$DOMAIN" --dry-run \
