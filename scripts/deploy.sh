@@ -251,7 +251,9 @@ fi
 if [[ -n "$PROD_DB" ]]; then
     INIT_FLAGS="$INIT_FLAGS --prod-db $PROD_DB --prod-db-user $PROD_DB_USER"
 fi
-sudo su -s /bin/bash "$VD_USER" -c "sg docker -c 'VD_HOME=$VD_HOME /usr/local/bin/vd init $INIT_FLAGS'" || {
+# cd into VD_HOME first: docker compose stats its working directory, and this
+# script's cwd is the SSH login dir (/root, mode 700), which VD_USER cannot read.
+sudo su -s /bin/bash "$VD_USER" -c "cd $VD_HOME && sg docker -c 'VD_HOME=$VD_HOME /usr/local/bin/vd init $INIT_FLAGS'" || {
     echo "[vd] WARNING: vd init failed. Trying with docker directly..."
     sudo VD_HOME=$VD_HOME /usr/local/bin/vd init $INIT_FLAGS || true
     sudo chown -R "$VD_USER:$VD_USER" "$VD_HOME"
