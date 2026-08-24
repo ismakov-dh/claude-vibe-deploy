@@ -44,7 +44,7 @@ second service, `vd-<app>-mcp`:
 | Command | `--transport=sse --sse-port=8089 --sse-host=0.0.0.0 --access-mode=restricted` |
 | Networks | `vd-net` (Traefik reaches it), `vd-db` (it reaches vd-postgres) |
 | Env | `env_file: ./mcp.env` (mode 0600) |
-| Host | `mcp-<app>.<apps-domain>` |
+| Host | `<app>.mcp.<apps-domain>` |
 | Auth | Traefik basicauth, per-app generated password |
 
 The image is the patched fork from the dev-ops repo, not upstream. postgres-mcp
@@ -57,16 +57,55 @@ in the dev-ops repo neutralises the two guards; see that file for the full
 reasoning. The same host (nashville) already pulls this image for the production
 stack, so no new registry access is required.
 
+### The `mcp.` namespace, and why not `mcp.<app>.<domain>`
+
+MCP endpoints live one label below a dedicated `mcp.` label: `<app>.mcp.<domain>`,
+not `mcp.<app>.<domain>`. The dotted-prefix form cannot be served: a TLS wildcard
+matches exactly one label (RFC 6125), so `*.apps.platform.acuradai.com` does not
+cover `mcp.myapp.apps.platform.acuradai.com`, and multi-level wildcards
+(`*.*.`) are neither issued by Let's Encrypt nor valid in TLS. Serving that shape
+would mean issuing a certificate per app at deploy time — a Route53 challenge on
+every deploy and N certificates in rotation. Flipping the order keeps every host
+one label under a wildcard and costs one SAN.
+
+Three layers, and only one of them needs changing:
+
+- **TLS — changes.** Add `*.mcp.$DOMAIN` as a third SAN on the existing
+  certificate. `scripts/deploy.sh:195` currently requests `-d "*.$DOMAIN" -d
+  "$DOMAIN"` guarded by `if ! sudo test -d /etc/letsencrypt/live/$DOMAIN`. Drop
+  the guard and pass `--cert-name "$DOMAIN" --expand` with all three `-d` args:
+  certbot is then idempotent when the SAN set is unchanged ("not yet due for
+  renewal", exit 0) and self-upgrading on hosts whose certificate predates this
+  change. Keeping it as one certificate keeps it as one renewal.
+- **nginx — no change.** An nginx `server_name` wildcard, unlike TLS and DNS,
+  matches more than one label: `*.apps.platform.acuradai.com` already matches
+  `myapp.mcp.apps.platform.acuradai.com`.
+- **DNS — no change expected, but verify.** Under RFC 4592 the existing
+  `*.apps.platform.acuradai.com` record synthesizes an answer for
+  `myapp.mcp.apps.platform.acuradai.com` too, *provided the zone contains no
+  `mcp.apps.platform.acuradai.com` node*. That is a real dependency on an
+  absence: if someone later adds that record, every MCP endpoint stops resolving
+  at once. Verify with `dig` during implementation, and note in the runbook that
+  an explicit `*.mcp.apps.platform.acuradai.com` record in Route53 removes the
+  fragility. Creating it is a zone change outside vd's remit, so it is a
+  recommendation rather than a step.
+
+A pleasant consequence: no hostname-collision guard is needed. Under
+`mcp-<app>.<domain>` an app named `mcp-foo` would have claimed app `foo`'s MCP
+host; under `<app>.mcp.<domain>` app names and MCP hosts cannot overlap. It also
+makes the whole MCP surface addressable as a group — an IP allowlist over every
+MCP endpoint is later one nginx `server` block rather than a per-app edit.
+
 ### Traefik routing
 
 Two routers, deliberately:
 
 ```
-traefik.http.routers.vd-<app>-mcp.rule=Host(`mcp-<app>.<domain>`)
+traefik.http.routers.vd-<app>-mcp.rule=Host(`<app>.mcp.<domain>`)
 traefik.http.routers.vd-<app>-mcp.middlewares=vd-<app>-mcp-auth
 traefik.http.middlewares.vd-<app>-mcp-auth.basicauth.users=mcp:<hash>
 
-traefik.http.routers.vd-<app>-mcp-wellknown.rule=Host(`mcp-<app>.<domain>`) && PathPrefix(`/.well-known/`)
+traefik.http.routers.vd-<app>-mcp-wellknown.rule=Host(`<app>.mcp.<domain>`) && PathPrefix(`/.well-known/`)
 traefik.http.routers.vd-<app>-mcp-wellknown.priority=100
 ```
 
@@ -135,10 +174,10 @@ initialisation rather than mid-deploy.
 
 ```json
 "mcp": {
-  "url": "https://mcp-myapp.apps.platform.xaidos.com/sse",
+  "url": "https://myapp.mcp.apps.platform.acuradai.com/sse",
   "user": "mcp",
   "password": "<32 hex>",
-  "add": "claude mcp add --transport sse myapp-db https://mcp-myapp.apps.platform.xaidos.com/sse --header \"Authorization: Basic <base64 of mcp:pw>\""
+  "add": "claude mcp add --transport sse myapp-db https://myapp.mcp.apps.platform.acuradai.com/sse --header \"Authorization: Basic <base64 of mcp:pw>\""
 }
 ```
 
@@ -159,27 +198,25 @@ These are defects in code this feature depends on, not scope creep.
    `proxy_read_timeout 300s` and leaves `proxy_buffering` on. An MCP SSE stream
    dies after five idle minutes and is buffered rather than streamed. Fix:
    `proxy_buffering off` and `proxy_read_timeout 3600s` in the wildcard location.
-   Applied globally rather than in an `mcp-*` regex `server_name` block: nginx
-   wildcards cannot match a label prefix, so scoping it would need a regex
-   server_name for negligible benefit to small vibecoded apps.
+   Applied to the existing location rather than a dedicated `server` block for
+   `*.mcp.$DOMAIN`: unbuffered proxying and a long read timeout are harmless for
+   small vibecoded apps, and a second block would duplicate the whole
+   `proxy_set_header` list for no benefit today. When the MCP namespace needs its
+   own `server` block for an IP allowlist, these two directives move with it.
    **Operational note:** an already-provisioned host needs `deploy.sh` re-run (or
    the config edited by hand) before its MCP endpoints behave. Without it the
    symptom is an MCP that works and then mysteriously stops.
 
-2. **Hostname collision.** An app named `mcp-foo` would claim
-   `mcp-foo.<domain>`, which is app `foo`'s MCP endpoint. Name validation
-   (`cmd/deploy.go:73`) rejects the `mcp-` prefix with `INVALID_NAME`.
-
-3. **`copyFile` widens secret permissions.** `internal/backup/backup.go:186`
+2. **`copyFile` widens secret permissions.** `internal/backup/backup.go:186`
    writes every copy 0644, so backing up and restoring `src/.env` downgrades it
    from 0600. Preserve the source file's mode. Pre-existing, but this change adds
    a second 0600 secret next to it.
 
-4. **`mcp.env` is not backed up.** Add it to `backup.Create` and
+3. **`mcp.env` is not backed up.** Add it to `backup.Create` and
    `backup.Restore` alongside the compose file and `.env`, so a rolled-back
    compose and its env file stay a matched pair.
 
-5. **`--drop-db` leaves the read-only role behind.** `cmd/destroy.go:93` drops
+4. **`--drop-db` leaves the read-only role behind.** `cmd/destroy.go:93` drops
    only `vd_<app>`. Drop `vd_<app>_ro` too, so redeploying a destroyed app name
    does not inherit a stale role.
 
@@ -212,5 +249,5 @@ exec psql` and is not meaningfully unit-testable; it is exercised by deploying.
 | `docs/SECURITY-FOR-VIBECODERS.md:56` | same rewording |
 | `plugin/skills/deploy/SKILL.md` | the `mcp` response block and how to register it |
 | `CLAUDE.md` | capability table, JSON output format, `--drop-db` note |
-| `README.md` | capability mention |
+| `README.md` | capability mention, plus the upgrade note for already-provisioned hosts: re-run `deploy.sh` to pick up the `*.mcp.$DOMAIN` SAN and the nginx SSE directives, and `dig` one MCP host to confirm the wildcard resolves |
 | `plugin/.claude-plugin/plugin.json` | 1.6.4 → 1.7.0 (MINOR: new capability) |
