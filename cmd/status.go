@@ -80,11 +80,20 @@ func mcpStatus(m *state.Manifest, cfg *state.Config) (map[string]any, string) {
 	if !m.MCP || cfg == nil || cfg.Domain == "" {
 		return nil, ""
 	}
-	user, password := "", ""
+	// An MCP the manifest knows about but whose credentials cannot be read is a
+	// different thing from no MCP, and it must not look the same. Report the
+	// endpoint and say why the credentials are missing — silence here previously
+	// hid a working MCP whose mcp.env a root-run deploy had left unreadable.
 	data, err := os.ReadFile(state.AppMCPEnvPath(m.Name))
 	if err != nil {
-		return nil, ""
+		return map[string]any{
+			"url":   "https://" + m.Name + ".mcp." + cfg.Domain + "/sse",
+			"error": "cannot read " + state.AppMCPEnvPath(m.Name) + ": " + err.Error(),
+			"hint":  "redeploy to regenerate the credentials file with the right owner",
+		}, mcpContainerHealth(m.Name)
 	}
+
+	user, password := "", ""
 	for _, line := range strings.Split(string(data), "\n") {
 		switch {
 		case strings.HasPrefix(line, "VD_MCP_USER="):
@@ -96,13 +105,16 @@ func mcpStatus(m *state.Manifest, cfg *state.Config) (map[string]any, string) {
 	if user == "" || password == "" {
 		return nil, ""
 	}
+	return mcpInfo(m.Name, m.Name+".mcp."+cfg.Domain, user, password), mcpContainerHealth(m.Name)
+}
 
-	health := "unknown"
-	if cs, err := docker.InspectContainer("vd-" + m.Name + "-mcp"); err == nil {
-		health = cs.Health
-		if health == "" {
-			health = cs.Status
-		}
+func mcpContainerHealth(appName string) string {
+	cs, err := docker.InspectContainer("vd-" + appName + "-mcp")
+	if err != nil {
+		return "missing"
 	}
-	return mcpInfo(m.Name, m.Name+".mcp."+cfg.Domain, user, password), health
+	if cs.Health != "" {
+		return cs.Health
+	}
+	return cs.Status
 }

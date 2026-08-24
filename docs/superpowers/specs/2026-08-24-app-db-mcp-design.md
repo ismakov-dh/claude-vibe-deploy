@@ -72,17 +72,17 @@ Three layers. Two need a change, and the DNS one is not the change it looks like
 - **nginx — no change.** An nginx `server_name` wildcard, unlike TLS and DNS,
   matches more than one label, so `*.apps.platform.acuradai.com` already matches
   `myapp.mcp.apps.platform.acuradai.com`.
-- **DNS — one record, and it is load-bearing.** `<app>.mcp.<domain>` resolves
-  today with no new record, via RFC 4592 synthesis from `*.apps.platform` — and
-  that is exactly the trap. The first ACME challenge TXT for the new wildcard
-  creates a node under `mcp.apps.platform`, making it an empty non-terminal.
-  An ENT exists, so it becomes the closest encloser, synthesis is attempted from
-  `*.mcp.apps.platform`, and it does **not** fall back to `*.apps.platform` —
-  wildcards do not cascade past an existing encloser. Without an explicit
-  `*.mcp.apps.platform` A record, every MCP endpoint goes NXDOMAIN for the
-  duration of every renewal. With it, behaviour is identical either way. Side
-  effect: `mcp.apps.platform` itself answers NODATA rather than a synthesized
-  address; nothing uses that name.
+- **DNS — one record, and not for the reason first assumed.** The design called
+  for an explicit `*.mcp.apps.platform` A record on the theory that the first ACME
+  challenge TXT would make `mcp.apps.platform` an empty non-terminal and, per RFC
+  4592, stop `*.apps.platform` synthesizing anything below it. Tested against the
+  live zone with the challenge record in place: Route 53 does **not** behave that
+  way. It cascades a wildcard to every level beneath it and ignores the ENT, so
+  `a.b.c.mcp.apps.platform` answered from `*.apps.platform` alone. The prediction
+  was wrong for this provider. The record is kept for a different and weaker
+  reason: `platform.acuradai.com` already CNAMEs to a Yandex GSLB, so this domain
+  spans providers, and depending on Route 53's non-standard cascade to keep every
+  MCP endpoint reachable is a bet. One record makes it explicit.
 - **TLS — one SAN, plus an IAM grant.** `*.mcp.$DOMAIN` joins the existing
   certificate. `scripts/deploy.sh` drops its `if ! test -d` guard for
   `--cert-name "$DOMAIN" --expand`, which is idempotent when the SAN set is

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -411,9 +412,36 @@ func mcpInfo(appName, host, user, password string) map[string]any {
 // stored alongside DATABASE_URI so vd status can report it; it is also visible
 // inside the MCP container, which costs nothing — anything that can read that
 // container's environment already holds its database URI.
+//
+// The ownership dance is not decoration. vd runs both as root (admin, over a
+// login shell) and as vd-user (every agent, through the forced-command wrapper).
+// Every other file in the app directory already exists by the time a deploy
+// rewrites it, so it keeps its original owner; this one is created fresh, so a
+// root deploy leaves it root-owned and 0600 — unreadable to vd-user. The
+// symptoms are two, both silent: `vd status` omits the mcp block for an MCP that
+// is up and serving, and the next deploy as vd-user cannot overwrite the file, so
+// it drops the MCP entirely with a warning nobody reads.
 func writeMCPEnv(appName, dbURI, user, password string) error {
+	path := state.AppMCPEnvPath(appName)
+
+	// Unlink first, so a vd-user deploy can replace a file root left behind.
+	// Removing is governed by write permission on the directory, which vd-user
+	// owns, not by ownership of the file itself.
+	os.Remove(path)
+
 	body := fmt.Sprintf("DATABASE_URI=%s\nVD_MCP_USER=%s\nVD_MCP_PASSWORD=%s\n", dbURI, user, password)
-	return os.WriteFile(state.AppMCPEnvPath(appName), []byte(body), 0600)
+	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
+		return err
+	}
+
+	// Match the app directory's owner. Fails with EPERM when a non-root user runs
+	// this, which is exactly the case where ownership is already correct.
+	if fi, err := os.Stat(state.AppDir(appName)); err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			os.Chown(path, int(st.Uid), int(st.Gid))
+		}
+	}
+	return nil
 }
 
 // setEnvVar replaces a key in a .env file, or appends it. Appending blindly —
