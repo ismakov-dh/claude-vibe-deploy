@@ -458,7 +458,16 @@ func setEnvVar(path, key, value string) error {
 		}
 	}
 	kept = append(kept, key+"="+value)
-	return os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0600)
+	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0600); err != nil {
+		return err
+	}
+	// Explicit, because the 0600 above only applies when the file is created.
+	// This file holds DATABASE_URL with a live password, and it can arrive at
+	// 0644 by routes that predate any of this — a .env inside a pushed tar keeps
+	// the tar's mode, and a backup taken before copyFile preserved modes was
+	// restored 0644. Chmod on every write makes it self-healing instead of
+	// something a human has to notice and fix.
+	return os.Chmod(path, 0600)
 }
 
 func buildDomain(name, baseDomain, routing string) string {
