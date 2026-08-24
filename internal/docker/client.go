@@ -126,6 +126,14 @@ func SaveImage(image, destPath string) error {
 }
 
 // LoadImage loads a Docker image from a tar.gz file.
+// PullImage fetches an image ahead of time. Used by vd init so an unreachable
+// private registry surfaces at initialisation rather than in the middle of
+// somebody's app deploy — a compose up that cannot pull takes the app with it.
+func PullImage(image string) error {
+	_, err := shell.Run(5*time.Minute, "docker", "pull", image)
+	return err
+}
+
 func LoadImage(srcPath string) error {
 	_, err := shell.Run(5*time.Minute, "sh", "-c",
 		fmt.Sprintf("gunzip -c %s | docker load", srcPath))

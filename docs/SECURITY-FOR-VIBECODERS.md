@@ -55,6 +55,8 @@ venv/
 
 You may be tempted to point a Postgres MCP, a SQL client, or a connection string at the prod database while building. **Don't.**
 
+This is about the *production* database. Your own app's database is a different matter: `vd deploy --db postgres` stands up a read-only MCP for it automatically and hands you the credentials, so you never need to wire one up yourself. Use that.
+
 The supported — and only — way to read production data:
 
 1. Build a dashboard app that reads from `DATABASE_URL`.

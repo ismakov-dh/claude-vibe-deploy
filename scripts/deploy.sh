@@ -187,23 +187,37 @@ UNITEOF
         | sudo tee /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh > /dev/null
     sudo chmod +x /etc/letsencrypt/renewal-hooks/deploy/reload-nginx.sh
 
-    # Request wildcard cert. Deliberately via the credentials file rather than
-    # inline env vars, so issuance and renewal resolve credentials identically —
+    # Request the cert. Deliberately via the credentials file rather than inline
+    # env vars, so issuance and renewal resolve credentials identically —
     # issuance succeeding is then evidence renewal will too.
-    if ! sudo test -d "/etc/letsencrypt/live/$DOMAIN"; then
-        sudo AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS" \
-            "$CERTBOT" certonly \
-            --dns-route53 \
-            -d "*.$DOMAIN" \
-            -d "$DOMAIN" \
-            --non-interactive \
-            --agree-tos \
-            --register-unsafely-without-email \
-            && echo "[vd] Wildcard cert obtained for *.$DOMAIN" \
-            || echo "[vd] WARNING: certbot failed. Set up cert manually."
-    else
-        echo "[vd] Wildcard cert already exists for $DOMAIN"
-    fi
+    #
+    # Run unconditionally, with --cert-name and --expand rather than a
+    # "does the directory exist" guard. Two reasons: certbot is already
+    # idempotent when the SAN set is unchanged (it prints "not yet due for
+    # renewal" and exits 0, requesting nothing), and a host provisioned before
+    # a SAN was added needs that SAN added — which the old guard made
+    # impossible, since the directory existed and the run was skipped.
+    #
+    # *.mcp.$DOMAIN covers the per-app read-only database MCP endpoints at
+    # <app>.mcp.$DOMAIN. A TLS wildcard matches exactly one label, so those
+    # names are NOT covered by *.$DOMAIN and need their own SAN.
+    #
+    # The DNS-01 challenge for it lands at _acme-challenge.mcp.$DOMAIN, which
+    # the vd-certbot IAM policy must permit — see iam/vd-certbot in the dev-ops
+    # infra repo. certbot fails closed if it does not, which is the good failure.
+    sudo AWS_SHARED_CREDENTIALS_FILE="$AWS_CREDS" \
+        "$CERTBOT" certonly \
+        --dns-route53 \
+        --cert-name "$DOMAIN" \
+        --expand \
+        -d "*.$DOMAIN" \
+        -d "$DOMAIN" \
+        -d "*.mcp.$DOMAIN" \
+        --non-interactive \
+        --agree-tos \
+        --register-unsafely-without-email \
+        && echo "[vd] Cert present for *.$DOMAIN, $DOMAIN, *.mcp.$DOMAIN" \
+        || echo "[vd] WARNING: certbot failed. Set up cert manually."
 
     # Prove renewal works now — otherwise the first symptom is a browser TLS
     # warning in 90 days. Runs in the same environment cron will have: the
@@ -239,9 +253,21 @@ if [[ -n "$DOMAIN" ]]; then
     ssl_protocols TLSv1.2 TLSv1.3;"
     fi
 
+    # An nginx server_name wildcard, unlike a TLS or DNS one, matches more than
+    # one label — so *.$DOMAIN already covers <app>.mcp.$DOMAIN and the MCP
+    # endpoints need no server_name of their own.
     sudo tee "$NGINX_CONF" > /dev/null <<NGINXEOF
 # vibe-deploy: proxy wildcard to Traefik
 # Managed by vd — do not edit manually
+
+# Send "Connection: upgrade" only when the client actually asked to upgrade.
+# This used to be unconditional, which sends the header on every ordinary
+# request — malformed, and it defeats upstream keepalive.
+map \$http_upgrade \$vd_connection_upgrade {
+    default upgrade;
+    ''      close;
+}
+
 server {
     listen 80;${SSL_BLOCK}
     server_name *.$DOMAIN $DOMAIN;
@@ -253,8 +279,18 @@ server {
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
         proxy_set_header Upgrade \$http_upgrade;
-        proxy_set_header Connection "upgrade";
-        proxy_read_timeout 300s;
+        proxy_set_header Connection \$vd_connection_upgrade;
+
+        # The three below exist for the MCP endpoints, which talk SSE.
+        # proxy_buffering on would hold events until a buffer filled, and the
+        # old 300s read timeout killed any stream idle for five minutes. HTTP/1.0
+        # to the upstream — nginx's default for proxying — cannot stream chunked
+        # responses at all. Applied to this location rather than a separate
+        # server block for *.mcp.$DOMAIN: harmless for small apps, and a second
+        # block would duplicate every proxy_set_header above for no gain today.
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 3600s;
     }
 }
 NGINXEOF

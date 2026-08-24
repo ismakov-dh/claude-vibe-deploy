@@ -1,6 +1,8 @@
 package cmd
 
 import (
+	"crypto/sha1"
+	"encoding/base64"
 	"fmt"
 	"io/fs"
 	"os"
@@ -20,13 +22,13 @@ import (
 )
 
 var (
-	deployName    string
-	deployPort    int
-	deployRouting string
-	deployDB      string
-	deployDBAccess string
-	deployDBName  string
-	deployEnvFile string
+	deployName          string
+	deployPort          int
+	deployRouting       string
+	deployDB            string
+	deployDBAccess      string
+	deployDBName        string
+	deployEnvFile       string
 	deployAllowExternal bool
 )
 
@@ -172,6 +174,12 @@ func runDeploy(srcPath string) {
 		hasEnvFile = true
 	}
 
+	// MCP wiring, filled in during provisioning below.
+	needsMCP := false
+	mcpAuth := ""
+	mcpHost := ""
+	mcpPassword := ""
+
 	// Provision database if requested
 	if deployDB == "postgres" || deployDB == "prod-ro" {
 		var container, adminUser, access, dbNameToUse string
@@ -212,19 +220,37 @@ func runDeploy(srcPath string) {
 		}
 
 		output.Info("Provisioning database (%s)...", deployDB)
-		result, err := db.ProvisionPostgresUser(container, adminUser, connectHost, deployName, dbNameToUse, access)
+		ownerRole := db.RoleName(deployName)
+		result, err := db.ProvisionPostgresUser(container, adminUser, connectHost, ownerRole, dbNameToUse, access)
 		if err != nil {
 			output.Warn("DB provisioning failed: %v", err)
 		} else {
 			output.Info("Database ready: %s (user: %s)", result.Database, result.User)
-			// Append DATABASE_URL to env file
-			envPath := state.AppEnvPath(deployName)
-			f, _ := os.OpenFile(envPath, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0600)
-			if f != nil {
-				f.WriteString("DATABASE_URL=" + result.URL + "\n")
-				f.Close()
+			if err := setEnvVar(state.AppEnvPath(deployName), "DATABASE_URL", result.URL); err != nil {
+				output.Warn("Could not write DATABASE_URL: %v", err)
 			}
 			hasEnvFile = true
+
+			// Read-only MCP, for vd-managed databases only. Production stays
+			// reachable solely by deploying a dashboard with --db prod-ro.
+			if deployDB == "postgres" && cfg.Domain != "" {
+				roRole := db.ReadOnlyRoleName(deployName)
+				ro, err := db.ProvisionReadOnlyCompanion(container, adminUser, connectHost, ownerRole, roRole, dbNameToUse)
+				if err != nil {
+					output.Warn("MCP database role failed: %v — deploying without MCP", err)
+				} else {
+					mcpPassword = generateRandomPassword(32)
+					mcpAuth = htpasswdSHA(mcpUser, mcpPassword)
+					if err := writeMCPEnv(deployName, ro.URL, mcpUser, mcpPassword); err != nil {
+						output.Warn("Could not write mcp.env: %v — deploying without MCP", err)
+						mcpAuth = ""
+					} else {
+						needsMCP = true
+						mcpHost = deployName + ".mcp." + cfg.Domain
+						output.Info("Read-only MCP will be available at https://%s/sse", mcpHost)
+					}
+				}
+			}
 		}
 	}
 
@@ -252,13 +278,16 @@ func runDeploy(srcPath string) {
 	domain := buildDomain(deployName, cfg.Domain, deployRouting)
 
 	composeData := docker.ComposeData{
-		Name:          deployName,
-		AppType:       string(appType),
-		Port:          deployPort,
-		Routing:       deployRouting,
-		Domain:        cfg.Domain,
-		HasEnvFile:    hasEnvFile,
-		NeedsDB:       needsDB,
+		Name:         deployName,
+		AppType:      string(appType),
+		Port:         deployPort,
+		Routing:      deployRouting,
+		Domain:       cfg.Domain,
+		HasEnvFile:   hasEnvFile,
+		NeedsDB:      needsDB,
+		NeedsMCP:     needsMCP,
+		MCPImage:     docker.MCPImage,
+		MCPBasicAuth: mcpAuth,
 	}
 	if err := docker.GenerateComposeFile(templatesFS, composeData, state.AppComposePath(deployName)); err != nil {
 		output.Fail("deploy", output.NewError("COMPOSE_FAILED",
@@ -317,6 +346,7 @@ func runDeploy(srcPath string) {
 		ContainerName: containerName,
 		DeployCount:   deployCount,
 		HasEnvFile:    hasEnvFile,
+		MCP:           needsMCP,
 	}
 	if err := state.SaveManifest(manifest); err != nil {
 		output.Warn("Failed to save manifest: %v", err)
@@ -336,11 +366,71 @@ func runDeploy(srcPath string) {
 		"db":          deployDB,
 		"deployed_at": time.Now().UTC().Format(time.RFC3339),
 	}
+	if needsMCP {
+		data["mcp"] = mcpInfo(deployName, mcpHost, mcpUser, mcpPassword)
+	}
 	if len(policyWarnings) > 0 {
 		output.SuccessWithWarnings("deploy", data, policyWarnings)
 	} else {
 		output.Success("deploy", data)
 	}
+}
+
+// mcpUser is fixed; the password is per-app and regenerated on every deploy.
+const mcpUser = "mcp"
+
+// htpasswdSHA builds a Traefik basicauth entry using the {SHA} scheme.
+//
+// Traefik accepts MD5 (apr1), SHA1 and bcrypt. bcrypt would mean adding
+// golang.org/x/crypto to a tool whose only dependency is cobra, and apr1 is
+// ~40 lines of Apache MD5-crypt. Against a 128-bit random password the missing
+// salt is not a practical weakness — an unsalted SHA1 of 32 hex characters is
+// not brute-forceable, and the password is never reused anywhere. {SHA} also
+// contains no '$', so there is no compose interpolation to escape.
+func htpasswdSHA(user, password string) string {
+	sum := sha1.Sum([]byte(password))
+	return user + ":{SHA}" + base64.StdEncoding.EncodeToString(sum[:])
+}
+
+// mcpInfo returns the block an agent needs to register the server. The ready-made
+// command matters: the audience is non-programmers and agents reading JSON, and
+// neither should have to assemble a base64 Basic header by hand.
+func mcpInfo(appName, host, user, password string) map[string]any {
+	url := "https://" + host + "/sse"
+	cred := base64.StdEncoding.EncodeToString([]byte(user + ":" + password))
+	return map[string]any{
+		"url":      url,
+		"user":     user,
+		"password": password,
+		"add": fmt.Sprintf(`claude mcp add --transport sse %s-db %s --header "Authorization: Basic %s"`,
+			appName, url, cred),
+	}
+}
+
+// writeMCPEnv writes the MCP container's environment. The basicauth pair is
+// stored alongside DATABASE_URI so vd status can report it; it is also visible
+// inside the MCP container, which costs nothing — anything that can read that
+// container's environment already holds its database URI.
+func writeMCPEnv(appName, dbURI, user, password string) error {
+	body := fmt.Sprintf("DATABASE_URI=%s\nVD_MCP_USER=%s\nVD_MCP_PASSWORD=%s\n", dbURI, user, password)
+	return os.WriteFile(state.AppMCPEnvPath(appName), []byte(body), 0600)
+}
+
+// setEnvVar replaces a key in a .env file, or appends it. Appending blindly —
+// which is what this used to do — left one DATABASE_URL line per deploy, and
+// rollback has to be able to read the password back out of this file.
+func setEnvVar(path, key, value string) error {
+	var kept []string
+	if data, err := os.ReadFile(path); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			if line == "" || strings.HasPrefix(line, key+"=") {
+				continue
+			}
+			kept = append(kept, line)
+		}
+	}
+	kept = append(kept, key+"="+value)
+	return os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0600)
 }
 
 func buildDomain(name, baseDomain, routing string) string {

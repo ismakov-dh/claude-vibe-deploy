@@ -62,52 +62,80 @@ stack, so no new registry access is required.
 MCP endpoints live one label below a dedicated `mcp.` label: `<app>.mcp.<domain>`,
 not `mcp.<app>.<domain>`. The dotted-prefix form cannot be served: a TLS wildcard
 matches exactly one label (RFC 6125), so `*.apps.platform.acuradai.com` does not
-cover `mcp.myapp.apps.platform.acuradai.com`, and multi-level wildcards
-(`*.*.`) are neither issued by Let's Encrypt nor valid in TLS. Serving that shape
-would mean issuing a certificate per app at deploy time — a Route53 challenge on
-every deploy and N certificates in rotation. Flipping the order keeps every host
-one label under a wildcard and costs one SAN.
+cover `mcp.myapp.apps.platform.acuradai.com`, and multi-level wildcards are
+neither issued by Let's Encrypt nor valid in TLS. Serving that shape would mean a
+certificate per app, issued at deploy time. Flipping the order keeps every host
+one label under a wildcard.
 
-Three layers, and only one of them needs changing:
+Three layers. Two need a change, and the DNS one is not the change it looks like.
 
-- **TLS — changes.** Add `*.mcp.$DOMAIN` as a third SAN on the existing
-  certificate. `scripts/deploy.sh:195` currently requests `-d "*.$DOMAIN" -d
-  "$DOMAIN"` guarded by `if ! sudo test -d /etc/letsencrypt/live/$DOMAIN`. Drop
-  the guard and pass `--cert-name "$DOMAIN" --expand` with all three `-d` args:
-  certbot is then idempotent when the SAN set is unchanged ("not yet due for
-  renewal", exit 0) and self-upgrading on hosts whose certificate predates this
-  change. Keeping it as one certificate keeps it as one renewal.
 - **nginx — no change.** An nginx `server_name` wildcard, unlike TLS and DNS,
-  matches more than one label: `*.apps.platform.acuradai.com` already matches
+  matches more than one label, so `*.apps.platform.acuradai.com` already matches
   `myapp.mcp.apps.platform.acuradai.com`.
-- **DNS — no change expected, but verify.** Under RFC 4592 the existing
-  `*.apps.platform.acuradai.com` record synthesizes an answer for
-  `myapp.mcp.apps.platform.acuradai.com` too, *provided the zone contains no
-  `mcp.apps.platform.acuradai.com` node*. That is a real dependency on an
-  absence: if someone later adds that record, every MCP endpoint stops resolving
-  at once. Verify with `dig` during implementation, and note in the runbook that
-  an explicit `*.mcp.apps.platform.acuradai.com` record in Route53 removes the
-  fragility. Creating it is a zone change outside vd's remit, so it is a
-  recommendation rather than a step.
+- **DNS — one record, and it is load-bearing.** `<app>.mcp.<domain>` resolves
+  today with no new record, via RFC 4592 synthesis from `*.apps.platform` — and
+  that is exactly the trap. The first ACME challenge TXT for the new wildcard
+  creates a node under `mcp.apps.platform`, making it an empty non-terminal.
+  An ENT exists, so it becomes the closest encloser, synthesis is attempted from
+  `*.mcp.apps.platform`, and it does **not** fall back to `*.apps.platform` —
+  wildcards do not cascade past an existing encloser. Without an explicit
+  `*.mcp.apps.platform` A record, every MCP endpoint goes NXDOMAIN for the
+  duration of every renewal. With it, behaviour is identical either way. Side
+  effect: `mcp.apps.platform` itself answers NODATA rather than a synthesized
+  address; nothing uses that name.
+- **TLS — one SAN, plus an IAM grant.** `*.mcp.$DOMAIN` joins the existing
+  certificate. `scripts/deploy.sh` drops its `if ! test -d` guard for
+  `--cert-name "$DOMAIN" --expand`, which is idempotent when the SAN set is
+  unchanged and, unlike the guard, actually adds a SAN to a host provisioned
+  before it existed.
 
-A pleasant consequence: no hostname-collision guard is needed. Under
-`mcp-<app>.<domain>` an app named `mcp-foo` would have claimed app `foo`'s MCP
-host; under `<app>.mcp.<domain>` app names and MCP hosts cannot overlap. It also
-makes the whole MCP surface addressable as a group — an IP allowlist over every
-MCP endpoint is later one nginx `server` block rather than a per-app edit.
+The DNS-01 challenge for the new SAN lands at `_acme-challenge.mcp.$DOMAIN`.
+`certbot-dns-route53` picks its target zone by matching the longest hosted-zone
+*name* against the challenge name; it performs no DNS resolution and does not
+follow CNAMEs, so the only matching zone is `acuradai.com`, which `vd-certbot`
+could not write to. Two ways to fix that were considered: a second delegated
+hosted zone, mirroring the existing `*.apps` one, or IAM condition keys narrowing
+a grant on `acuradai.com` to specific record names. The second was chosen, and it
+retired the existing delegation too — one mechanism instead of two, no zone.
+
+That trade is recorded in `dev-ops/infra/iam/vd-certbot`, which also had to bring
+the policy into Terraform: the delegation was a structural guarantee that certbot
+could not name a record in the zone carrying Google Workspace MX, SPF, DKIM and
+DMARC, and its replacement is a `condition` block. A guarantee that is a policy
+string belongs somewhere it gets reviewed.
+
+A pleasant consequence of the namespace shape: no hostname-collision guard is
+needed. Under `mcp-<app>.<domain>` an app named `mcp-foo` would have claimed app
+`foo`'s MCP host; under `<app>.mcp.<domain>` app names and MCP hosts cannot
+overlap.
 
 ### Traefik routing
 
 Two routers, deliberately:
 
 ```
+traefik.enable=true
+traefik.http.services.vd-<app>-mcp.loadbalancer.server.port=8089
 traefik.http.routers.vd-<app>-mcp.rule=Host(`<app>.mcp.<domain>`)
+traefik.http.routers.vd-<app>-mcp.service=vd-<app>-mcp
 traefik.http.routers.vd-<app>-mcp.middlewares=vd-<app>-mcp-auth
-traefik.http.middlewares.vd-<app>-mcp-auth.basicauth.users=mcp:<hash>
+traefik.http.middlewares.vd-<app>-mcp-auth.basicauth.users=mcp:{SHA}<base64>
 
 traefik.http.routers.vd-<app>-mcp-wellknown.rule=Host(`<app>.mcp.<domain>`) && PathPrefix(`/.well-known/`)
-traefik.http.routers.vd-<app>-mcp-wellknown.priority=100
+traefik.http.routers.vd-<app>-mcp-wellknown.service=vd-<app>-mcp
 ```
+
+`traefik.enable=true` is not inherited from the app container — vd's Traefik runs
+`exposedbydefault=false`. Without the explicit `loadbalancer.server.port=8089`,
+Traefik falls back to the image's exposed port, which is not the port the command
+line sets.
+
+**No `priority` on the wellknown router.** Traefik derives priority from rule
+length and compares explicit values against those defaults in the same space. The
+main rule is 39 characters plus the app name, so a literal `priority=100` stops
+winning once an app name reaches 62 characters — and app names are allowed 63.
+The wellknown rule is a strict superset of the main one, so the default ordering
+is always correct; the explicit priority was the bug.
 
 The second router has **no** auth middleware, by design. MCP clients probe
 `/.well-known/*` for OAuth metadata before using credentials they already hold.
@@ -124,16 +152,26 @@ only the one entrypoint (`templates/compose/infrastructure.yml`).
 Two secrets per app, both generated at deploy time.
 
 **Database.** A second role, `vd_<app>_ro`, alongside the existing read-write
-`vd_<app>` (hyphens in the app name become underscores in both, per
-`internal/db/provision.go:26`). Grants are the already-written `access == "ro"` branch in
-`internal/db/provision.go:41`: `CONNECT`, `USAGE ON SCHEMA public`, `SELECT ON
-ALL TABLES`, and `ALTER DEFAULT PRIVILEGES ... GRANT SELECT` so future tables are
-covered. `ProvisionPostgresUser` currently hardcodes the role name
-(`internal/db/provision.go:26`); the role name becomes a parameter, and the two
-existing call sites keep today's behaviour by passing the same derived name.
+`vd_<app>` (hyphens become underscores in both). `CONNECT`, `USAGE ON SCHEMA
+public`, `SELECT ON ALL TABLES`, and — the part that is easy to get wrong —
+`ALTER DEFAULT PRIVILEGES **FOR ROLE** vd_<app> ... GRANT SELECT ON TABLES`.
 
-Read-only is enforced twice over: the role physically cannot write, and
-`--access-mode=restricted` keeps postgres-mcp itself to read-only tools.
+Without `FOR ROLE`, `ALTER DEFAULT PRIVILEGES` covers only objects created by the
+role that ran the statement, which is `vd_admin`. The app creates its tables as
+`vd_<app>`, so the companion would get SELECT on nothing — and on a first deploy
+that is literally nothing, because provisioning runs before the container has
+ever started and there is no table for `GRANT ... ON ALL TABLES` to cover yet.
+The MCP would answer `permission denied` to every query in the exact scenario the
+feature exists for. `ProvisionPostgresUser` also stops hardcoding the role name,
+so both roles come from one place (`db.RoleName` / `db.ReadOnlyRoleName`).
+
+Read-only is enforced in two places, and honestly the first layer is not airtight
+on its own: the grants stop DML, but PUBLIC keeps `TEMPORARY` on the database
+(so a "read-only" role can create and write temp tables) and `EXECUTE` on
+functions, so a `SECURITY DEFINER` function owned by the app writes with the
+owner's privileges. `TEMPORARY` is revoked from PUBLIC and re-granted to the app
+role; the function path is closed only by `--access-mode=restricted` in
+postgres-mcp.
 
 **HTTP.** User `mcp`, password 32 hex chars. The htpasswd entry uses the `{SHA}`
 scheme — `{SHA}` + base64(sha1(password)) — which Traefik's basicauth accepts and
@@ -190,35 +228,66 @@ because apps deployed before this change have a postgres database and no MCP
 container until their next deploy — deriving it would make `vd status` advertise
 a URL that 404s.
 
+## Route53 prerequisites
+
+Blocking, before the first deploy that renders an MCP service. Full runbook in
+`dev-ops/infra/iam/vd-certbot/README.md`; the sequence matters because a wrong
+step fails silently at certificate renewal, around 2026-09-26.
+
+1. `dns/acuradai-com`: add `*.mcp.apps.platform` A. Apply first.
+2. `iam/vd-certbot`: import the live policy, free a version slot (IAM keeps 5,
+   v1–v4 exist, Terraform does not prune), apply the widened document.
+3. `dns/acuradai-com`: remove the `_acme-challenge.apps.platform` NS record, then
+   delete hosted zone `Z022093612FB84OA1WQAM`. Together — a zone left behind
+   keeps capturing certbot's writes into a zone no resolver consults.
+4. `certbot ... --expand --dry-run` on nashville, then for real.
+
 ## Collateral fixes
 
-These are defects in code this feature depends on, not scope creep.
+Defects in code this feature depends on, not scope creep.
 
-1. **nginx cuts the SSE stream.** `scripts/deploy.sh:257` sets
-   `proxy_read_timeout 300s` and leaves `proxy_buffering` on. An MCP SSE stream
-   dies after five idle minutes and is buffered rather than streamed. Fix:
-   `proxy_buffering off` and `proxy_read_timeout 3600s` in the wildcard location.
-   Applied to the existing location rather than a dedicated `server` block for
-   `*.mcp.$DOMAIN`: unbuffered proxying and a long read timeout are harmless for
-   small vibecoded apps, and a second block would duplicate the whole
-   `proxy_set_header` list for no benefit today. When the MCP namespace needs its
-   own `server` block for an IP allowlist, these two directives move with it.
-   **Operational note:** an already-provisioned host needs `deploy.sh` re-run (or
-   the config edited by hand) before its MCP endpoints behave. Without it the
-   symptom is an MCP that works and then mysteriously stops.
+1. **nginx cuts the SSE stream.** `scripts/deploy.sh` set `proxy_read_timeout
+   300s`, left `proxy_buffering` on, and never set `proxy_http_version 1.1` —
+   nginx proxies HTTP/1.0 by default, which cannot stream a chunked response at
+   all. All three fixed in the existing `location`, not a separate `server` block
+   for `*.mcp.$DOMAIN`: unbuffered proxying and a long read timeout are harmless
+   for small apps, and a second block would duplicate the whole
+   `proxy_set_header` list. When the MCP namespace needs its own block for an IP
+   allowlist, these move with it.
 
-2. **`copyFile` widens secret permissions.** `internal/backup/backup.go:186`
-   writes every copy 0644, so backing up and restoring `src/.env` downgrades it
-   from 0600. Preserve the source file's mode. Pre-existing, but this change adds
-   a second 0600 secret next to it.
+   While there: `Connection: "upgrade"` was sent unconditionally, on every
+   ordinary request. Now driven by a `map` on `$http_upgrade`.
 
-3. **`mcp.env` is not backed up.** Add it to `backup.Create` and
-   `backup.Restore` alongside the compose file and `.env`, so a rolled-back
-   compose and its env file stay a matched pair.
+   **Operational note:** an already-provisioned host needs `deploy.sh` re-run
+   before its MCP endpoints behave. Without it the symptom is an MCP that works
+   and then mysteriously stops.
 
-4. **`--drop-db` leaves the read-only role behind.** `cmd/destroy.go:93` drops
-   only `vd_<app>`. Drop `vd_<app>_ro` too, so redeploying a destroyed app name
-   does not inherit a stale role.
+2. **Rollback left dead database credentials.** Pre-existing, and the MCP would
+   have doubled it. `ProvisionPostgresUser` mints a fresh password and `ALTER
+   ROLE`s on *every* deploy, while `backup.Restore` puts back the previous
+   `.env` — so after an auto-rollback the app starts, passes its health check,
+   and cannot reach its database. Fixed on the restore side rather than by
+   redesigning provisioning: `backup.Restore` now parses the role and password
+   back out of the restored env files and re-`ALTER`s them, which also makes the
+   invariant hold for a manual `vd rollback`.
+
+3. **`copyFile` widened secret permissions.** It wrote every copy 0644, so
+   backing up and restoring `src/.env` downgraded it from 0600. Now preserves the
+   source mode — needed twice over, with `mcp.env` beside it.
+
+4. **`mcp.env` is backed up and restored** alongside the compose file that
+   references it by name.
+
+5. **`--drop-db` left the read-only role behind.** `DROP DATABASE` succeeds with
+   it present, but redeploying the same app name would inherit a stale role.
+
+6. **`DATABASE_URL` was appended, not replaced** — one line per deploy. Rollback
+   has to read the password back out of that file, so it now has to be
+   unambiguous.
+
+7. **The MCP container has a healthcheck.** Nothing gates the deploy on it — vd
+   waits only on the app container — but without one a crash-looping MCP presents
+   as a working endpoint that times out. `vd status` reports it.
 
 ## Cost and ceiling
 
@@ -231,15 +300,18 @@ call site.
 
 ## Testing
 
-One test: `docker.GenerateComposeFile` with the MCP flag set, asserting that
+`internal/docker/compose_test.go`, rendering the real template rather than a
+fixture. The two-router arrangement fails silently in both directions — wrong one
+way and the endpoint is unauthenticated, wrong the other way and clients drop
+their credentials on a 401 from `/.well-known/` — and neither shows up as a
+failed deploy. So: auth on the main router and absent from the wellknown one, the
+wellknown rule longer than the main rule with no explicit priority,
+`traefik.enable` and the explicit port present, and no MCP service at all when
+`NeedsMCP` is false.
 
-- the primary MCP router carries the basicauth middleware, and
-- the `/.well-known/` router does **not**.
-
-That inversion is the one thing here that fails silently and expensively — the
-endpoint either sits wide open or refuses the credentials it was given, and
-neither shows up as a broken deploy. Role provisioning shells out to `docker
-exec psql` and is not meaningfully unit-testable; it is exercised by deploying.
+Role provisioning shells out to `docker exec psql` and is not meaningfully
+unit-testable; it is exercised by deploying. The generated compose file was also
+checked against `docker compose config`.
 
 ## Documentation, same commit
 

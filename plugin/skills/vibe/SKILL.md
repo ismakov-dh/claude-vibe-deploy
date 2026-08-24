@@ -69,7 +69,7 @@ For each issue found, explain what needs to change and why. Then propose a plan 
 Do NOT design apps that require any of these:
 
 - **No Supabase / Firebase / external managed databases** — the platform gives you a real PostgreSQL with `--db postgres`. Do NOT add `@supabase/supabase-js`, `firebase`, `mongodb`, `@planetscale/database`, or similar. `vd deploy` warns when it detects these. Use `pg` / `psycopg` / `database/sql` against `DATABASE_URL` instead
-- **No direct prod database access** — do NOT connect a Postgres MCP, a raw connection string, or any client to the production database from your dev environment. The ONLY supported way to read prod data is to build a dashboard app and deploy it with `--db prod-ro --db-name <db>`; vd injects a read-only `DATABASE_URL`
+- **No direct prod database access** — do NOT point a Postgres MCP, a raw connection string, or any client at the *production* database from your dev environment. The ONLY supported way to read prod data is to build a dashboard app and deploy it with `--db prod-ro --db-name <db>`; vd injects a read-only `DATABASE_URL`. (Your app's **own** database is different: deploying with `--db postgres` gives you a platform-provided read-only MCP for it — see the `/deploy` skill. Use that one, never a hand-rolled connection.)
 - **No Redis / Memcached** — use PostgreSQL or in-memory caching
 - **No S3 / file storage** — store files as bytea in PostgreSQL or use external APIs
 - **No background workers** (Celery, Bull, Sidekiq) — use cron for periodic tasks, or process inline, or use PostgreSQL as a job queue

@@ -24,6 +24,7 @@ This adds three skills:
 |-----------|---------|
 | HTTP app hosting | Static sites, Node.js, Python, Go — auto-detected |
 | PostgreSQL database | Auto-provisioned per app, `DATABASE_URL` injected |
+| Read-only database MCP | Automatic with `--db postgres`. Per-app SELECT-only endpoint at `<app>.mcp.<apps-domain>`, credentials returned by `vd deploy --json` |
 | Prod DB read-only | Dashboards can query existing production data (replica supported) |
 | HTTPS | Automatic via wildcard cert |
 | Cron jobs | Scheduled tasks inside containers |
@@ -69,6 +70,29 @@ ssh vd-server "vd init --prod-db <primary> --prod-db-replica <replica> --prod-db
 ```
 
 Give users the SSH key and server IP (or SSH alias). They don't need server access — Claude handles everything through `vd push` + `vd deploy`.
+
+### Upgrading a host provisioned before the database MCP
+
+The MCP endpoints need two things a pre-existing host does not have, and both fail
+quietly rather than loudly.
+
+1. **Re-run `deploy.sh`.** It adds the `*.mcp.<domain>` SAN to the certificate and
+   the nginx directives SSE needs (`proxy_http_version 1.1`, `proxy_buffering off`,
+   a 3600s read timeout). Without them the MCP appears to work and then stops
+   after five idle minutes.
+2. **The DNS-01 challenge for that SAN must be permitted.** `_acme-challenge.mcp.<domain>`
+   has to be writable by the certbot credentials, and `*.mcp.<domain>` needs an
+   explicit A record — the enclosing wildcard stops covering it the moment the
+   challenge record exists. For this deployment both live in the `dev-ops/infra`
+   repo (`iam/vd-certbot`, `dns/acuradai-com`); that repo's runbook is the order to
+   follow.
+
+Then confirm, from outside the host:
+
+```bash
+echo | openssl s_client -connect <domain>:443 2>/dev/null | openssl x509 -noout -ext subjectAltName
+dig +short A probe.mcp.<domain>
+```
 
 ## CLI reference
 

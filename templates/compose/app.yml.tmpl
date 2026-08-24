@@ -42,10 +42,62 @@ services:
       retries: 3
       start_period: 30s
 
+{{- if .NeedsMCP}}
+
+  # Read-only database MCP for this app, at {{.Name}}.mcp.{{.Domain}}.
+  # Connects as a SELECT-only companion role; see internal/db/provision.go.
+  {{.Name}}-mcp:
+    image: {{.MCPImage}}
+    container_name: vd-{{.Name}}-mcp
+    restart: unless-stopped
+    command: ["--transport=sse", "--sse-port=8089", "--sse-host=0.0.0.0", "--access-mode=restricted"]
+    env_file:
+      - ./mcp.env
+    labels:
+      - "vd.app={{.Name}}"
+      - "vd.role=mcp"
+      - "traefik.enable=true"
+      - "traefik.http.services.vd-{{.Name}}-mcp.loadbalancer.server.port=8089"
+      - "traefik.http.routers.vd-{{.Name}}-mcp.rule=Host(`{{.Name}}.mcp.{{.Domain}}`)"
+      - "traefik.http.routers.vd-{{.Name}}-mcp.entrypoints=web"
+      - "traefik.http.routers.vd-{{.Name}}-mcp.service=vd-{{.Name}}-mcp"
+      - "traefik.http.routers.vd-{{.Name}}-mcp.middlewares=vd-{{.Name}}-mcp-auth"
+      - "traefik.http.middlewares.vd-{{.Name}}-mcp-auth.basicauth.users={{.MCPBasicAuth}}"
+      # /.well-known/* must NOT sit behind basicauth. MCP clients probe it for
+      # OAuth metadata; a 401 there reads as "do the OAuth flow" and the client
+      # drops the Basic credentials it already holds. A 404 is the answer it needs.
+      #
+      # No explicit priority. Traefik derives priority from rule length, and this
+      # rule is a strict superset of the one above, so it always wins. A literal
+      # priority=100 would have to beat a default that grows with the app name —
+      # at 62 characters it silently stops winning and /.well-known/ falls behind
+      # the auth middleware.
+      - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.rule=Host(`{{.Name}}.mcp.{{.Domain}}`) && PathPrefix(`/.well-known/`)"
+      - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.entrypoints=web"
+      - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.service=vd-{{.Name}}-mcp"
+    networks:
+      - vd-net
+      - vd-db
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # A crash-looping MCP would otherwise present as a working endpoint that
+    # times out. Nothing gates the deploy on this — vd waits only on the app
+    # container — but vd status reports it, so a dead MCP is visible.
+    healthcheck:
+      test: ["CMD", "/app/.venv/bin/python", "-c", "import socket; socket.create_connection(('127.0.0.1', 8089), 3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+{{- end}}
+
 networks:
   vd-net:
     external: true
-{{- if .NeedsDB}}
+{{- if or .NeedsDB .NeedsMCP}}
   vd-db:
     external: true
 {{- end}}

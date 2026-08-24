@@ -28,6 +28,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Path routing** | `--routing path` | App at `<apps-domain>/<name>` |
 | **TLS/HTTPS** | Automatic | Host nginx has wildcard cert. All apps are HTTPS. No config needed. |
 | **Own PostgreSQL database** | `--db postgres` | Auto-provisioned on deploy. `DATABASE_URL` injected into `.env`. Fresh DB per app. |
+| **Read-only MCP for the app's own DB** | automatic with `--db postgres` | Per-app postgres-mcp at `<name>.mcp.<apps-domain>`, SELECT-only, behind basicauth. Credentials and a ready-made `claude mcp add` command come back in the `mcp` field. Not provisioned for `prod-ro`. |
 | **Prod DB read-only access** | `--db prod-ro --db-name <db>` | Read-only (SELECT only) access to existing production databases for dashboards. |
 | **Environment variables** | `--env-file` or auto-injected | Pass secrets, API keys, config. `DATABASE_URL` is auto-injected when using `--db`. |
 | **Cron jobs** | `vd cron-set` | Scheduled commands that run inside the app container. |
@@ -174,7 +175,9 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 
 #### `vd status <app-name>`
 
-Returns: container state, health, URL, app type, deploy time, database info.
+Returns: container state, health, URL, app type, deploy time, database info, and
+the `mcp` block (including the MCP container's own health) for apps deployed with
+`--db postgres`.
 
 #### `vd list`
 
@@ -199,7 +202,7 @@ Stop container, remove app files.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--yes` | false | Skip confirmation (always use in automation) |
-| `--drop-db` | false | Also drop the database and user (vd-managed only, never drops prod) |
+| `--drop-db` | false | Also drop the database, its user and the MCP read-only role (vd-managed only, never drops prod) |
 
 #### `vd db-create <app-name>`
 
@@ -240,6 +243,10 @@ Success:
 ```json
 {"ok": true, "command": "deploy", "data": {"name": "my-app", "url": "https://my-app.<apps-domain>", "status": "running", "health": "healthy"}}
 ```
+
+With `--db postgres` the `data` object also carries an `mcp` block — `url`, `user`,
+`password` and an `add` field holding a complete `claude mcp add` command with the
+Basic credentials already encoded.
 
 Error:
 ```json

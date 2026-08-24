@@ -7,16 +7,35 @@ import (
 	"time"
 )
 
+// MCPImage is the per-app read-only database MCP server.
+//
+// Pinned to the dev-ops fork rather than upstream crystaldba/postgres-mcp:0.3.0.
+// That image resolves mcp to 1.6.0, which raises RuntimeError on any message
+// arriving before notifications/initialized completes — and the Node/undici MCP
+// SDK, which is what Claude Code uses, triggers exactly that on reconnect. The
+// exception tears down the SSE stream for the whole session. 0.3.0 is still the
+// latest postgres-mcp release, so there is no upstream version to move to; see
+// images/postgres-mcp.Dockerfile in the dev-ops repo for the patch.
+const MCPImage = "registry.xaid.ai/radiology/devops/stacks/postgres-mcp:0.3.0-init-tolerant"
+
 // ComposeData holds the data for rendering the app compose template.
 type ComposeData struct {
-	Name          string
-	AppType       string
-	Port          int
-	Routing       string
-	Domain        string
-	HasEnvFile    bool
-	NeedsDB       bool
-	Timestamp     string
+	Name       string
+	AppType    string
+	Port       int
+	Routing    string
+	Domain     string
+	HasEnvFile bool
+	NeedsDB    bool
+	Timestamp  string
+
+	// ponytail: one MCP container per app with a database — ~80MB RSS each,
+	// sharing one image layer. Noise below ~20 such apps. If it stops being
+	// noise, put it behind a `vd deploy --mcp` flag: the template already renders
+	// conditionally, so that is a flag plus a manifest field.
+	NeedsMCP     bool
+	MCPImage     string
+	MCPBasicAuth string // htpasswd entry, user:{SHA}base64(sha1(pw))
 }
 
 // GenerateComposeFile renders the app compose template and writes it to disk.
