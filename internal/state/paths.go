@@ -19,6 +19,12 @@ func AppSrcDir(name string) string       { return filepath.Join(AppDir(name), "s
 func AppManifestPath(name string) string { return filepath.Join(AppDir(name), "manifest.json") }
 func AppComposePath(name string) string  { return filepath.Join(AppDir(name), "docker-compose.vd.yml") }
 func AppEnvPath(name string) string      { return filepath.Join(AppSrcDir(name), ".env") }
+
+// AppMCPEnvPath holds the MCP server's DATABASE_URI plus the basicauth pair vd
+// reports back to the agent. Mode 0600: it is a credentials file, and it lives
+// beside the compose file rather than under src/ so it is never copied into the
+// application image or handed to the app container.
+func AppMCPEnvPath(name string) string   { return filepath.Join(AppDir(name), "mcp.env") }
 func BackupsDir() string                 { return filepath.Join(VDHome(), "backups") }
 func AppBackupsDir(name string) string   { return filepath.Join(BackupsDir(), name) }
 func DBBackupsDir() string               { return filepath.Join(VDHome(), "db-backups") }

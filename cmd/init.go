@@ -135,6 +135,15 @@ func runInit() {
 		output.Info("Traefik and PostgreSQL are running")
 	}
 
+	// Pull the per-app MCP image now. It lives in a private registry, and a
+	// compose up that cannot pull takes the whole app deploy down with it — far
+	// better that an unreachable registry fails here.
+	output.Info("Pulling MCP image %s...", docker.MCPImage)
+	if err := docker.PullImage(docker.MCPImage); err != nil {
+		output.Warn("Could not pull %s: %v", docker.MCPImage, err)
+		output.Warn("Apps deployed with --db postgres will fail until this image is available")
+	}
+
 	output.Info("vibe-deploy initialized at %s", state.VDHome())
 	if cfg.ProdDBPrimary == "" {
 		output.Info("To attach prod DB: vd init --prod-db <primary> [--prod-db-replica <replica>] --prod-db-user <user>")
@@ -144,12 +153,12 @@ func runInit() {
 	}
 
 	output.Success("init", map[string]any{
-		"home":           state.VDHome(),
-		"domain":         cfg.Domain,
+		"home":            state.VDHome(),
+		"domain":          cfg.Domain,
 		"prod_db_primary": cfg.ProdDBPrimary,
 		"prod_db_replica": cfg.ProdDBReplica,
-		"vd_postgres":    "vd-postgres",
-		"networks":       []string{"vd-net", "vd-db"},
+		"vd_postgres":     "vd-postgres",
+		"networks":        []string{"vd-net", "vd-db"},
 	})
 }
 

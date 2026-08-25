@@ -21,6 +21,12 @@ type Manifest struct {
 	DeployedAt    string `json:"deployed_at"`
 	DeployCount   int    `json:"deploy_count"`
 	HasEnvFile    bool   `json:"env_file"`
+
+	// MCP records whether this deploy actually rendered an MCP service. Deliberately
+	// not derived from DB == "postgres": apps deployed before the feature existed
+	// have a database and no MCP container until their next deploy, and deriving it
+	// would make vd status advertise a URL that 404s.
+	MCP bool `json:"mcp,omitempty"`
 }
 
 func LoadManifest(appName string) (*Manifest, error) {

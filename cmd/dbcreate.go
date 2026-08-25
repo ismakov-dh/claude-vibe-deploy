@@ -75,7 +75,7 @@ var dbCreateCmd = &cobra.Command{
 				"Unknown db type: "+dbType, "Use: postgres or prod-ro"))
 		}
 
-		result, err := db.ProvisionPostgresUser(container, adminUser, connectHost, name, dbName, access)
+		result, err := db.ProvisionPostgresUser(container, adminUser, connectHost, db.RoleName(name), dbName, access)
 		if err != nil {
 			output.Fail("db-create", output.NewError("DB_PROVISION_FAILED", err.Error(),
 				"Check that the postgres container is running and accessible"))

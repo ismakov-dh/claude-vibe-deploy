@@ -85,6 +85,37 @@ $SSH_CMD "vd status <app-name> --json"
 
 The JSON response's `url` field is the app's live origin (e.g. `https://<app-name>.<apps-domain>` — the actual `<apps-domain>` depends on the platform).
 
+### 3b. Read-only database MCP (only with `--db postgres`)
+
+Every app deployed with `--db postgres` also gets a **read-only MCP server for its
+own database**, so you can inspect the schema and query data while debugging
+instead of guessing. `vd deploy --json` and `vd status --json` return an `mcp`
+block:
+
+```json
+"mcp": {
+  "url": "https://<app-name>.mcp.<apps-domain>/sse",
+  "user": "mcp",
+  "password": "…",
+  "health": "healthy",
+  "add": "claude mcp add --transport sse <app-name>-db https://… --header \"Authorization: Basic …\""
+}
+```
+
+Run the `add` command verbatim — it already contains the encoded credentials.
+Then use it to read the app's tables.
+
+Notes worth knowing:
+
+- **SELECT only.** The MCP connects as a separate read-only role and runs in
+  restricted mode. You cannot use it to fix data, only to look.
+- **`--db prod-ro` apps get no MCP.** The production database stays reachable only
+  through the deployed dashboard. Do not try to work around this.
+- The password is regenerated on every deploy, so re-run `add` (or
+  `claude mcp remove` first) after redeploying.
+- If `health` is not `healthy`, the endpoint will hang rather than answer. Check
+  `vd logs-snapshot` and redeploy.
+
 ### 4. If something is wrong
 
 ```bash
@@ -141,10 +172,14 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--env-file` | none | Path to .env file on server |
 | `--allow-external` | false | Silence warnings about unsupported external services |
 
+`--db postgres` additionally provisions a read-only MCP for the app's database and
+returns it in the `mcp` field — see step 3b.
+
 **Policy scan on every deploy:** vd scans source for hardcoded secrets and unsupported external services. Hardcoded credentials (API keys, private keys, DB URLs with passwords) **block** the deploy (`POLICY_VIOLATION`) — move them to a `.env` and use `--env-file` (`.env` is never scanned). Unsupported services (Supabase, Firebase, MongoDB, Redis, S3) appear as warnings in the response `warnings` field; pass `--allow-external` only if deliberate.
 
 ### `vd status <app-name>`
-Returns state, health, URL, deploy time.
+Returns state, health, URL, deploy time, and the `mcp` block for apps deployed
+with `--db postgres`.
 
 ### `vd list`
 All deployed apps.
