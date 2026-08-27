@@ -231,7 +231,17 @@ async def userinfo(sub: str, token: str, ttl: int = 300) -> dict | None:
 
 `/userinfo` returns `sub`, `email`, `email_verified`, `name`, `roles`, `flags`, `status`, and a shared `profile` (`avatar_url`, `phone`, `title`, `department`, `locale`). The user's display profile = this `/userinfo` (shared, central) **joined with** your local `sub` row (app-specific).
 
-> **Never call `/admin/*` from your app.** Provisioning, password resets, and role grants are server-to-server admin operations done centrally — your app must not hold an admin key.
+> **Never call `/admin/*` from your app.** Provisioning and role grants are server-to-server admin operations done centrally — your app must not hold an admin key.
+
+**Forgot password: link, don't build.** The auth service hosts the screens. Put this on your
+sign-in form and you're done:
+
+```html
+<a href="https://<auth-host>/pages/forgot-password">Forgot password?</a>
+```
+
+The email link lands back on the auth host, which sets the new password. Same for email
+confirmation — nothing for you to build.
 
 ---
 
@@ -315,7 +325,7 @@ forwardauth / Traefik tricks are **not** available here — verify the JWT in yo
 | Every request 401, token "looks fine" | Wrong `AUTH_BASE_URL` (so `iss` mismatch), or you didn't compare `client_aud`, or clock skew on `exp`. |
 | 401 "wrong audience" | `client_aud` ≠ your `AUTH_AUDIENCE`. Check it's exactly `vibe:<name>` and that you deployed under that same `--name` (the audience is derived from the origin). |
 | Login fails with a CORS / origin error | You used `--routing path`, or deployed under a `--name` whose origin doesn't match your `AUTH_AUDIENCE`. Use subdomain routing and keep `--name` == the `<name>` in `vibe:<name>`. |
-| 403 from `/userinfo` for a real user | Their **email isn't verified** — have the admin/user verify it first. |
+| 403 from `/userinfo` for a real user | Their **email isn't verified** — ask the admin to verify it — or the admin **suspended** the account. |
 | Logged out every few minutes | No refresh loop — access tokens are ~5 min. Use supertokens-web-js (header mode). |
 | SPA: token is `undefined` | You read the JSON body — tokens are in the `st-access-token` **response header**. |
 | Intermittent 401 after running a while | You cached JWKS without refetch-on-unknown-`kid`. Use `PyJWKClient` / `createRemoteJWKSet` as shown. |
@@ -323,4 +333,6 @@ forwardauth / Traefik tricks are **not** available here — verify the JWT in yo
 
 ---
 
-*This skill mirrors the canonical source at `auth-service/docs/VIBE-AUTH.md`. Keep them in sync.*
+*The contract this skill verifies against lives in the auth-service repo:
+`docs/INTEGRATION.md` (token claims, endpoints, the `vibe:<name>` audience convention).
+When that changes, update this skill.*
