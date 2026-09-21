@@ -71,6 +71,9 @@ admin. Changing the name later breaks login.
 >    - Subject mode: **`user_uuid`** (stable identifier; the app stores data under it)
 >    - Scopes: the default `openid`, `profile`, `email` mappings — `profile` is what carries
 >      the `groups` claim the app gates on
+>    - Invalidation flow: **`default-provider-invalidation-flow`** — this is what actually ends
+>      the SSO session on logout. Without it "log out" only closes the app's own session and
+>      the next visit signs the person straight back in.
 > 3. **Application**, slug **`<name>`**, bound to that provider, with a policy binding to the
 >    group `vibe-<name>` so that only its members can authorize.
 > 4. Send back: **`client_id`**, **`client_secret`**, and the **issuer URL**
@@ -126,6 +129,10 @@ denied.
 Do not extend the TTL beyond an hour, and do not make the cookie permanent — the hour *is* the
 revocation contract.
 
+That cookie is the **only** session state anywhere: no server-side store, nothing in the
+database, nothing on disk. A redeploy therefore costs nothing to protect — at worst everyone
+signs in again, silently, through the SSO session. Same for rotating `SESSION_SECRET`.
+
 ---
 
 ## 4. Python — FastAPI + Authlib
@@ -141,7 +148,7 @@ httpx
 # auth.py — all authentication lives in this file.
 import os
 from fastapi import APIRouter, Request, HTTPException
-from fastapi.responses import RedirectResponse, JSONResponse
+from fastapi.responses import HTMLResponse, RedirectResponse, JSONResponse
 from authlib.integrations.starlette_client import OAuth, OAuthError
 
 ISSUER       = os.environ["OIDC_ISSUER"].rstrip("/")
@@ -160,11 +167,22 @@ oauth.register(
 
 router = APIRouter()
 
+# Never redirect back to /auth/login from the callback: if authorization keeps
+# failing (access_denied, a provider misconfiguration, cookies blocked) that is an
+# infinite bounce with no way out for a person who cannot read a URL bar.
+FAILED = """<!doctype html><meta charset=utf-8><title>Sign-in failed</title>
+<p>Sign-in did not complete. <a href="/auth/login">Try again</a>.</p>"""
+
+
+def safe_rd(rd: str) -> str:
+    """Same-site returns only. `//evil.com` and `/\\evil.com` are protocol-relative
+    URLs — they start with `/` and still leave the site."""
+    return rd if rd.startswith("/") and rd[1:2] not in ("/", "\\") else "/"
+
 
 @router.get("/auth/login")
 async def login(request: Request, rd: str = "/"):
-    # Only same-site returns, or this is an open redirect.
-    request.session["rd"] = rd if rd.startswith("/") else "/"
+    request.session["rd"] = safe_rd(rd)
     return await oauth.authentik.authorize_redirect(request, REDIRECT_URI)
 
 
@@ -173,7 +191,8 @@ async def callback(request: Request):
     try:
         token = await oauth.authentik.authorize_access_token(request)   # server-to-server
     except OAuthError:
-        return RedirectResponse("/auth/login")
+        request.session.clear()
+        return HTMLResponse(FAILED, status_code=400)
 
     claims = token["userinfo"]                       # verified ID-token claims
     if APP_GROUP not in (claims.get("groups") or []):
@@ -267,6 +286,16 @@ const TTL = 3600                               // 1 hour, sliding
 const KEY = new TextEncoder().encode(SESSION_SECRET)
 const COOKIE = { httpOnly: true, secure: true, sameSite: 'lax', path: '/' }
 
+// Never redirect back to /auth/login from the callback: if authorization keeps
+// failing (access_denied, a provider misconfiguration, cookies blocked) that is an
+// infinite bounce with no way out for a person who cannot read a URL bar.
+const FAILED = `<!doctype html><meta charset=utf-8><title>Sign-in failed</title>
+<p>Sign-in did not complete. <a href="/auth/login">Try again</a>.</p>`
+
+// Same-site returns only: `//evil.com` and `/\evil.com` are protocol-relative URLs —
+// they start with `/` and still leave the site.
+const safeRd = (rd) => (/^\/(?![/\\])/.test(rd) ? rd : '/')
+
 const config = await client.discovery(
   new URL(OIDC_ISSUER), OIDC_CLIENT_ID, OIDC_CLIENT_SECRET)
 
@@ -291,10 +320,9 @@ export function mountAuth(app) {
     const challenge = await client.calculatePKCECodeChallenge(verifier)
     const nonce     = client.randomNonce()
     const state     = client.randomState()
-    const rd = String(req.query.rd || '/')
     // 10 minutes is one round trip; this cookie carries no identity.
     await put(res, 'vd_oidc',
-      { verifier, nonce, state, rd: rd.startsWith('/') ? rd : '/' }, 600)
+      { verifier, nonce, state, rd: safeRd(String(req.query.rd || '/')) }, 600)
     res.redirect(client.buildAuthorizationUrl(config, {
       redirect_uri: REDIRECT_URI,
       scope: 'openid profile email',
@@ -305,7 +333,7 @@ export function mountAuth(app) {
 
   app.get('/auth/callback', async (req, res) => {
     const tmp = await read(req, 'vd_oidc')
-    if (!tmp) return res.redirect('/auth/login')
+    if (!tmp) return res.status(400).send(FAILED)   // cookie blocked or stale callback
     res.clearCookie('vd_oidc', COOKIE)
 
     let claims
@@ -314,7 +342,7 @@ export function mountAuth(app) {
         config, new URL(req.originalUrl, BASE),
         { pkceCodeVerifier: tmp.verifier, expectedNonce: tmp.nonce, expectedState: tmp.state })
       claims = tokens.claims()                              // tokens are dropped right here
-    } catch { return res.redirect('/auth/login') }
+    } catch { return res.status(400).send(FAILED) }
 
     if (!(claims.groups || []).includes(APP_GROUP)) {
       return res.status(403).json({ error: 'no_access', group: APP_GROUP })
@@ -470,6 +498,10 @@ again in a new tab → in without a password; `/auth/logout` → back at the Aut
 - [ ] Session cookie: HttpOnly, Secure, SameSite=Lax, **1 h, sliding**.
 - [ ] API returns `401` JSON; the frontend does a **top-level navigation** to `/auth/login`.
 - [ ] `403` shows "no access" and does **not** bounce to login.
+- [ ] `rd` accepted only when it starts with `/` **and not** `//` or `/\` — otherwise it is an
+      open redirect off the site.
+- [ ] A failed callback answers **400 with a "try again" link**, never a redirect to
+      `/auth/login` — that is an infinite bounce.
 - [ ] Logout clears the cookie **and** hits the Authentik end-session endpoint.
 - [ ] `sub`-keyed table via a reversible migration, run on container start.
 - [ ] No `email`/`name` copied into the database.
@@ -488,6 +520,7 @@ again in a new tab → in without a password; `/auth/logout` → back at the Aut
 | Unnamed network error in the SPA, no status | You called `/auth/login` with `fetch`. It must be a top-level navigation (§6). |
 | Signed out every hour while actively working | The cookie is not being re-signed. Python: the session must stay non-empty (do not `clear()` it in a guard). Node: `requireUser` must call `put(...)` on every request. |
 | Logout returns to the app still signed in | You only cleared the cookie. Hit the Authentik end-session endpoint too — otherwise the SSO session immediately signs the person back in. |
+| Logout hits the end-session endpoint and the person is *still* signed in | The provider has no invalidation flow set. Ask the admin for `default-provider-invalidation-flow` (§1) — the SSO session is ended by that flow's stage, not by the redirect itself, so without it the endpoint returns and the session lives on. |
 | `POLICY_VIOLATION` on deploy | `OIDC_CLIENT_SECRET` or `SESSION_SECRET` is in source. Move to `.env`, deploy with `--env-file`. |
 
 ---
