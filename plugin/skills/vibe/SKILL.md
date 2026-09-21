@@ -60,9 +60,9 @@ For each issue found, explain what needs to change and why. Then propose a plan 
 - TLS/HTTPS is automatic (wildcard cert). All apps are HTTPS.
 
 ### Sign in with the platform account (optional)
-- The app verifies an audience-bound JWT from the platform auth service. Single container serves UI + API; backend verifies the token.
-- If the user's idea needs **login / accounts / per-user data**, stop here and load the **`/auth`** skill — it has the exact contract (JWKS verify, `client_aud` check, `sub`-keyed migration) plus copy-paste Python/Node snippets.
-- Auth requires **subdomain routing** (the default). The audience is derived from the app's `--name` (`vibe:<name>`), so there's no registration step — the only human step is making sure the people who'll sign in already have platform accounts (the admin provisions them on request). **Do not** start writing login code without `/auth` loaded.
+- The platform IdP is **Authentik**. The app is a server-side OIDC client: it runs the authorization code flow inside the container, keeps no tokens, and gives the browser its own signed session cookie. Single container serves UI + API.
+- If the user's idea needs **login / accounts / per-user data**, stop here and load the **`/auth`** skill — it has the working code for Python and Node, the session/revocation rules, and the checklist to hand the platform admin. **Do not** start writing login code without `/auth` loaded.
+- Auth requires **subdomain routing** (the default). The one human step is the platform admin creating the provider, application and access group `vibe-<name>` in Authentik and handing back a client id and secret; everything else is yours to do.
 
 ## What You CANNOT Use
 
@@ -74,7 +74,7 @@ Do NOT design apps that require any of these:
 - **No S3 / file storage** — store files as bytea in PostgreSQL or use external APIs
 - **No background workers** (Celery, Bull, Sidekiq) — use cron for periodic tasks, or process inline, or use PostgreSQL as a job queue
 - **No WebSockets** — HTTP request/response only
-- **No inter-app communication** — apps are isolated. Use public URLs if needed
+- **No inter-app communication as a design** — do not build an app that depends on calling another app. There is no service discovery and no authentication between them. (They do share one Docker network, so a container *can* be reached directly by name — which is exactly why an app must never treat an inbound request as trusted just because it arrived internally.) Use public URLs if two apps genuinely must talk
 - **No email sending** — use external APIs (SendGrid, Resend) with API keys in env vars
 - **No persistent filesystem** — containers are ephemeral. All data in PostgreSQL
 - **No custom Docker volumes or mounts**
@@ -126,6 +126,8 @@ public/
   index.html        # frontend calls /api endpoints
 ```
 Deploy with `--db prod-ro --db-name <existing-database>`.
+
+**A `--db prod-ro` app reads production data and must not ship without login.** Load `/auth` and gate it on `vibe-<name>` membership before deploying — the group is the access control, and "it's just an internal dashboard" is not one.
 
 ## Rules for Writing Code
 

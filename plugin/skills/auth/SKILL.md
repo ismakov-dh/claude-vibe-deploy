@@ -7,201 +7,418 @@ description: Add "sign in with the platform account" to a vibe-deploy app. Use w
 
 **IMPORTANT: Always communicate with the user in their language. Detect the language they use and respond in the same language throughout the session.**
 
-You are adding "sign in with the platform account" to a vibe-deploy app. You never import the auth server's internals — the app **verifies a signed JWT** and keys its own data by the user id (`sub`). Follow this exactly: the user you're working with cannot debug auth. There is **no registration step** — your audience is fixed by your app name (§1). The only human step is making sure the people who sign in have platform accounts (§1).
+The platform's identity provider is **Authentik**. Your app signs people in with the
+**OpenID Connect authorization code flow, run entirely on the server side** — the app is a
+*confidential client*. It exchanges the code for tokens inside the container, reads the
+identity out of the ID token, throws the tokens away, and hands the browser **its own signed
+session cookie**. No OAuth token ever reaches the browser. This is the BFF pattern and it is
+what the platform owner requires.
 
-This is one of vibe-deploy's normal patterns — load `/vibe` for platform constraints and `/deploy` for the deploy step. Auth is an **external integration**, not a new vd capability.
+You write this once, from the examples below, and it is ~60 lines. The person you are working
+with cannot debug auth — follow the file exactly rather than improvising a variant.
 
----
-
-## 0. Three hard rules — do not negotiate
-
-1. **NO signup screen.** Accounts are provisioned centrally by the platform admin. Public signup is disabled. Build a **sign-IN** form only. If the user asks for "register", explain that new users are added by the platform team (§1).
-2. **Subdomain routing only.** Use the `vd deploy` default. **Never** pass `--routing path` — login depends on the browser origin being `https://<name>.<apps-domain>`, and path routing breaks the CORS/origin match. Every login will fail.
-3. **One container, two jobs.** Serve UI + API from the **same** app (Express + static files, FastAPI + SPA, or Next.js full-stack). The browser does login against the auth host; **your backend verifies the JWT**. vibe-deploy has no inter-app networking — it must be one container.
-
----
-
-## 1. Your audience is fixed by your app name — no registration step
-
-Your audience is derived from the app's origin, so there is nothing to register and no admin round-trip. Deployed at `https://<name>.<apps-domain>` (the live URL is returned by `vd status <name> --json` in the `url` field), your token's `client_aud` is always **`vibe:<name>`**. Pick the name, use the matching audience.
-
-**Pick the app name now and keep it.** Lowercase, starts with a letter, 2–63 chars, `a-z 0-9 -`. You must later `vd deploy --name <name>` with this **same** name — the origin, and therefore the audience, is derived from it. Change the name and login breaks.
-
-So your audience is simply:
-
-```
-AUTH_AUDIENCE = vibe:<name>      # e.g. app "trip-notes" → "vibe:trip-notes"
-```
-
-Put it in `.env` (§2). No need to ask anyone for it.
-
-**The one human step that remains: accounts.** Public signup is disabled, so the people who will sign in must already have platform accounts. Have the user ask the platform admin to provision anyone who doesn't — and, if the app gates on a specific role (§8), to grant it. You can build and deploy without this; users just can't actually log in until their accounts exist.
-
-> Why this is safe: `vibe:<name>` is bound to your own origin — app `foo` can only ever mint `vibe:foo`, never another app's audience, and the `vibe:` namespace can never be a PHI (`reporting`/`prod`) audience. A token for your app is useless against any other app or the medical backend (separate keys + pool). That isolation is the point; don't work around it.
+Load `/vibe` for platform constraints and `/deploy` for the deploy step. Auth is an **external
+integration** with Authentik, not a vd capability.
 
 ---
 
-## 2. Configuration — `.env` only, never in source
+## 0. Hard rules — do not negotiate
+
+1. **No signup screen.** Accounts are created centrally in Authentik. Public signup is
+   disabled. Your app has no registration form, no password form, no password reset — the
+   person is sent to Authentik and comes back signed in. If the user asks for "register",
+   explain that the platform admin adds people (§1).
+2. **Subdomain routing only.** Use the `vd deploy` default. **Never** `--routing path`: the
+   redirect URI is registered as an exact string, and a path-routed app shares its cookie
+   origin with every other path-routed app on the same host — their session cookies would
+   collide.
+3. **One container, two jobs.** UI and API in the **same** app (Express + static files,
+   FastAPI + SPA, Next.js). The login round trip and the API must share an origin.
+4. **No refresh tokens, no token storage, no `offline_access`.** After the code exchange the
+   app keeps nothing but its own cookie. When the cookie expires, the app bounces the browser
+   through Authentik again — with a live SSO session (30 days) that returns without a password
+   and without a visible interruption.
+5. **Secrets in `.env` only.** `vd deploy` blocks a hardcoded client secret with
+   `POLICY_VIOLATION`.
+
+---
+
+## 1. Who does what
+
+| Step | Who |
+|---|---|
+| Create the OIDC provider, application and access group in Authentik; hand over `client_id` + `client_secret` | **The platform admin — the only human step** |
+| Everything else: app name, `.env`, login/callback/logout routes, group check, session cookie, `sub`-keyed data, deploy, verification | **You, the agent** |
+
+Pick the app name **first** (lowercase, starts with a letter, 2–63 chars, `a-z 0-9 -`). It fixes
+the app URL, the redirect URI and the access group name, and all three are registered by the
+admin. Changing the name later breaks login.
+
+### The admin's checklist — send this to the user, in their language
+
+> **Create in Authentik** (test: `https://auth.test.platform.acuradai.com`,
+> prod: `https://auth.platform.acuradai.com`):
+>
+> 1. **Group** `vibe-<name>` — everyone who may use the app becomes a member. Membership is
+>    the access grant; the app checks nothing else.
+> 2. **Provider**, type *OAuth2/OpenID*:
+>    - Client type: **Confidential**
+>    - Redirect URIs (both, exact, strict match):
+>      `https://<name>.apps.platform.acuradai.com/auth/callback`
+>      `https://<name>.apps.platform.acuradai.com/`
+>      (the second one is the post-logout return — Authentik validates it against this same list)
+>    - Signing key: any **RS256** certificate
+>    - Subject mode: **`user_uuid`** (stable identifier; the app stores data under it)
+>    - Scopes: the default `openid`, `profile`, `email` mappings — `profile` is what carries
+>      the `groups` claim the app gates on
+> 3. **Application**, slug **`<name>`**, bound to that provider, with a policy binding to the
+>    group `vibe-<name>` so that only its members can authorize.
+> 4. Send back: **`client_id`**, **`client_secret`**, and the **issuer URL**
+>    `https://<authentik-host>/application/o/<name>/`.
+
+Until this exists you can still build and deploy the app — nobody can sign in yet, that is all.
+
+---
+
+## 2. `.env` — six variables, nothing in source
 
 ```bash
-# .env  — pushed with the app, injected via `vd deploy --env-file`. NEVER commit to git.
-AUTH_BASE_URL=https://<auth-host>             # ask the platform operator — this is the auth server's public host
-AUTH_ISSUER=https://<auth-host>/auth          # exact `iss` in every token — same host as AUTH_BASE_URL, with /auth appended
-AUTH_AUDIENCE=vibe:<name>                     # your app name, prefixed — what you check `client_aud` against
+# .env  — pushed with the app, injected via `vd deploy --env-file`. NEVER commit.
+OIDC_ISSUER=https://auth.test.platform.acuradai.com/application/o/<name>/
+OIDC_CLIENT_ID=<from the admin>
+OIDC_CLIENT_SECRET=<from the admin>
+SESSION_SECRET=<generate: openssl rand -hex 32>
+APP_GROUP=vibe-<name>
+APP_BASE_URL=https://<name>.apps.platform.acuradai.com
 ```
 
-- **Ask the user (or the platform operator) for the auth host.** `AUTH_BASE_URL` and `AUTH_ISSUER` aren't hardcoded in this skill on purpose — they're platform-specific. Don't guess; ask. A test host may also be available — ask if you need one.
-- `AUTH_BASE_URL`, `AUTH_ISSUER`, `AUTH_AUDIENCE` go in `.env` **only**. The deploy policy scan blocks hardcoded secrets — and these belong in env anyway.
-- The **JWKS URL** (`${AUTH_BASE_URL}/auth/jwt/jwks.json`) is public and safe to keep in source.
-- Also create `.env.example` (committed) with placeholder values so the human knows what to fill in.
-- Create `.gitignore` **first**, before any code, with at least: `.env`, `.env.*`, `*.pem`, `*.key`, `node_modules/`, `__pycache__/`, `.venv/`.
+- `OIDC_ISSUER` is the **per-application** issuer, with the slug in it. Discovery lives at
+  `${OIDC_ISSUER}/.well-known/openid-configuration` — the libraries below fetch it themselves,
+  so no other Authentik URL is ever hardcoded.
+- `APP_BASE_URL` exists so the redirect URI is a **constant** that matches the admin's
+  registration character for character. Do not build it from the incoming request: behind
+  nginx + Traefik the app sees `http`, and the resulting `http://…/auth/callback` is rejected
+  by Authentik with `redirect_uri` mismatch.
+- `SESSION_SECRET` signs your own cookie. Rotating it logs everyone out — harmless.
+- Also write `.env.example` (committed, placeholders only) and create `.gitignore` **first**,
+  listing at least `.env`, `.env.*`, `*.pem`, `*.key`, `node_modules/`, `__pycache__/`, `.venv/`.
 
 ---
 
-## 3. Token contract — what the backend checks
+## 3. The session model
 
-Your app receives a **Bearer JWT** (RS256) on API calls:
-
-```jsonc
-{
-  "sub": "8cb2a552-…",            // stable user id — your link key
-  "client_aud": "vibe:<name>",     // YOU MUST check this == AUTH_AUDIENCE
-  "roles": ["<app>-access"],       // app-access roles (may be empty)
-  "email_verified": true,
-  "flags": [],                     // advisory UI hints — NEVER use for authorization
-  "iss": "https://<auth-host>/auth",   // exactly matches your AUTH_ISSUER
-  "iat": 1782133336,
-  "exp": 1782133636                // short-lived (~5 min)
-}
+```
+browser ──GET /private──▶ app: no cookie → 302 /auth/login
+        ──/auth/login──▶ app → 302 Authentik authorize (PKCE + state + nonce)
+                               Authentik: live SSO session? → straight back, no password
+        ──/auth/callback─▶ app: exchange code (server-to-server), read ID token claims,
+                                check APP_GROUP ∈ groups, drop the tokens,
+                                set its own cookie → 302 back to /private
 ```
 
-**Verify, in order:**
+The cookie is **HttpOnly, Secure, SameSite=Lax**, holds `sub`, `email`, `name`, is signed with
+`SESSION_SECRET`, and expires after **1 hour, sliding** — every authenticated request re-signs
+it, so an active person is never interrupted, and an idle one silently re-enters through the
+SSO session. Access removal therefore takes effect within an hour, the same bound reporting
+lives with: remove someone from `vibe-<name>` and their next round trip through Authentik is
+denied.
 
-1. **RS256 signature** via JWKS (key chosen by `kid`)
-2. **`iss` == `AUTH_ISSUER`**
-3. **`exp` not passed**
-4. **`client_aud` == `AUTH_AUDIENCE`**
-
-Reject any `alg` other than `RS256` (never `none`, never `HS256`).
-
-> `client_aud` is a **custom claim**, not the standard `aud`. Your JWT library will NOT check it automatically — you compare it yourself (one line). That check is what stops another app's token from being replayed against yours. Don't skip it.
->
-> **PII is not in the token.** No email/name. If you need to display them, call `/userinfo` (§6).
+Do not extend the TTL beyond an hour, and do not make the cookie permanent — the hour *is* the
+revocation contract.
 
 ---
 
-## 4. Browser — sign in and send the token
-
-Your app runs on a different origin than the auth host, and the auth session cookie is **host-only** (never sent to your app's subdomain) — so your app authenticates with **bearer tokens**, not cookies.
-
-**Strongly preferred: `supertokens-web-js` in header mode.** It stores the access token, runs the refresh-on-401 retry loop, and keeps the user signed in. Access tokens expire in ~5 minutes; **if you hand-roll this and skip refresh, the user is logged out every few minutes** — this is the #1 thing that breaks.
-
-Configure it with:
-- `apiDomain = AUTH_BASE_URL`
-- `apiBasePath = "/auth"`
-- recipes: `EmailPassword` + `Session`
-- token transfer: `header`
-
-**If you call the auth API directly instead**, this is the exact contract:
+## 4. Python — FastAPI + Authlib
 
 ```
-POST {AUTH_BASE_URL}/auth/signin
-Headers: st-auth-mode: header,  rid: emailpassword   (browser sends Origin automatically)
-Body:    {"formFields":[{"id":"email","value":"…"},{"id":"password","value":"…"}]}
+# requirements.txt
+authlib
+itsdangerous
+httpx
 ```
-
-- On success the tokens arrive in **response headers** `st-access-token` and `st-refresh-token` — **not** in the JSON body. The server exposes them via CORS.
-- Keep the access token **in memory** (variable / React state). **Not** localStorage.
-- Send on every call to your own API: `Authorization: Bearer <access-token>`.
-- On a `401` from your API: `POST {AUTH_BASE_URL}/auth/session/refresh` with the refresh token, get new tokens, retry the original call **once**.
-- Logout: `POST {AUTH_BASE_URL}/auth/signout`.
-
----
-
-## 5. Backend — verify the token
-
-Use a JWKS client that caches keys **in memory** and refetches on an unknown `kid` (keys rotate). That's exactly right for vibe-deploy — no Redis, no disk cache, don't add your own.
-
-### Python (FastAPI / Flask)
 
 ```python
-import os, jwt                       # requirements.txt:  pyjwt[crypto]
-from fastapi import Depends, Header, HTTPException
+# auth.py — all authentication lives in this file.
+import os
+from fastapi import APIRouter, Request, HTTPException
+from fastapi.responses import RedirectResponse, JSONResponse
+from authlib.integrations.starlette_client import OAuth, OAuthError
 
-AUTH_ISSUER  = os.environ["AUTH_ISSUER"]
-AUTH_AUD     = os.environ["AUTH_AUDIENCE"]
-JWKS_URL     = os.environ["AUTH_BASE_URL"] + "/auth/jwt/jwks.json"
-_jwks = jwt.PyJWKClient(JWKS_URL)    # in-memory cache + auto refetch on new kid
+ISSUER       = os.environ["OIDC_ISSUER"].rstrip("/")
+APP_GROUP    = os.environ["APP_GROUP"]
+APP_BASE_URL = os.environ["APP_BASE_URL"].rstrip("/")
+REDIRECT_URI = f"{APP_BASE_URL}/auth/callback"     # must match the admin's registration exactly
 
-def current_user(authorization: str = Header(None)) -> dict:
-    if not authorization or not authorization.startswith("Bearer "):
-        raise HTTPException(401, "missing bearer token")
-    token = authorization[7:]
+oauth = OAuth()
+oauth.register(
+    name="authentik",
+    server_metadata_url=f"{ISSUER}/.well-known/openid-configuration",
+    client_id=os.environ["OIDC_CLIENT_ID"],
+    client_secret=os.environ["OIDC_CLIENT_SECRET"],
+    client_kwargs={"scope": "openid profile email", "code_challenge_method": "S256"},
+)
+
+router = APIRouter()
+
+
+@router.get("/auth/login")
+async def login(request: Request, rd: str = "/"):
+    # Only same-site returns, or this is an open redirect.
+    request.session["rd"] = rd if rd.startswith("/") else "/"
+    return await oauth.authentik.authorize_redirect(request, REDIRECT_URI)
+
+
+@router.get("/auth/callback")
+async def callback(request: Request):
     try:
-        key = _jwks.get_signing_key_from_jwt(token).key
-        claims = jwt.decode(
-            token, key, algorithms=["RS256"], issuer=AUTH_ISSUER,
-            options={"verify_aud": False},          # client_aud is custom; checked below
+        token = await oauth.authentik.authorize_access_token(request)   # server-to-server
+    except OAuthError:
+        return RedirectResponse("/auth/login")
+
+    claims = token["userinfo"]                       # verified ID-token claims
+    if APP_GROUP not in (claims.get("groups") or []):
+        request.session.clear()
+        return JSONResponse(
+            {"error": "no_access", "group": APP_GROUP}, status_code=403
         )
-    except Exception:
-        raise HTTPException(401, "invalid token")
-    if claims.get("client_aud") != AUTH_AUD:        # <-- the audience check (REQUIRED)
-        raise HTTPException(401, "wrong audience")
-    claims["token"] = token                          # keep raw token for /userinfo (§6)
-    return claims                                    # claims["sub"], ["roles"], ["flags"]
+
+    rd = request.session.get("rd", "/")
+    request.session.clear()                          # drops state/nonce; tokens are never stored
+    request.session.update({
+        "sub": claims["sub"],                        # stable id — your link key
+        "email": claims.get("email"),
+        "name": claims.get("name"),
+    })
+    return RedirectResponse(rd)
+
+
+@router.get("/auth/logout")
+async def logout(request: Request):
+    request.session.clear()
+    meta = await oauth.authentik.load_server_metadata()
+    return RedirectResponse(
+        f"{meta['end_session_endpoint']}?post_logout_redirect_uri={APP_BASE_URL}/"
+    )
+
+
+def current_user(request: Request) -> dict:
+    """Dependency for every protected route. Returns 401 JSON — never a redirect (§6)."""
+    sub = request.session.get("sub")
+    if not sub:
+        raise HTTPException(401, "not signed in")
+    return {"sub": sub,
+            "email": request.session.get("email"),
+            "name": request.session.get("name")}
 ```
 
-### Node (Express / Fastify / Hono / Next.js route handler)
+```python
+# main.py
+import os
+from fastapi import Depends, FastAPI
+from starlette.middleware.sessions import SessionMiddleware
+from auth import router as auth_router, current_user
 
-```js
-// package.json:  "jose"
-import { createRemoteJWKSet, jwtVerify } from 'jose'
-const JWKS = createRemoteJWKSet(new URL(process.env.AUTH_BASE_URL + '/auth/jwt/jwks.json'))
-const ISSUER = process.env.AUTH_ISSUER
-const AUD    = process.env.AUTH_AUDIENCE
+app = FastAPI()
 
-export async function currentUser(req, res, next) {
-  const h = req.headers.authorization || ''
-  if (!h.startsWith('Bearer ')) return res.status(401).end()
-  try {
-    const { payload } = await jwtVerify(h.slice(7), JWKS, { algorithms: ['RS256'], issuer: ISSUER })
-    if (payload.client_aud !== AUD) return res.status(401).end()   // audience check (REQUIRED)
-    req.user = payload                                             // payload.sub, .roles, .flags
-    next()
-  } catch { return res.status(401).end() }
-}
+# The signed cookie IS the session: no server-side store, nothing to lose on redeploy.
+# max_age enforces the 1-hour expiry on the server side when the cookie is read, and the
+# middleware re-sends the cookie on every response while the session is non-empty — that is
+# what makes it sliding. httponly is always on; https_only adds Secure.
+app.add_middleware(
+    SessionMiddleware,
+    secret_key=os.environ["SESSION_SECRET"],
+    max_age=3600,
+    same_site="lax",
+    https_only=True,
+)
+app.include_router(auth_router)
+
+
+@app.get("/api/me")
+async def me(user: dict = Depends(current_user)):
+    return user
 ```
 
-(Go: `github.com/lestrrat-go/jwx/v2/jwk` with `jwk.NewCachedSet`. Same in-memory cache. Verify `RS256`/`iss`/`exp`, then compare `client_aud` yourself.)
+Every protected route takes `user: dict = Depends(current_user)`. `GET /` must stay public —
+it is the health check (§8).
 
 ---
 
-## 6. Your own user data — keyed by `sub`, via a migration
+## 5. Node — Express + openid-client
 
-Store per-user data keyed by `sub`. **Do not copy email/name into your table** — they go stale. Read them from `/userinfo` when you need to display them (§7).
+```jsonc
+// package.json — "type": "module" is required (top-level await below)
+{ "type": "module",
+  "dependencies": { "express": "^4", "openid-client": "^6", "jose": "^5", "cookie-parser": "^1" } }
+```
 
-vibe-deploy requires a **migration tool** (Prisma for Node, Alembic for Python, Django's built-in). Never raw `CREATE TABLE`. Define the table in a **reversible** migration:
+```js
+// auth.js — all authentication lives in this file.
+import * as client from 'openid-client'
+import * as jose from 'jose'
+import cookieParser from 'cookie-parser'
+
+const { OIDC_ISSUER, OIDC_CLIENT_ID, OIDC_CLIENT_SECRET,
+        SESSION_SECRET, APP_GROUP, APP_BASE_URL } = process.env
+
+const BASE = APP_BASE_URL.replace(/\/$/, '')
+const REDIRECT_URI = `${BASE}/auth/callback`   // must match the admin's registration exactly
+const TTL = 3600                               // 1 hour, sliding
+const KEY = new TextEncoder().encode(SESSION_SECRET)
+const COOKIE = { httpOnly: true, secure: true, sameSite: 'lax', path: '/' }
+
+const config = await client.discovery(
+  new URL(OIDC_ISSUER), OIDC_CLIENT_ID, OIDC_CLIENT_SECRET)
+
+// The signed JWT cookie IS the session — no server-side store.
+async function put(res, name, payload, ttl) {
+  const jwt = await new jose.SignJWT(payload)
+    .setProtectedHeader({ alg: 'HS256' })
+    .setExpirationTime(`${ttl}s`)
+    .sign(KEY)
+  res.cookie(name, jwt, { ...COOKIE, maxAge: ttl * 1000 })
+}
+async function read(req, name) {
+  try { return (await jose.jwtVerify(req.cookies[name] || '', KEY)).payload }
+  catch { return null }
+}
+
+export function mountAuth(app) {
+  app.use(cookieParser())
+
+  app.get('/auth/login', async (req, res) => {
+    const verifier  = client.randomPKCECodeVerifier()
+    const challenge = await client.calculatePKCECodeChallenge(verifier)
+    const nonce     = client.randomNonce()
+    const state     = client.randomState()
+    const rd = String(req.query.rd || '/')
+    // 10 minutes is one round trip; this cookie carries no identity.
+    await put(res, 'vd_oidc',
+      { verifier, nonce, state, rd: rd.startsWith('/') ? rd : '/' }, 600)
+    res.redirect(client.buildAuthorizationUrl(config, {
+      redirect_uri: REDIRECT_URI,
+      scope: 'openid profile email',
+      code_challenge: challenge, code_challenge_method: 'S256',
+      state, nonce,
+    }).href)
+  })
+
+  app.get('/auth/callback', async (req, res) => {
+    const tmp = await read(req, 'vd_oidc')
+    if (!tmp) return res.redirect('/auth/login')
+    res.clearCookie('vd_oidc', COOKIE)
+
+    let claims
+    try {
+      const tokens = await client.authorizationCodeGrant(   // server-to-server
+        config, new URL(req.originalUrl, BASE),
+        { pkceCodeVerifier: tmp.verifier, expectedNonce: tmp.nonce, expectedState: tmp.state })
+      claims = tokens.claims()                              // tokens are dropped right here
+    } catch { return res.redirect('/auth/login') }
+
+    if (!(claims.groups || []).includes(APP_GROUP)) {
+      return res.status(403).json({ error: 'no_access', group: APP_GROUP })
+    }
+    await put(res, 'vd_session',
+      { sub: claims.sub, email: claims.email, name: claims.name }, TTL)
+    res.redirect(tmp.rd)
+  })
+
+  app.get('/auth/logout', (req, res) => {
+    res.clearCookie('vd_session', COOKIE)
+    res.redirect(client.buildEndSessionUrl(config,
+      { post_logout_redirect_uri: `${BASE}/` }).href)
+  })
+}
+
+// Guard every protected route. 401 JSON — never a redirect (§6).
+export async function requireUser(req, res, next) {
+  const s = await read(req, 'vd_session')
+  if (!s) return res.status(401).json({ error: 'not_signed_in' })
+  req.user = { sub: s.sub, email: s.email, name: s.name }
+  await put(res, 'vd_session', req.user, TTL)     // sliding: re-signed on activity
+  next()
+}
+```
+
+```js
+// server.js
+import express from 'express'
+import { mountAuth, requireUser } from './auth.js'
+
+const app = express()
+mountAuth(app)
+
+app.get('/api/me', requireUser, (req, res) => res.json(req.user))
+
+app.listen(3000, '0.0.0.0')   // 0.0.0.0, always — see /vibe
+```
+
+`GET /` must stay public — it is the health check (§8).
+
+(Go: `github.com/coreos/go-oidc/v3/oidc` + `golang.org/x/oauth2`. Same shape — discovery by
+issuer, PKCE, verify the ID token, check `groups`, set your own signed cookie, keep no tokens.)
+
+---
+
+## 6. The browser side — two rules
+
+**1. Your API answers `401` JSON. It never redirects an XHR.** A redirect to Authentik is
+cross-origin; `fetch` cannot follow it usefully and the failure surfaces as an unnamed network
+error. The guard in §4/§5 already does the right thing.
+
+**2. The frontend turns a `401` into a full-page navigation:**
+
+```js
+async function api(path, init) {
+  const r = await fetch(path, { ...init, credentials: 'same-origin' })
+  if (r.status === 401) {
+    window.location.assign(
+      '/auth/login?rd=' + encodeURIComponent(location.pathname + location.search))
+    return new Promise(() => {})          // navigation in flight; never resolve
+  }
+  if (r.status === 403) throw new Error('no access to this app')   // do NOT bounce to login
+  return r
+}
+```
+
+- `403` means *signed in, not in the group* — show "no access", never a login loop.
+- Logout is also a navigation: `window.location.assign('/auth/logout')`.
+- Plain HTML page routes (not XHR) may simply `302` to `/auth/login` server-side.
+- Warn the user before navigating away from unsaved input.
+
+---
+
+## 7. Per-user data — keyed by `sub`
+
+Store per-user rows under the ID-token `sub`. **Do not copy `email`/`name` into your tables** —
+they change in Authentik and your copy goes stale; read them from the session (§4/§5), which is
+refreshed at every login.
+
+vibe-deploy requires a **migration tool** (Prisma for Node, Alembic for Python, Django's
+built-in), never raw `CREATE TABLE`, and the migration must be reversible:
 
 ```prisma
 // Prisma — prisma/schema.prisma  (run `npx prisma migrate deploy` on container start)
 model AppUser {
-  sub         String   @id          // the token's `sub`
+  sub         String   @id          // the ID token's `sub`
   preferences Json     @default("{}")
   createdAt   DateTime @default(now())
 }
 ```
 
 ```python
-# Alembic — a migration's upgrade():  (run `alembic upgrade head` on container start)
+# Alembic — upgrade():   (run `alembic upgrade head` on container start)
 op.create_table("app_users",
-    sa.Column("sub", sa.Text, primary_key=True),         # the token's `sub`
+    sa.Column("sub", sa.Text, primary_key=True),          # the ID token's `sub`
     sa.Column("preferences", postgresql.JSONB, server_default="{}", nullable=False),
     sa.Column("created_at", sa.TIMESTAMP(timezone=True), server_default=sa.text("now()")),
 )
 # downgrade(): op.drop_table("app_users")
 ```
 
-Provision the row **lazily** in your handler after `current_user()` succeeds — using the auto-injected `DATABASE_URL` (you get it with `--db postgres`):
+Create the row lazily in the handler, after the guard passes, using the auto-injected
+`DATABASE_URL` (`--db postgres`):
 
 ```python
 await db.execute(
@@ -209,130 +426,81 @@ await db.execute(
 )
 ```
 
----
-
-## 7. Display name / email — `/userinfo` (pull + short cache)
-
-```python
-import httpx, time
-_cache: dict[str, tuple[float, dict]] = {}
-
-async def userinfo(sub: str, token: str, ttl: int = 300) -> dict | None:
-    hit = _cache.get(sub)
-    if hit and time.monotonic() - hit[0] < ttl:
-        return hit[1]
-    async with httpx.AsyncClient() as c:
-        r = await c.get(f"{AUTH_BASE_URL}/userinfo", headers={"Authorization": f"Bearer {token}"})
-    if r.status_code == 200:
-        _cache[sub] = (time.monotonic(), r.json())
-        return r.json()
-    return None     # 403 ⇒ email not verified — degrade gracefully (show "verify your email")
-```
-
-`/userinfo` returns `sub`, `email`, `email_verified`, `name`, `roles`, `flags`, `status`, and a shared `profile` (`avatar_url`, `phone`, `title`, `department`, `locale`). The user's display profile = this `/userinfo` (shared, central) **joined with** your local `sub` row (app-specific).
-
-> **Never call `/admin/*` from your app.** Provisioning and role grants are server-to-server admin operations done centrally — your app must not hold an admin key.
-
-**Forgot password: link, don't build.** The auth service hosts the screens. Put this on your
-sign-in form and you're done:
-
-```html
-<a href="https://<auth-host>/pages/forgot-password">Forgot password?</a>
-```
-
-The email link lands back on the auth host, which sets the new password. Same for email
-confirmation — nothing for you to build.
+Group membership is the access gate. Anything finer — document ownership, team scoping,
+per-record permissions — you model yourself, keyed by `sub`. Authentik does not manage it.
 
 ---
 
-## 8. Roles (optional) — gate access if the admin gave you one
+## 8. Deploy
 
-The `roles` claim on the token lists names the platform admin attached to the user. **You don't choose the names** — ask the admin which roles exist for your app (the account step in §1), then check for them. Two common naming conventions:
+Build inside the normal `/vibe` constraints, deploy with `/deploy`. Auth-specific rules:
 
-**Per-app roles** — scoped to your app by `<name>`, created/granted by the admin on request:
-- `<name>-access` — basic access gate
-- `<name>-admin`  — app-internal admin
-- `<name>-viewer` — read-only
-
-**Cross-app roles** — platform-wide, not tied to one app:
-- `admin`, `staff`, etc.
-
-Whichever names you're given, check them like this:
-
-```python
-from fastapi import Depends
-def require_role(role: str):
-    def dep(user: dict = Depends(current_user)):
-        if role not in (user.get("roles") or []):
-            raise HTTPException(403, "you don't have access to this app")
-        return user
-    return dep
-
-# usage: @app.get("/admin", dependencies=[Depends(require_role("auth-demo-admin"))])
-```
-
-If you don't need role gating, "a valid token for my audience" (§5) is enough to mean "a signed-in platform user." More fine-grained, app-internal permissions (document ACLs, team scoping, per-resource ownership) you still model yourself, keyed by `sub` — the platform doesn't manage those.
-
----
-
-## 9. Deploy
-
-Build the app inside the normal `/vibe` constraints, then deploy with `/deploy`. Auth-specific deploy rules:
-
-- **`--name` MUST equal the name from §1** — the live origin (and thus your `vibe:<name>` audience) is derived from it.
-- **Subdomain routing only** — do **not** pass `--routing path`.
-- Use **`--db postgres`** to get `DATABASE_URL` for your `sub`-keyed table.
-- Pass `.env` with **`--env-file`** (it holds `AUTH_*`). Never commit `.env`.
-- If the scan **blocks** with `POLICY_VIOLATION`, you hardcoded a secret — move it to `.env` and re-deploy. Using `jose`/`pyjwt`/`jsonwebtoken` is **not** flagged; you don't need `--allow-external` for a normal auth app.
-- If you also pull in something the platform doesn't support (e.g. Supabase, Firebase, an S3 SDK) and the scan warns about it, that's a real signal — fix it first; only pass `--allow-external` after you've read the warning and confirmed the dependency is genuinely needed.
+- **`--name` MUST equal the name from §1** — the URL, the redirect URI and `vibe-<name>` are
+  registered against it.
+- **Subdomain routing** — never `--routing path` (§0).
+- **`GET /` stays public.** Traefik health-checks it every 30s with no cookie; if it redirects
+  or 401s, that is fine (any HTTP response passes), but do not make it slow or DB-dependent.
+- `--db postgres` for the `sub`-keyed table, `--env-file` for `.env`.
+- `POLICY_VIOLATION` on deploy means a secret is in source — move it to `.env`.
+  `authlib` / `openid-client` / `jose` are not flagged; you do not need `--allow-external`.
 
 ```bash
-# push (exclude build artifacts)
 tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./<name> \
   | ssh vd-server "vd push <name> --json"
 
-# deploy: own DB, env file, subdomain routing (default)
 ssh vd-server "vd deploy /opt/vibe-deploy/push/<name> --name <name> --db postgres \
   --env-file /opt/vibe-deploy/push/<name>/.env --json"
 
-# verify
-ssh vd-server "vd status <name> --json"   # the `url` field in the JSON response is your app's live origin
+ssh vd-server "vd status <name> --json"    # the `url` field is the live origin
 ```
 
-forwardauth / Traefik tricks are **not** available here — verify the JWT in your backend (§5). Reach the auth service only by its public `AUTH_BASE_URL`.
+Then verify by hand, in a browser: open the app → Authentik login → back in the app; open it
+again in a new tab → in without a password; `/auth/logout` → back at the Authentik login.
 
 ---
 
-## 10. Pre-flight checklist
+## 9. Pre-flight checklist
 
-- [ ] App **name** chosen; the **same** name used for `vd deploy --name`.
-- [ ] `AUTH_AUDIENCE=vibe:<name>` in `.env` (derived from the name — no registration needed).
-- [ ] The users who'll sign in have platform accounts (ask the admin to provision any missing).
-- [ ] `.gitignore` exists and lists `.env`; `.env` is **not** committed.
-- [ ] Sign-**in** form only — no signup page.
-- [ ] Backend verifies signature + `iss` + `exp` **and** `client_aud == AUTH_AUDIENCE`.
-- [ ] Browser uses bearer tokens with a **refresh-on-401** loop (supertokens-web-js).
-- [ ] `sub`-keyed table created via a **reversible migration**, run on container start.
-- [ ] No email/name copied into your DB; read from `/userinfo`. No admin key in the app.
-- [ ] Deployed with `--db postgres --env-file …`, **subdomain** routing.
+- [ ] App **name** chosen; used for `--name`, the redirect URI and `vibe-<name>`.
+- [ ] Admin checklist (§1) sent to the user; `client_id` / `client_secret` / issuer received.
+- [ ] `.gitignore` written **first**; `.env` not committed; `.env.example` committed.
+- [ ] All six variables in `.env`; `SESSION_SECRET` freshly generated.
+- [ ] Code exchange is server-side; **no token reaches the browser**; nothing stored.
+- [ ] `APP_GROUP ∈ claims.groups` checked at callback → `403` when missing.
+- [ ] Session cookie: HttpOnly, Secure, SameSite=Lax, **1 h, sliding**.
+- [ ] API returns `401` JSON; the frontend does a **top-level navigation** to `/auth/login`.
+- [ ] `403` shows "no access" and does **not** bounce to login.
+- [ ] Logout clears the cookie **and** hits the Authentik end-session endpoint.
+- [ ] `sub`-keyed table via a reversible migration, run on container start.
+- [ ] No `email`/`name` copied into the database.
+- [ ] `GET /` public; deployed with **subdomain** routing.
 
 ---
 
-## 11. Troubleshooting
+## 10. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
-| Every request 401, token "looks fine" | Wrong `AUTH_BASE_URL` (so `iss` mismatch), or you didn't compare `client_aud`, or clock skew on `exp`. |
-| 401 "wrong audience" | `client_aud` ≠ your `AUTH_AUDIENCE`. Check it's exactly `vibe:<name>` and that you deployed under that same `--name` (the audience is derived from the origin). |
-| Login fails with a CORS / origin error | You used `--routing path`, or deployed under a `--name` whose origin doesn't match your `AUTH_AUDIENCE`. Use subdomain routing and keep `--name` == the `<name>` in `vibe:<name>`. |
-| 403 from `/userinfo` for a real user | Their **email isn't verified** — ask the admin to verify it — or the admin **suspended** the account. |
-| Logged out every few minutes | No refresh loop — access tokens are ~5 min. Use supertokens-web-js (header mode). |
-| SPA: token is `undefined` | You read the JSON body — tokens are in the `st-access-token` **response header**. |
-| Intermittent 401 after running a while | You cached JWKS without refetch-on-unknown-`kid`. Use `PyJWKClient` / `createRemoteJWKSet` as shown. |
-| Deploy blocked `POLICY_VIOLATION` | A secret is hardcoded — move it to `.env`, deploy with `--env-file`. |
+| Authentik: `Invalid redirect URI` | `APP_BASE_URL` does not match the registration exactly — scheme, host, trailing slash, `/auth/callback`. Do not derive it from the request; behind the proxy the app sees `http`. |
+| Loop: login → app → login | The session cookie is not coming back. `Secure` requires HTTPS (fine on the platform), `SameSite=Lax` is required — `Strict` drops the cookie on the return from Authentik. Check `SESSION_SECRET` is set and stable. |
+| `403 no_access` for someone who should have access | Not a member of `vibe-<name>`, or the provider is missing the `profile` scope mapping, so no `groups` claim arrives at all. Ask the admin to check both. |
+| `KeyError: 'userinfo'` (Python) | The provider returned no ID token — the `openid` scope is missing from `client_kwargs`. |
+| Unnamed network error in the SPA, no status | You called `/auth/login` with `fetch`. It must be a top-level navigation (§6). |
+| Signed out every hour while actively working | The cookie is not being re-signed. Python: the session must stay non-empty (do not `clear()` it in a guard). Node: `requireUser` must call `put(...)` on every request. |
+| Logout returns to the app still signed in | You only cleared the cookie. Hit the Authentik end-session endpoint too — otherwise the SSO session immediately signs the person back in. |
+| `POLICY_VIOLATION` on deploy | `OIDC_CLIENT_SECRET` or `SESSION_SECRET` is in source. Move to `.env`, deploy with `--env-file`. |
 
 ---
 
-*The contract this skill verifies against lives in the auth-service repo:
-`docs/INTEGRATION.md` (token claims, endpoints, the `vibe:<name>` audience convention).
-When that changes, update this skill.*
+## 11. Planned: forward auth from the platform
+
+The platform's target is to put an Authentik proxy provider and Traefik `forwardAuth` in front
+of the app (`vd deploy --auth`), after which the app reads identity from `X-authentik-*`
+headers behind a trusted ingress and **carries no auth code at all**. That needs a vd release
+(Traefik file provider, an outpost route per app host, an ingress secret) and does not exist
+yet — everything in this skill is what works today. When it lands, this skill is replaced and
+apps drop §4/§5 entirely.
+
+Background and the session/revocation contract this skill follows:
+auth-service repo, `docs/adr/ADR-005-browser-session-renewal.md` and
+`docs/adr/ADR-004-authentik-replaces-auth-service.md`.

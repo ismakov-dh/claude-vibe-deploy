@@ -77,6 +77,8 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db post
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing path --json"
 ```
 
+**`--db prod-ro` apps must have login before they are deployed** — they expose production data, so gate them on Authentik group membership first (load `/auth`). Apps using platform login also require the default **subdomain** routing, never `--routing path`.
+
 ### 3. Verify
 
 ```bash
