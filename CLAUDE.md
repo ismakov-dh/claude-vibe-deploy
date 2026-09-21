@@ -37,7 +37,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Manual rollback** | `vd rollback` | Revert to any of the last 5 deployments. |
 | **Logs** | `vd logs-snapshot` | Get container logs for debugging. |
 | **File upload** | `vd push` | Send files via tar stream through SSH. No scp needed. |
-| **Platform login** | external integration | "Sign in with platform account" — app verifies an audience-bound JWT. Agents load the `/auth` skill for the exact contract. Subdomain routing required. |
+| **Platform login** | external integration | "Sign in with platform account" via Authentik OIDC. The app is a confidential client: code exchange server-side, no token in the browser, its own signed session cookie. Agents load the `/auth` skill. Subdomain routing required. |
 
 ### What You DON'T Have
 
@@ -47,7 +47,7 @@ Do not design apps that require any of these:
 - **No S3/file storage** — no persistent filesystem. Store files as bytea in PostgreSQL or use external APIs
 - **No background workers** (beyond cron) — no Celery, Bull, Sidekiq. Use cron for periodic tasks. For async work, process inline or use PostgreSQL as a job queue
 - **No WebSocket support** — HTTP only through Traefik (WebSocket upgrade headers are forwarded, but not tested)
-- **No inter-app communication** — apps cannot call each other by container name. Use public URLs if needed
+- **No inter-app communication as a design** — no service discovery, no authentication between apps. They do share one Docker network, so an app must never trust an inbound request just because it arrived internally. Use public URLs if two apps must talk
 - **No email sending** — use external APIs (SendGrid, Resend, etc.) with API keys in env vars
 - **No custom Docker volumes** — containers are ephemeral. All persistent data goes in PostgreSQL
 - **No root access inside containers** — apps run as non-root
