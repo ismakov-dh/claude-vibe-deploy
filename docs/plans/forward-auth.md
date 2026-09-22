@@ -91,14 +91,43 @@ Making the public URL work would need `forwardedHeaders.trustedIPs` on the swarm
 security-relevant stacks change on an entrypoint published on the host, to let a client assert
 its own identity. Not worth it.
 
-**Therefore: attach vd-traefik to the `traefik-gateway` overlay and address Authentik at
-`http://authentik_server:9000`.** This is not an infrastructure change: `traefik-gateway` is
-already `attachable: true`, `authentik_server` is already on it, and — verified on the host —
-vd and the swarm are **one Docker daemon on one machine** (`hostname` = `nashville`, single
-daemon ID, `vd-traefik` and `authentik_server` running side by side, `vd-net` and
-`traefik-gateway` in the same `docker network ls`). The NAT question is settled: same host.
-Cost is one `networks:` entry in `infrastructure.yml`; `vd init` reconnects if the overlay was
-recreated. It is also exactly how reporting is wired.
+**Therefore vd-traefik must reach Authentik over a swarm overlay** and address it at
+`http://authentik_server:9000`. This is possible at all because — verified on the host — vd and
+the swarm are **one Docker daemon on one machine** (`hostname` = `nashville`, single daemon ID,
+`vd-traefik` and `authentik_server` side by side, `vd-net` and the overlays in one
+`docker network ls`). The NAT question is settled: same host.
+
+**Which overlay: a dedicated `authentik-forward`, not `traefik-gateway`** (stacks-1e's
+proposal, adopted). `traefik-gateway` would work and needs no new network, but it carries 13
+services including the prod reporting API, its ASR and `postgres-mcp`. An overlay is L3
+connectivity with no authorization between members, so joining it would hand vd-traefik direct
+network access to prod backends and a database MCP — bypassing Traefik, forward auth and the
+ingress secret entirely. The access radius should match the task, and the task is one hostname.
+
+A dedicated attachable overlay holding only `authentik_server` (plus `authentik-test_server`
+for the spike) and `vd-traefik` gives identical mechanics — preserved `X-Forwarded-Host`,
+forwardAuth on the internal address — with none of that reach. Cost on the stacks side is one
+network and a line in two stacks; on ours, one `networks:` entry in `infrastructure.yml`.
+
+The overlay is `external: true` everywhere, so no `docker stack deploy` creates or removes it
+and vd-traefik stays attached across deploys. `vd init` re-attaching is belt-and-braces for the
+one case that does break it — the network being recreated wholesale — and stacks warns first.
+
+### The scheme must survive to the outpost
+
+Host nginx terminates TLS and proxies to vd-traefik over plain http on `127.0.0.1:8080`, so
+the outpost learns the scheme only from `X-Forwarded-Proto`. nginx already sets it
+(`proxy_set_header X-Forwarded-Proto $scheme` in `vd-proxy.conf` — no change needed from the
+servers side), but Traefik's default is to distrust and overwrite incoming `X-Forwarded-*`,
+which would turn it back into `http`. The outpost would then build its callback as
+`http://<app>.<domain>/outpost.goauthentik.io/callback`.
+
+`vd init` therefore sets `--entrypoints.web.forwardedHeaders.trustedIPs=127.0.0.1/32`. Safe
+here because vd-traefik is published on loopback only, so nothing but nginx can reach it.
+
+Related, one line: `vd-proxy.conf` serves `:80` and `:443` from one server block with no
+redirect, so `http://<app>.<domain>` is reachable and would propagate `X-Forwarded-Proto: http`
+all the way. Add a `:80 → :443` redirect to the nginx template in `deploy.sh`.
 
 ### Per-app labels (`app.yml.tmpl`)
 
@@ -143,6 +172,12 @@ so `fetch` cannot report it), do a **top-level navigation** to
 `/outpost.goauthentik.io/sign_out`, and it is **global** — it ends the Authentik session for
 every SSO application. With a 7-day assertion both are rare.
 
+The outpost's cookie is `authentik_proxy_<hash>`, host-only on the provider's `external_host`,
+so there is one per app and no sharing across vibe apps. Signing out of one app therefore does
+not log the others out immediately: it kills the SSO session, and each other app keeps working
+on its own cookie until that expires — up to a week — then lands on the login page at its next
+round trip. Worth saying out loud in the skill; "log out" is not an instant global eviction.
+
 ## 4. vd surface
 
 - `--auth` on `vd deploy`; `--auth-ttl` (default `days=7`).
@@ -166,8 +201,9 @@ ordering below mandatory, not cautious.
 
 1. **Spike on test first** (`auth.test.platform.acuradai.com`, synthetic pool): one throwaway
    app end to end, proving the overlay attachment, that the outpost picks up a newly added
-   provider without `docker service update --force`, and the `start`/`sign_out` paths. Prod
-   config only after it passes.
+   provider without `docker service update --force`, and the `start`/`sign_out` paths. **First
+   check of all: the `Location` in the outpost's `302` must be `https://`** — if the scheme is
+   lost anywhere it shows up here and nowhere else. Prod config only after it passes.
 2. Authentik client + templates + flag.
 3. `auth-demo` (FastAPI, `/` greeting + `/api/me`) on prod: sign in; remove from group → denied
    at the next round trip; `docker exec` from a neighbouring container without the secret → `401`.
