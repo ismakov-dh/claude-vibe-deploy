@@ -25,9 +25,15 @@ Idempotent: look up by name/slug, then create or patch. All five, in this order:
 Four behaviours that all fail silently, so the client is written against these, not
 against the shape the documentation suggests:
 
-- **`sub_mode` is not a proxy-provider field.** Posting `sub_mode=user_uuid` is accepted and
-  dropped; the working reporting provider has no such field either. So it is out of the spec
-  above. `X-authentik-uid` is therefore authentik's `user.uid` —
+- **`sub_mode` cannot be set through the proxy endpoint** — posting `sub_mode=user_uuid` there
+  is accepted and dropped, and the field is absent from the response. It is not unsettable,
+  though: `ProxyProvider` inherits `OAuth2Provider` by multi-table inheritance, one row and one
+  pk, so it is written against the parent (`PATCH /providers/oauth2/<pk>/`, or a blueprint entry
+  on `authentik_providers_oauth2.oauth2provider`). That is how reporting's provider has
+  `sub_mode=user_uuid` despite the proxy serializer never showing it (stacks-1e, read from the
+  database). We do not need it: we key on `X-authentik-uid`, and reporting needs it only because
+  it links identity by the directory UUID in `sub`. So it stays out of the spec above.
+  `X-authentik-uid` is authentik's `user.uid` —
   `sha256("<user id>-<install id>")` — which is stable per installation and identical across
   providers, so it works as the app's user key and survives a provider being recreated. (Same
   formula the reporting team verified against a live instance.) It differs between test and
@@ -40,7 +46,9 @@ against the shape the documentation suggests:
 - **Lists are filtered by object permissions, counts are not.** `core/applications/` reports
   `count=1` with an empty `results`: the token cannot read the application it does not own. So
   "not found" does not mean "free to create" — a slug collision must be handled as a `400` on
-  create, with a clear error, not as a crash.
+  create, with a clear error, not as a crash. Note the sharp edge: `if count > 0 then it exists`
+  lies precisely when the token lacks the rights to see the object, which is the case that
+  matters. Decide on `results`, never on `count`.
 - **Always re-read after create and compare.** Unknown fields vanish quietly, and defaults fill
   in around them; a provider can look configured without being it. This is what cost the
   reporting rollout three days.
