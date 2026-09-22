@@ -24,6 +24,27 @@ func NetworkCreate(name string) error {
 	return err
 }
 
+// NetworkGateway returns a network's gateway address.
+//
+// Traefik needs it: nginx proxies to vd-traefik's published port on 127.0.0.1,
+// but a loopback-published port arrives through docker-proxy, so the container
+// sees the bridge gateway (172.24.0.1 here) as the client — not 127.0.0.1.
+// Trusting only loopback would leave nginx untrusted, Traefik would overwrite
+// X-Forwarded-Proto, and the Authentik outpost would build http:// callbacks.
+// The subnet is Docker's choice and differs per host, so it is read, not assumed.
+func NetworkGateway(name string) (string, error) {
+	r, err := shell.Run(30*time.Second, "docker", "network", "inspect", "--format",
+		"{{range .IPAM.Config}}{{.Gateway}}{{end}}", name)
+	if err != nil {
+		return "", err
+	}
+	gw := strings.TrimSpace(r.Stdout)
+	if gw == "" {
+		return "", fmt.Errorf("network %s reports no gateway", name)
+	}
+	return gw, nil
+}
+
 // NetworkConnect connects a container to a network.
 func NetworkConnect(network, container string) error {
 	// Check if already connected

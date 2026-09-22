@@ -12,13 +12,30 @@ services:
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=vd-net"
+      # File provider: the docker provider can only point a service at a
+      # container, and Authentik is a swarm service on another network.
+      - "--providers.file.directory=/etc/traefik/dynamic"
+      - "--providers.file.watch=true"
       - "--entrypoints.web.address=:80"
+      # Host nginx terminates TLS and proxies here over plain http, so the scheme
+      # survives only in X-Forwarded-Proto — and Traefik's default is to distrust
+      # and overwrite it. Without this the Authentik outpost builds http://
+      # callbacks and login fails in a way that shows up in nothing but the
+      # scheme of one Location header.
+      #
+      # The gateway address is filled in by `vd init` from the live network: a
+      # loopback-published port reaches the container through docker-proxy, which
+      # sources from the bridge gateway rather than 127.0.0.1, and Docker picks
+      # that subnet per host. Neighbouring apps keep their own 172.x.x.x
+      # addresses and stay untrusted, so they still cannot forge these headers.
+      - "--entrypoints.web.forwardedHeaders.trustedIPs={{.TrustedIPs}}"
       - "--log.level=WARN"
     ports:
       - "127.0.0.1:8080:80"
       - "127.0.0.1:8099:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./traefik-dynamic:/etc/traefik/dynamic:ro
     networks:
       - vd-net
     labels:

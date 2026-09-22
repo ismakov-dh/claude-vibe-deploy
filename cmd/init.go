@@ -7,6 +7,8 @@ import (
 	"io/fs"
 	"os"
 	"path/filepath"
+	"strings"
+	"text/template"
 
 	"github.com/spf13/cobra"
 	"github.com/vibe-deploy/vd/internal/docker"
@@ -19,6 +21,10 @@ var (
 	initProdPrimary string
 	initProdReplica string
 	initProdUser    string
+
+	initAuthentikURL      string
+	initAuthentikInternal string
+	initAuthentikNetwork  string
 )
 
 func init() {
@@ -26,6 +32,9 @@ func init() {
 	initCmd.Flags().StringVar(&initProdPrimary, "prod-db", "", "prod postgres primary container (for creating users)")
 	initCmd.Flags().StringVar(&initProdReplica, "prod-db-replica", "", "prod postgres replica container (for app connections, defaults to primary)")
 	initCmd.Flags().StringVar(&initProdUser, "prod-db-user", "postgres", "admin user on the prod postgres")
+	initCmd.Flags().StringVar(&initAuthentikURL, "authentik-url", "", "public Authentik URL (e.g. https://auth.example.com)")
+	initCmd.Flags().StringVar(&initAuthentikInternal, "authentik-internal", "", "Authentik address on the overlay (e.g. http://authentik_server:9000)")
+	initCmd.Flags().StringVar(&initAuthentikNetwork, "authentik-network", "authentik-forward", "overlay vd-traefik joins to reach Authentik")
 	rootCmd.AddCommand(initCmd)
 }
 
@@ -102,16 +111,61 @@ func runInit() {
 		cfg.ProdDBUser = initProdUser
 	}
 
-	// Write infrastructure compose file
+	if initAuthentikURL != "" {
+		cfg.AuthentikURL = strings.TrimRight(initAuthentikURL, "/")
+	}
+	if initAuthentikInternal != "" {
+		cfg.AuthentikInternal = strings.TrimRight(initAuthentikInternal, "/")
+	}
+	if initAuthentikNetwork != "" {
+		cfg.AuthentikNetwork = initAuthentikNetwork
+	}
+
+	// The API token arrives in the environment rather than a flag: a flag is
+	// visible in `ps` and in the ssh wrapper's log line for every caller on the
+	// box. Persisted once, then read from disk on later runs.
+	if tok := os.Getenv("VD_AUTHENTIK_TOKEN"); tok != "" {
+		if err := os.WriteFile(state.AuthentikTokenPath(), []byte(strings.TrimSpace(tok)+"\n"), 0600); err != nil {
+			output.Fail("init", output.NewError("INIT_FAILED",
+				"Failed to write authentik.token", "Check permissions"))
+		}
+		output.Info("Stored Authentik API token at %s", state.AuthentikTokenPath())
+	}
+
+	// Write infrastructure compose file.
+	//
+	// Templated for one value: Traefik's trusted proxy addresses. See the
+	// template's own comment — the gateway is read from the live network because
+	// Docker picks the subnet per host, and guessing it breaks forward auth
+	// silently.
 	infraContent, err := fs.ReadFile(templatesFS, "templates/compose/infrastructure.yml")
 	if err != nil {
 		output.Fail("init", output.NewError("INIT_FAILED",
 			"Failed to read embedded infrastructure template", "This is a bug"))
 	}
-	if err := os.WriteFile(state.InfraComposePath(), infraContent, 0644); err != nil {
+	trusted := "127.0.0.1/32"
+	if gw, err := docker.NetworkGateway("vd-net"); err == nil {
+		trusted += "," + gw + "/32"
+	} else {
+		output.Warn("Could not read vd-net gateway (%v) — trusting loopback only. "+
+			"Apps deployed with --auth may see the wrong scheme.", err)
+	}
+	infraTmpl, err := template.New("infrastructure").Parse(string(infraContent))
+	if err != nil {
+		output.Fail("init", output.NewError("INIT_FAILED",
+			"Failed to parse infrastructure template", "This is a bug"))
+	}
+	var infraOut strings.Builder
+	if err := infraTmpl.Execute(&infraOut, map[string]string{"TrustedIPs": trusted}); err != nil {
+		output.Fail("init", output.NewError("INIT_FAILED",
+			"Failed to render infrastructure template", "This is a bug"))
+	}
+	if err := os.WriteFile(state.InfraComposePath(), []byte(infraOut.String()), 0644); err != nil {
 		output.Fail("init", output.NewError("INIT_FAILED",
 			"Failed to write infrastructure.yml", "Check permissions"))
 	}
+
+	writeTraefikDynamic(cfg)
 
 	// Write .env for infrastructure compose (postgres password)
 	envContent := fmt.Sprintf("VD_POSTGRES_PASSWORD=%s\n", cfg.VDPostgresPassword)
@@ -133,6 +187,23 @@ func runInit() {
 		output.Warn("Start manually: cd %s && docker compose -f infrastructure.yml up -d", state.VDHome())
 	} else {
 		output.Info("Traefik and PostgreSQL are running")
+	}
+
+	// Attach vd-traefik to the Authentik overlay — after compose up, always.
+	// Compose recreates the container with only the networks it declares, so a
+	// recreate drops this attachment and it has to be made again.
+	//
+	// Deliberately not declared in infrastructure.yml as an external network: if
+	// the overlay were missing, `docker compose up` would refuse to start the
+	// whole file and take PostgreSQL down with it. A missing overlay should cost
+	// forward auth, nothing else.
+	if cfg.AuthentikNetwork != "" && cfg.AuthentikInternal != "" {
+		if err := docker.NetworkConnect(cfg.AuthentikNetwork, "vd-traefik"); err != nil {
+			output.Warn("Could not connect vd-traefik to %s: %v", cfg.AuthentikNetwork, err)
+			output.Warn("Apps deployed with --auth will not be able to reach Authentik")
+		} else {
+			output.Info("Connected vd-traefik to %s", cfg.AuthentikNetwork)
+		}
 	}
 
 	// Pull the per-app MCP image now. It lives in a private registry, and a
@@ -166,4 +237,40 @@ func generateRandomPassword(length int) string {
 	b := make([]byte, length/2+1)
 	rand.Read(b)
 	return hex.EncodeToString(b)[:length]
+}
+
+// writeTraefikDynamic renders the file-provider config that points Traefik at
+// Authentik. Nothing is written when Authentik is not configured: an empty
+// dynamic directory is fine, a half-written service definition is not.
+func writeTraefikDynamic(cfg *state.Config) {
+	if err := os.MkdirAll(state.TraefikDynamicDir(), 0755); err != nil {
+		output.Fail("init", output.NewError("INIT_FAILED",
+			"Failed to create "+state.TraefikDynamicDir(), "Check permissions"))
+	}
+	if cfg.AuthentikInternal == "" {
+		return
+	}
+	raw, err := fs.ReadFile(templatesFS, "templates/traefik/authentik.yml.tmpl")
+	if err != nil {
+		output.Fail("init", output.NewError("INIT_FAILED",
+			"Failed to read embedded Authentik template", "This is a bug"))
+	}
+	t, err := template.New("authentik").Parse(string(raw))
+	if err != nil {
+		output.Fail("init", output.NewError("INIT_FAILED",
+			"Failed to parse Authentik template", "This is a bug"))
+	}
+	var out strings.Builder
+	if err := t.Execute(&out, map[string]string{
+		"Internal": cfg.AuthentikInternal,
+		"Network":  cfg.AuthentikNetwork,
+	}); err != nil {
+		output.Fail("init", output.NewError("INIT_FAILED",
+			"Failed to render Authentik template", "This is a bug"))
+	}
+	if err := os.WriteFile(state.AuthentikDynamicPath(), []byte(out.String()), 0644); err != nil {
+		output.Fail("init", output.NewError("INIT_FAILED",
+			"Failed to write "+state.AuthentikDynamicPath(), "Check permissions"))
+	}
+	output.Info("Wrote Traefik dynamic config for %s", cfg.AuthentikInternal)
 }

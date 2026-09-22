@@ -15,9 +15,18 @@ type Config struct {
 	VDPostgresPassword string `json:"vd_postgres_password,omitempty"`
 
 	// External prod DB (read-only attach for dashboards)
-	ProdDBPrimary   string `json:"prod_db_primary,omitempty"`   // primary — where users are created
-	ProdDBReplica   string `json:"prod_db_replica,omitempty"`   // replica — where apps connect to read
-	ProdDBUser      string `json:"prod_db_user,omitempty"`      // admin user for creating roles
+	ProdDBPrimary string `json:"prod_db_primary,omitempty"` // primary — where users are created
+	ProdDBReplica string `json:"prod_db_replica,omitempty"` // replica — where apps connect to read
+	ProdDBUser    string `json:"prod_db_user,omitempty"`    // admin user for creating roles
+
+	// Authentik — the identity provider behind `vd deploy --auth`.
+	// AuthentikInternal is an address on the overlay vd-traefik joins (see
+	// AuthentikNetwork), not the public host: the outpost resolves an app's
+	// provider from X-Forwarded-Host, and going out through nginx and the swarm
+	// Traefik would overwrite that header. docs/plans/forward-auth.md §2.
+	AuthentikURL      string `json:"authentik_url,omitempty"`
+	AuthentikInternal string `json:"authentik_internal,omitempty"`
+	AuthentikNetwork  string `json:"authentik_network,omitempty"`
 
 	CreatedAt string `json:"created_at"`
 }
