@@ -20,6 +20,18 @@ Idempotent: look up by name/slug, then create or patch. All five, in this order:
 | Policy binding | application → group | so only group members pass `authorize` |
 | Embedded outpost | `providers += <pk>` | **without this the outpost does not serve the provider at all** |
 
+**The outpost's provider list belongs to vd.** The stacks blueprint no longer manages
+`providers`, so vd is the only writer and must not assume it owns the contents. Always
+read-modify-write: `GET` the outpost, and if our pk is absent, `PATCH` the **full** list —
+everything already there, plus ours. `vd destroy` removes ours the same way. Never `PATCH`
+the list with only our own provider: that silently unpublishes every other app.
+
+**Group names are derived, never passed through.** The only name vd may create is
+`vibe-<app>`, where `<app>` is the already-validated app name (lowercase, starts with a letter,
+2–63 chars, `a-z0-9-`). vd re-checks the composed name against that pattern before the call and
+aborts if it does not match — a group name that does not fit is a bug in vd, not a
+configuration option, and the token's `add` right makes a mistake here permanent.
+
 `vd destroy` removes the binding, application and provider, and drops the provider from the
 outpost. The group stays — vd has no right to delete it, and re-deploying must not silently
 restore access somebody revoked.
@@ -30,9 +42,10 @@ week to bite.** The immediate lever is deactivating the account, which kills the
 once. `--auth-ttl` overrides it per app — use a short one for `--db prod-ro` apps, which read
 production data.
 
-The embedded outpost's `providers` list is one shared object, so two concurrent
-`vd deploy --auth` runs can clobber each other's append. vd takes a lock file in `$VD_HOME`
-around the Authentik phase. <!-- ponytail: one global lock; per-app locking if deploys ever run in parallel for real -->
+The outpost's `providers` list is one shared object and read-modify-write is not atomic, so two
+concurrent `vd deploy --auth` runs can drop each other's provider. vd takes a lock file in
+`$VD_HOME` around the whole Authentik phase.
+<!-- ponytail: one global lock; per-app locking if deploys ever run in parallel for real -->
 
 ### API surface and token permissions (needed from stacks)
 
