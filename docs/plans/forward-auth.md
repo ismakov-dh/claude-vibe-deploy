@@ -15,10 +15,37 @@ Idempotent: look up by name/slug, then create or patch. All five, in this order:
 | Object | Key | Settings |
 |---|---|---|
 | Group | `vibe-<app>` | created if absent; vd never patches or deletes it (it only holds `add`+`view`) |
-| Proxy provider | `vibe-<app>` | `mode=forward_single`, `external_host=https://<app>.<domain>`, `access_token_validity=days=7`, `sub_mode=user_uuid`, authorization flow `default-provider-authorization-implicit-consent`, invalidation flow `default-provider-invalidation-flow` |
+| Proxy provider | `vibe-<app>` | `mode=forward_single`, `external_host=https://<app>.<domain>`, `access_token_validity=days=7`, `intercept_header_auth=false`, authorization flow `default-provider-authorization-implicit-consent`, invalidation flow `default-provider-invalidation-flow` |
 | Application | slug `vibe-<app>` | bound to that provider |
 | Policy binding | application → group | so only group members pass `authorize` |
 | Embedded outpost | `providers += <pk>` | **without this the outpost does not serve the provider at all** |
+
+### What the API actually does — measured on test, 2026-09-22
+
+Four behaviours that all fail silently, so the client is written against these, not
+against the shape the documentation suggests:
+
+- **`sub_mode` is not a proxy-provider field.** Posting `sub_mode=user_uuid` is accepted and
+  dropped; the working reporting provider has no such field either. So it is out of the spec
+  above. `X-authentik-uid` is therefore authentik's `user.uid` —
+  `sha256("<user id>-<install id>")` — which is stable per installation and identical across
+  providers, so it works as the app's user key and survives a provider being recreated. (Same
+  formula the reporting team verified against a live instance.) It differs between test and
+  prod, as two installations should.
+- **Unknown query parameters are ignored, not rejected.** `?bogus=x` returns the whole list.
+  `?name=` works on groups but is *not* supported on proxy providers: `providers/proxy/?name=nope`
+  returned reporting's provider. An existence check written that way would find a stranger's
+  provider and either skip creation or patch theirs. Use `?name__iexact=` (verified to filter)
+  and re-compare the name client-side before believing a hit.
+- **Lists are filtered by object permissions, counts are not.** `core/applications/` reports
+  `count=1` with an empty `results`: the token cannot read the application it does not own. So
+  "not found" does not mean "free to create" — a slug collision must be handled as a `400` on
+  create, with a clear error, not as a crash.
+- **Always re-read after create and compare.** Unknown fields vanish quietly, and defaults fill
+  in around them; a provider can look configured without being it. This is what cost the
+  reporting rollout three days.
+
+Verified negatively too: deleting a group returns `403`, as the token's rights intend.
 
 **The outpost's provider list belongs to vd.** The stacks blueprint no longer manages
 `providers`, so vd is the only writer and must not assume it owns the contents. Always
