@@ -254,6 +254,8 @@ Always check `ok` field. On error, read `hint` for the fix.
 | `AUTH_REQUIRES_SUBDOMAIN` | Drop `--routing path` |
 | `INVALID_AUTH_TTL` | Use `days=7`, `hours=1`, …; `--auth-ttl` needs `--auth` |
 | `ROLLBACK_WOULD_UNPROTECT` | Previous version was public — fix forward and redeploy instead |
+| `MANIFEST_UNREADABLE` | The app's manifest exists but cannot be read — vd will not guess whether it is protected. Ask the platform admin |
+| `MANIFEST_WRITE_FAILED` | An `--auth` app deployed but its manifest was not saved — ask the platform admin to fix permissions, then redeploy with `--auth` |
 
 ## App Naming Rules
 
