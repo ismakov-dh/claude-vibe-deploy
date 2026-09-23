@@ -2,7 +2,9 @@ package state
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
+	"strings"
 	"time"
 )
 
@@ -37,6 +39,35 @@ func DefaultConfig(domain string) *Config {
 		Domain:    domain,
 		CreatedAt: time.Now().UTC().Format(time.RFC3339),
 	}
+}
+
+// AuthentikReady reports whether forward auth can be provisioned on this host,
+// and says what is missing when it cannot.
+func (c *Config) AuthentikReady() error {
+	switch {
+	case c.AuthentikURL == "" || c.AuthentikInternal == "":
+		return fmt.Errorf("Authentik is not configured")
+	}
+	if _, err := os.Stat(AuthentikDynamicPath()); err != nil {
+		return fmt.Errorf("Traefik has no Authentik config at %s", AuthentikDynamicPath())
+	}
+	if _, err := LoadAuthentikToken(); err != nil {
+		return err
+	}
+	return nil
+}
+
+// LoadAuthentikToken reads the admin API token written by vd init.
+func LoadAuthentikToken() (string, error) {
+	b, err := os.ReadFile(AuthentikTokenPath())
+	if err != nil {
+		return "", fmt.Errorf("cannot read Authentik token: %w", err)
+	}
+	t := strings.TrimSpace(string(b))
+	if t == "" {
+		return "", fmt.Errorf("Authentik token at %s is empty", AuthentikTokenPath())
+	}
+	return t, nil
 }
 
 func LoadConfig() (*Config, error) {

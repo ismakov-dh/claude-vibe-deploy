@@ -14,6 +14,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vibe-deploy/vd/internal/app"
+	"github.com/vibe-deploy/vd/internal/authentik"
 	"github.com/vibe-deploy/vd/internal/backup"
 	"github.com/vibe-deploy/vd/internal/db"
 	"github.com/vibe-deploy/vd/internal/docker"
@@ -31,6 +32,8 @@ var (
 	deployDBName        string
 	deployEnvFile       string
 	deployAllowExternal bool
+	deployAuth          bool
+	deployAuthTTL       string
 )
 
 func init() {
@@ -42,6 +45,8 @@ func init() {
 	deployCmd.Flags().StringVar(&deployDBName, "db-name", "", "database name (default: app name)")
 	deployCmd.Flags().StringVar(&deployEnvFile, "env-file", "", "path to .env file")
 	deployCmd.Flags().BoolVar(&deployAllowExternal, "allow-external", false, "silence warnings about unsupported external services (Supabase, Firebase, etc.)")
+	deployCmd.Flags().BoolVar(&deployAuth, "auth", false, "put the app behind platform login (Authentik forward auth); sticky once set")
+	deployCmd.Flags().StringVar(&deployAuthTTL, "auth-ttl", "", "how long a sign-in lasts before re-checking with Authentik, e.g. days=7 or hours=1 (default days=7)")
 	rootCmd.AddCommand(deployCmd)
 }
 
@@ -137,6 +142,11 @@ func runDeploy(srcPath string) {
 		deployPort = appType.DefaultPort()
 	}
 
+	// Forward auth runs before anything on this host changes. If Authentik cannot
+	// be brought into shape, the running app — protected or not — stays exactly
+	// as it was, and a first deploy publishes nothing.
+	auth := resolveAuth(cfg)
+
 	// Check for existing deployment and backup
 	isRedeploy := false
 	if _, err := state.LoadManifest(deployName); err == nil {
@@ -146,6 +156,17 @@ func runDeploy(srcPath string) {
 			output.Warn("Backup failed: %v (continuing anyway)", err)
 		} else {
 			output.Info("Backup created")
+		}
+	}
+
+	// Keep the ingress secret stable across redeploys. Read before anything can
+	// replace src/.env — both the source copy (a pushed tree may carry its own
+	// .env) and --env-file do — and written back once they are done.
+	ingressSecret := ""
+	if auth != nil {
+		ingressSecret = envValue(state.AppEnvPath(deployName), ingressEnvKey)
+		if ingressSecret == "" {
+			ingressSecret = generateRandomPassword(48)
 		}
 	}
 
@@ -255,6 +276,14 @@ func runDeploy(srcPath string) {
 		}
 	}
 
+	if auth != nil {
+		if err := setEnvVar(state.AppEnvPath(deployName), ingressEnvKey, ingressSecret); err != nil {
+			output.Fail("deploy", output.NewError("AUTH_FAILED",
+				"Could not write the ingress secret: "+err.Error(), "Check permissions"))
+		}
+		hasEnvFile = true
+	}
+
 	// Generate Dockerfile from template
 	if appType != app.Custom {
 		tmplPath := appType.DockerfileTemplate()
@@ -289,6 +318,10 @@ func runDeploy(srcPath string) {
 		NeedsMCP:     needsMCP,
 		MCPImage:     docker.MCPImage,
 		MCPBasicAuth: mcpAuth,
+	}
+	if auth != nil {
+		composeData.Auth = true
+		composeData.IngressSecret = ingressSecret
 	}
 	if err := docker.GenerateComposeFile(templatesFS, composeData, state.AppComposePath(deployName)); err != nil {
 		output.Fail("deploy", output.NewError("COMPOSE_FAILED",
@@ -349,6 +382,11 @@ func runDeploy(srcPath string) {
 		HasEnvFile:    hasEnvFile,
 		MCP:           needsMCP,
 	}
+	if auth != nil {
+		manifest.Auth = true
+		manifest.AuthTTL = auth.ttl
+		manifest.AuthGroup = auth.group
+	}
 	if err := state.SaveManifest(manifest); err != nil {
 		output.Warn("Failed to save manifest: %v", err)
 	}
@@ -369,6 +407,15 @@ func runDeploy(srcPath string) {
 	}
 	if needsMCP {
 		data["mcp"] = mcpInfo(deployName, mcpHost, mcpUser, mcpPassword)
+	}
+	if auth != nil {
+		data["auth"] = map[string]any{
+			"enabled":   true,
+			"group":     auth.group,
+			"ttl":       auth.ttl,
+			"authentik": cfg.AuthentikURL,
+			"grant":     "Add people to the group " + auth.group + " in Authentik — nothing else is needed.",
+		}
 	}
 	if len(policyWarnings) > 0 {
 		output.SuccessWithWarnings("deploy", data, policyWarnings)
@@ -502,4 +549,88 @@ func copyDir(src, dst string) error {
 		}
 		return os.WriteFile(dstPath, data, info.Mode())
 	})
+}
+
+// ingressEnvKey is where the app finds the secret Traefik stamps on every request
+// that passed forward auth. Kept in the app's .env so backup and rollback carry
+// it together with the compose file that holds the other half.
+const ingressEnvKey = "VIBE_INGRESS_SECRET"
+
+type authPlan struct {
+	group string
+	ttl   string
+}
+
+// resolveAuth decides whether this deploy is protected and, if so, provisions
+// Authentik. It returns nil for a public app and exits on any failure.
+func resolveAuth(cfg *state.Config) *authPlan {
+	prev, _ := state.LoadManifest(deployName)
+	want := deployAuth || (prev != nil && prev.Auth)
+	if !want {
+		if deployAuthTTL != "" {
+			output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
+				"--auth-ttl given without --auth", "Add --auth, or drop --auth-ttl"))
+		}
+		return nil
+	}
+	if !deployAuth {
+		output.Info("App is deployed with platform login — keeping it on (to make it public: vd destroy, then deploy)")
+	}
+
+	ttl := deployAuthTTL
+	if ttl == "" && prev != nil && prev.AuthTTL != "" {
+		ttl = prev.AuthTTL
+	}
+	if ttl == "" {
+		ttl = authentik.DefaultTTL
+	}
+	if !authentik.ValidTTL(ttl) {
+		output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
+			"Invalid --auth-ttl: "+ttl, "Use Authentik's format, e.g. days=7, hours=1, days=1;hours=12"))
+	}
+	if deployRouting != "subdomain" {
+		output.Fail("deploy", output.NewError("AUTH_REQUIRES_SUBDOMAIN",
+			"--auth needs subdomain routing",
+			"Drop --routing path. The login flow and its cookie are bound to the app's own host."))
+	}
+	if err := cfg.AuthentikReady(); err != nil {
+		output.Fail("deploy", output.NewError("AUTH_NOT_CONFIGURED",
+			"Platform login is not set up on this server: "+err.Error(),
+			"A platform admin runs: vd init --authentik-url <url> --authentik-internal <addr> (see docs/plans/forward-auth.md)"))
+	}
+	token, _ := state.LoadAuthentikToken()
+
+	output.Info("Setting up platform login in Authentik...")
+	res, err := authentik.New(cfg.AuthentikURL, token).Ensure(authentik.Spec{
+		App:          deployName,
+		ExternalHost: "https://" + deployName + "." + cfg.Domain,
+		TTL:          ttl,
+	})
+	if err != nil {
+		e := output.NewError("AUTH_FAILED",
+			"Could not set up platform login in Authentik — nothing was deployed or changed on this server",
+			"Retry; if it persists, a platform admin should check the Authentik side")
+		e.Details = err.Error()
+		output.Fail("deploy", e)
+	}
+	if res.TTLChanged {
+		output.Warn("Sign-in lifetime changed to %s. The Authentik outpost may keep the old value "+
+			"for existing sessions until the Authentik server is restarted.", ttl)
+	}
+	output.Info("Platform login ready — access is membership in the group %s", res.Group)
+	return &authPlan{group: res.Group, ttl: ttl}
+}
+
+// envValue reads one key from a .env file, or "" when absent.
+func envValue(path, key string) string {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		if strings.HasPrefix(line, key+"=") {
+			return strings.TrimPrefix(line, key+"=")
+		}
+	}
+	return ""
 }

@@ -25,8 +25,20 @@ var rollbackCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
-		if _, err := state.LoadManifest(name); err != nil {
+		cur, err := state.LoadManifest(name)
+		if err != nil {
 			output.Fail("rollback", output.NewError("NOT_FOUND", "App not found: "+name, ""))
+		}
+
+		// A backup from before --auth would restore a compose file without the
+		// forward-auth chain: the app would come back public. Refuse rather than
+		// quietly drop protection.
+		if cur.Auth {
+			if _, meta, err := backup.Latest(name); err == nil && (meta.Manifest == nil || !meta.Manifest.Auth) {
+				output.Fail("rollback", output.NewError("ROLLBACK_WOULD_UNPROTECT",
+					"The previous version of "+name+" was deployed without platform login; rolling back would make it public",
+					"Redeploy a fixed version with --auth instead"))
+			}
 		}
 
 		output.Info("Rolling back %s...", name)
@@ -69,11 +81,11 @@ var rollbackCmd = &cobra.Command{
 
 		output.Info("Rolled back %s to %s", name, meta.Timestamp)
 		output.Success("rollback", map[string]any{
-			"name":            name,
-			"rolled_back_to":  meta.Timestamp,
-			"status":          "running",
-			"health":          health,
-			"db_restored":     dbRestored,
+			"name":                name,
+			"rolled_back_to":      meta.Timestamp,
+			"status":              "running",
+			"health":              health,
+			"db_restored":         dbRestored,
 			"db_backup_available": meta.DBBackupFile != "",
 		})
 	},
