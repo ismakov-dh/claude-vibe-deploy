@@ -425,6 +425,9 @@ func runDeploy(srcPath string) {
 			"grant":     "Add people to the group " + auth.group + " in Authentik — nothing else is needed.",
 		}
 	}
+	if auth != nil {
+		policyWarnings = append(policyWarnings, auth.warnings...)
+	}
 	if len(policyWarnings) > 0 {
 		output.SuccessWithWarnings("deploy", data, policyWarnings)
 	} else {
@@ -567,6 +570,16 @@ const ingressEnvKey = "VIBE_INGRESS_SECRET"
 type authPlan struct {
 	group string
 	ttl   string
+	// warnings go into the JSON response. output.Warn prints nothing in --json
+	// mode, which is the only mode agents use, so a warning left there is one
+	// nobody sees.
+	warnings []string
+}
+
+func (a *authPlan) warn(format string, args ...any) {
+	msg := fmt.Sprintf(format, args...)
+	output.Warn("%s", msg)
+	a.warnings = append(a.warnings, msg)
 }
 
 // resolveAuth decides whether this deploy is protected and, if so, provisions
@@ -638,22 +651,23 @@ func resolveAuth(cfg *state.Config) *authPlan {
 		e.Details = err.Error()
 		output.Fail("deploy", e)
 	}
+	plan := &authPlan{group: res.Group, ttl: ttl}
 	if res.TTLChanged {
-		output.Warn("Sign-in lifetime changed to %s. The Authentik outpost may keep the old value "+
+		plan.warn("Sign-in lifetime changed to %s. The Authentik outpost may keep the old value "+
 			"for existing sessions until the Authentik server is restarted.", ttl)
 	}
 	if prev == nil && res.GroupMembers > 0 {
-		output.Warn("The group %s already has %d member(s) — probably left from an earlier app of the same name. "+
+		plan.warn("The group %s already has %d member(s) — probably left from an earlier app of the same name. "+
 			"They can use this app immediately; check the group in Authentik if that is not intended.",
 			res.Group, res.GroupMembers)
 	}
 	if res.InvalidationFlow != authentik.VibeInvalidationFlow {
-		output.Warn("Authentik has no %s flow yet: signing out will end on the Authentik login "+
+		plan.warn("Authentik has no %s flow yet: signing out will end on the Authentik login "+
 			"page instead of returning to the app. A platform admin can create it; the next deploy picks it up.",
 			authentik.VibeInvalidationFlow)
 	}
 	output.Info("Platform login ready — access is membership in the group %s", res.Group)
-	return &authPlan{group: res.Group, ttl: ttl}
+	return plan
 }
 
 // fileContains reports whether path exists and contains s.
