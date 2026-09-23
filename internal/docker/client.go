@@ -78,6 +78,20 @@ func ComposeUp(dir, composefile string) error {
 	return nil
 }
 
+// ComposeApply brings a compose file's services to the declared state, recreating
+// only the ones whose configuration changed. For shared infrastructure, where
+// ComposeUp's --force-recreate is wrong: vd init used it, so every init — even
+// one that changed nothing but Traefik — recreated vd-postgres and dropped every
+// app's database connections at once. Seen 2026-09-23: three apps logged
+// "terminating connection due to administrator command", one answered a 500.
+func ComposeApply(dir, composefile string) error {
+	r, err := shell.Run(defaultTimeout, "docker", "compose", "-f", dir+"/"+composefile, "up", "-d")
+	if err != nil {
+		return fmt.Errorf("docker compose up failed: %s", r.Stderr)
+	}
+	return nil
+}
+
 // ComposeDown runs docker compose down.
 func ComposeDown(dir, composefile string) error {
 	r, err := shell.Run(2*time.Minute, "docker", "compose", "-f", dir+"/"+composefile, "down", "--remove-orphans")

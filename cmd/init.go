@@ -193,7 +193,7 @@ func runInit() {
 
 	// Start infrastructure (Traefik + VD Postgres)
 	output.Info("Starting infrastructure (Traefik + PostgreSQL)...")
-	if err := docker.ComposeUp(filepath.Dir(state.InfraComposePath()), "infrastructure.yml"); err != nil {
+	if err := docker.ComposeApply(filepath.Dir(state.InfraComposePath()), "infrastructure.yml"); err != nil {
 		output.Warn("Failed to start infrastructure: %v", err)
 		output.Warn("Start manually: cd %s && docker compose -f infrastructure.yml up -d", state.VDHome())
 	} else {
