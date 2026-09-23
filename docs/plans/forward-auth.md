@@ -1,6 +1,6 @@
 # Design: `vd deploy --auth` — forward auth via Authentik
 
-**Status:** implemented 2026-09-23 (branch `feat/forward-auth-design`); end-to-end spike on test pending. Decision: auth-service ADR-005 §Consequences.
+**Status:** implemented and spiked end to end on **prod** 2026-09-23 (owner's decision: test skipped). Logout-to-app pending `vibe-provider-invalidation-flow` from stacks. Decision: auth-service ADR-005 §Consequences.
 **Goal:** `vd deploy --auth` puts the app behind the Authentik embedded outpost. The app writes
 no auth code — it reads identity from request headers. The only human action is adding people
 to the group `vibe-<app>`.
@@ -257,3 +257,39 @@ ordering below mandatory, not cautious.
 - Cookie domain of the outpost's `authentik_proxy` cookie across `*.<apps domain>` — one cookie
   per app host, or one shared by every vibe app? Decides whether signing out of one app drops
   the others' assertions too.
+
+## Spike on prod, 2026-09-23 — what it found
+
+Throwaway app `authspike`, `--auth --auth-ttl minutes=2`, then destroyed. Verified: sign-in with
+a real account; `302` to `https://…/authorize/` with an `https` `redirect_uri` on the app host;
+outpost cookie `HttpOnly; Secure; SameSite=Lax`; forged identity headers from outside never
+reach the app; a neighbouring container calling the app directly gets `401`; removing the
+owner from the group denies him within the TTL; a second deploy creates no duplicates; destroy
+returns Authentik to zero providers and an empty outpost list. The other 10 apps and 7 MCP
+endpoints answered exactly as in the baseline throughout.
+
+Found on the way, all fixed in this branch unless noted:
+
+- **`vd init` force-recreated `vd-postgres`.** `ComposeUp` passes `--force-recreate`, right for
+  an app, wrong for infrastructure. The init that added forward auth recreated postgres; three
+  apps logged a dropped connection, one returned a single `500`. `vd init` now uses
+  `ComposeApply` (`up -d`).
+- **FastAPI `@app.get("/")` answers `HEAD` with `405`**, and the health check is
+  `wget --spider`. The first spike deploy failed `UNHEALTHY`. The skill now declares `/` for
+  `HEAD` as well.
+- **Identity headers are UTF-8, read as latin-1** by Starlette and Node — the owner's name
+  rendered as mojibake. Bytes captured on his real request through Traefik were single-layer
+  UTF-8 (`d0 94 d0 b0 …`); the skill's `header()` helper undoes exactly that layer.
+- **A new provider is served only after up to 5 minutes**: the prod embedded outpost's
+  websocket to the core has been failing since 2026-09-22 07:27 UTC, so it hears about changes
+  only on its 5-minute refresh. The app answers `404` meanwhile (closed, but confusing).
+  Reported to stacks; documented in the skill.
+- **Logout lands on Authentik's login page, then its portal.** The outpost's `sign_out` sends
+  only `id_token_hint` to end-session, never a `post_logout_redirect_uri`, and
+  `SessionEndStage` falls back to the root once `user_logout` has run. Fix, agreed: a separate
+  `vibe-provider-invalidation-flow` whose `user_logout` binding (`re_evaluate_policies: true`,
+  so neither the plan cache nor the policy cache skips it) carries an expression policy that
+  sets `goauthentik.io/providers/oauth2/post_logout_redirect_uri` to
+  `application.get_launch_url()`. vd switches its invalidation flow slug once stacks creates it.
+  vd now also sets `meta_launch_url` to the app URL.
+
