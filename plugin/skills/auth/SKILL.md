@@ -268,6 +268,7 @@ right person; a second browser profile that is not in the group gets "access den
 | Everyone gets Authentik's "access denied" | Nobody is in `vibe-<name>` yet. That is the human step (§1). |
 | SPA shows network errors after a while | Missing `redirect: 'manual'`, so the login bounce looks like an outage (§6). |
 | `ROLLBACK_WOULD_UNPROTECT` | The previous version was public; rolling back would publish it. Fix forward and redeploy with `--auth`. |
+| `404` from the app for a few minutes right after the **first** `--auth` deploy | The platform's login service picks up new apps on a 5-minute refresh. `vd status` shows `auth.state: ok` already; wait five minutes and retry before debugging anything. |
 | `vd status` says `auth.state: broken` | Something was removed in Authentik by hand. Redeploy — vd recreates it. |
 
 ---
