@@ -257,6 +257,11 @@ Error:
 {"ok": false, "command": "deploy", "error": {"code": "BUILD_FAILED", "message": "Docker build failed", "hint": "Check Dockerfile and source code", "details": "..."}}
 ```
 
+Any response — success or error, any command — may carry a `warnings` array: everything vd
+would print as `[vd warning]` in human mode. `ok: true` with a warning such as `DB provisioning
+failed … deploying without DB` means the app runs without that piece; agents must read and relay
+`warnings`, not just `ok`.
+
 Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`
 
 ### Troubleshooting

@@ -235,6 +235,16 @@ Error:
 
 Always check `ok` field. On error, read `hint` for the fix.
 
+**Always read `warnings` too — including when `ok` is `true`.** A deploy can succeed while
+something important did not happen: `DB provisioning failed … deploying without DB`, `Backup
+failed (continuing anyway)`, `MCP database role failed — deploying without MCP`, or an `--auth`
+note such as the missing logout flow. Relay every warning to the user in plain words and do not
+report the deploy as fully done while one of them describes a missing piece.
+
+```json
+{"ok": true, "command": "deploy", "data": {...}, "warnings": ["DB provisioning failed: …"]}
+```
+
 ## Error Codes
 
 | Code | Fix |
