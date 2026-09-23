@@ -68,8 +68,13 @@ var destroyCmd = &cobra.Command{
 				authRemoved = "failed: " + terr.Error()
 			default:
 				output.Info("Removing platform login from Authentik (the group is kept)...")
-				if err := authentik.New(cfg.AuthentikURL, token).Remove(name); err != nil {
-					authRemoved = "failed: " + err.Error()
+				if unlock, lerr := state.LockAuthentik(); lerr != nil {
+					authRemoved = "failed: " + lerr.Error()
+				} else {
+					if err := authentik.New(cfg.AuthentikURL, token).Remove(name); err != nil {
+						authRemoved = "failed: " + err.Error()
+					}
+					unlock()
 				}
 			}
 			if authRemoved != "removed" {

@@ -601,11 +601,17 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	token, _ := state.LoadAuthentikToken()
 
 	output.Info("Setting up platform login in Authentik...")
+	unlock, err := state.LockAuthentik()
+	if err != nil {
+		output.Fail("deploy", output.NewError("AUTH_FAILED",
+			"Could not take the Authentik lock — nothing was changed: "+err.Error(), "Check permissions on "+state.VDHome()))
+	}
 	res, err := authentik.New(cfg.AuthentikURL, token).Ensure(authentik.Spec{
 		App:          deployName,
 		ExternalHost: "https://" + deployName + "." + cfg.Domain,
 		TTL:          ttl,
 	})
+	unlock()
 	if err != nil {
 		e := output.NewError("AUTH_FAILED",
 			"Could not set up platform login in Authentik — nothing was deployed or changed on this server",
