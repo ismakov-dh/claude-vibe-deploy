@@ -79,6 +79,9 @@ is alive. No token ever reaches the browser, and your app stores none.
 | `X-authentik-username` | username | display only |
 | `X-authentik-groups` | `\|`-separated group names | not needed — access was already decided |
 
+Read them through the `header()` helper in §4/§5, never raw: the values are UTF-8 but arrive
+decoded as latin-1, so any non-ASCII name — Cyrillic included — turns into mojibake otherwise.
+
 `VIBE_INGRESS_SECRET` is injected into the container by `vd deploy --auth`. Do not put it in
 `.env` yourself and do not log it.
 
@@ -98,19 +101,30 @@ from fastapi import HTTPException, Request
 INGRESS_SECRET = os.environ["VIBE_INGRESS_SECRET"]
 
 
+def header(request: Request, name: str) -> str:
+    """Identity headers arrive as UTF-8 bytes, but HTTP headers are read as
+    latin-1 — so "Дамир" would come out as "Ð\x94Ð°Ð¼Ð¸Ñ\x80". Undo that; keep the
+    raw value if it was not UTF-8 after all."""
+    raw = request.headers.get(name, "")
+    try:
+        return raw.encode("latin-1").decode("utf-8")
+    except (UnicodeEncodeError, UnicodeDecodeError):
+        return raw
+
+
 def current_user(request: Request) -> dict:
     """Dependency for every route. Rejects anything that did not come through
     platform login — including a neighbouring container calling us directly."""
     got = request.headers.get("x-vibe-ingress", "")
     if not hmac.compare_digest(got, INGRESS_SECRET):
         raise HTTPException(401, "not signed in")
-    uid = request.headers.get("x-authentik-uid", "")
+    uid = header(request, "x-authentik-uid")
     if not uid:
         raise HTTPException(401, "not signed in")
     return {
         "uid": uid,
-        "email": request.headers.get("x-authentik-email", ""),
-        "name": request.headers.get("x-authentik-name", ""),
+        "email": header(request, "x-authentik-email"),
+        "name": header(request, "x-authentik-name"),
     }
 ```
 
@@ -148,18 +162,27 @@ import { timingSafeEqual } from 'node:crypto'
 
 const SECRET = Buffer.from(process.env.VIBE_INGRESS_SECRET)
 
+// Identity headers arrive as UTF-8 bytes, but Node reads header values as
+// latin-1 — so "Дамир" would come out as mojibake. Undo that; keep the raw value
+// if it was not UTF-8 after all.
+function header(req, name) {
+  const raw = req.get(name) || ''
+  const text = Buffer.from(raw, 'latin1').toString('utf8')
+  return text.includes('\uFFFD') && !raw.includes('\uFFFD') ? raw : text
+}
+
 // Guard every route. Rejects anything that did not come through platform
 // login — including a neighbouring container calling us directly.
 export function requireUser(req, res, next) {
   const got = Buffer.from(req.get('x-vibe-ingress') || '')
-  const uid = req.get('x-authentik-uid')
+  const uid = header(req, 'x-authentik-uid')
   if (got.length !== SECRET.length || !timingSafeEqual(got, SECRET) || !uid) {
     return res.status(401).json({ error: 'not_signed_in' })
   }
   req.user = {
     uid,
-    email: req.get('x-authentik-email') || '',
-    name: req.get('x-authentik-name') || '',
+    email: header(req, 'x-authentik-email'),
+    name: header(req, 'x-authentik-name'),
   }
   next()
 }
@@ -269,6 +292,8 @@ right person; a second browser profile that is not in the group gets "access den
 | SPA shows network errors after a while | Missing `redirect: 'manual'`, so the login bounce looks like an outage (§6). |
 | `ROLLBACK_WOULD_UNPROTECT` | The previous version was public; rolling back would publish it. Fix forward and redeploy with `--auth`. |
 | `404` from the app for a few minutes right after the **first** `--auth` deploy | The platform's login service picks up new apps on a 5-minute refresh. `vd status` shows `auth.state: ok` already; wait five minutes and retry before debugging anything. |
+| Names show as `Ð Ð°Ð¼Ð¸Ñ…` | Headers read raw. Use the `header()` helper (§4/§5): UTF-8 bytes decoded as latin-1. |
+| After typing the password the person lands in Authentik's own screens, not the app | They are not in `vibe-<name>` yet. Authentik answers with its "access denied" page and its links lead into Authentik. Add them to the group, then have them open the app's address again. |
 | `vd status` says `auth.state: broken` | Something was removed in Authentik by hand. Redeploy — vd recreates it. |
 
 ---
