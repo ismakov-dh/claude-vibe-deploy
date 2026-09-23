@@ -274,6 +274,25 @@ func TestEnsureCreatesEverythingAndKeepsOtherOutpostMembers(t *testing.T) {
 	if len(f.bindings) != 1 || f.bindings[0]["group"] != f.groups["vibe-demo"] {
 		t.Fatalf("bindings = %v", f.bindings)
 	}
+	// The portal tile, and the post-logout redirect, open the app itself.
+	if got := f.apps["vibe-demo"]["meta_launch_url"]; got != "https://demo.apps.example.com/" {
+		t.Fatalf("meta_launch_url = %v", got)
+	}
+}
+
+// An application created before launch URLs were set gets one on the next deploy.
+func TestEnsureBackfillsLaunchURL(t *testing.T) {
+	f, c := setup(t)
+	if _, err := c.Ensure(spec()); err != nil {
+		t.Fatal(err)
+	}
+	f.apps["vibe-demo"]["meta_launch_url"] = ""
+	if _, err := c.Ensure(spec()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.apps["vibe-demo"]["meta_launch_url"]; got != "https://demo.apps.example.com/" {
+		t.Fatalf("launch URL not backfilled: %v", got)
+	}
 }
 
 func TestEnsureIsIdempotentDespiteHiddenApplications(t *testing.T) {

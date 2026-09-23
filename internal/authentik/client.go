@@ -116,6 +116,9 @@ type application struct {
 	Name     string `json:"name"`
 	Slug     string `json:"slug"`
 	Provider *int   `json:"provider"`
+	// LaunchURL is what the Authentik portal's tile opens, and what
+	// application.get_launch_url() returns — the post-logout redirect reads it.
+	LaunchURL string `json:"meta_launch_url"`
 }
 
 type binding struct {
@@ -169,7 +172,7 @@ func (c *Client) Ensure(s Spec) (*Result, error) {
 		return nil, err
 	}
 
-	app, err := c.ensureApplication(group, prov.PK)
+	app, err := c.ensureApplication(group, prov.PK, s.ExternalHost+"/")
 	if err != nil {
 		return nil, err
 	}
@@ -376,13 +379,13 @@ func (c *Client) ensureProvider(want provider) (*provider, bool, error) {
 	return &back, ttlChanged, nil
 }
 
-func (c *Client) ensureApplication(slug string, providerPK int) (*application, error) {
+func (c *Client) ensureApplication(slug string, providerPK int, launchURL string) (*application, error) {
 	var cur application
 	code, err := c.do("GET", "/core/applications/"+slug+"/", nil, &cur)
 	if err != nil && code != http.StatusNotFound {
 		return nil, err
 	}
-	want := application{Name: slug, Slug: slug, Provider: &providerPK}
+	want := application{Name: slug, Slug: slug, Provider: &providerPK, LaunchURL: launchURL}
 	var got application
 	if code == http.StatusNotFound {
 		if code, err := c.do("POST", "/core/applications/", want, &got); err != nil {
@@ -392,9 +395,10 @@ func (c *Client) ensureApplication(slug string, providerPK int) (*application, e
 			}
 			return nil, fmt.Errorf("create application %s: %w", slug, err)
 		}
-	} else if cur.Provider == nil || *cur.Provider != providerPK {
-		if _, err := c.do("PATCH", "/core/applications/"+slug+"/", map[string]any{"provider": providerPK}, &got); err != nil {
-			return nil, fmt.Errorf("bind application %s to provider: %w", slug, err)
+	} else if cur.Provider == nil || *cur.Provider != providerPK || cur.LaunchURL != launchURL {
+		patch := map[string]any{"provider": providerPK, "meta_launch_url": launchURL}
+		if _, err := c.do("PATCH", "/core/applications/"+slug+"/", patch, &got); err != nil {
+			return nil, fmt.Errorf("update application %s: %w", slug, err)
 		}
 	}
 
@@ -404,6 +408,9 @@ func (c *Client) ensureApplication(slug string, providerPK int) (*application, e
 	}
 	if back.Provider == nil || *back.Provider != providerPK {
 		return nil, fmt.Errorf("application %s is not bound to provider %d after write", slug, providerPK)
+	}
+	if back.LaunchURL != launchURL {
+		return nil, fmt.Errorf("application %s launch URL is %q after write, want %q", slug, back.LaunchURL, launchURL)
 	}
 	return &back, nil
 }
