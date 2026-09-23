@@ -27,6 +27,9 @@ type fake struct {
 	// dropField, if set, is silently not stored on provider writes — the way
 	// sub_mode is dropped by the real proxy serializer.
 	dropField string
+
+	// vibeFlow makes vibe-provider-invalidation-flow exist.
+	vibeFlow bool
 }
 
 func newFake() *fake {
@@ -65,7 +68,11 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	switch {
 	case p == "/flows/instances/":
 		slug := r.URL.Query().Get("slug")
-		pk := map[string]string{authorizationFlow: "f-authz", invalidationFlow: "f-inval"}[slug]
+		flows := map[string]string{authorizationFlow: "f-authz", invalidationFlow: "f-inval"}
+		if f.vibeFlow {
+			flows[VibeInvalidationFlow] = "f-vibe"
+		}
+		pk := flows[slug]
 		if pk == "" {
 			out(200, page(nil, 0))
 			return
@@ -458,5 +465,34 @@ func TestValidTTL(t *testing.T) {
 		if ValidTTL(bad) {
 			t.Errorf("ValidTTL(%q) = true", bad)
 		}
+	}
+}
+
+// Without the vibe flow, the default one is used — a host where stacks has not
+// created it yet keeps working exactly as before, and says so.
+func TestInvalidationFlowFallsBackToDefault(t *testing.T) {
+	f, c := setup(t)
+	res, err := c.Ensure(spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.InvalidationFlow != invalidationFlow || f.providers[res.ProviderPK]["invalidation_flow"] != "f-inval" {
+		t.Fatalf("flow = %s / %v", res.InvalidationFlow, f.providers[res.ProviderPK]["invalidation_flow"])
+	}
+}
+
+// Once the vibe flow appears, the next deploy moves the existing provider to it.
+func TestInvalidationFlowPrefersVibeFlow(t *testing.T) {
+	f, c := setup(t)
+	if _, err := c.Ensure(spec()); err != nil {
+		t.Fatal(err)
+	}
+	f.vibeFlow = true
+	res, err := c.Ensure(spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.InvalidationFlow != VibeInvalidationFlow || f.providers[res.ProviderPK]["invalidation_flow"] != "f-vibe" {
+		t.Fatalf("flow = %s / %v", res.InvalidationFlow, f.providers[res.ProviderPK]["invalidation_flow"])
 	}
 }

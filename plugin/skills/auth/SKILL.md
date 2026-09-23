@@ -294,6 +294,7 @@ right person; a second browser profile that is not in the group gets "access den
 | `404` from the app for a few minutes right after the **first** `--auth` deploy | The platform's login service picks up new apps on a 5-minute refresh. `vd status` shows `auth.state: ok` already; wait five minutes and retry before debugging anything. |
 | Names show as `Ð Ð°Ð¼Ð¸Ñ…` | Headers read raw. Use the `header()` helper (§4/§5): UTF-8 bytes decoded as latin-1. |
 | After typing the password the person lands in Authentik's own screens, not the app | They are not in `vibe-<name>` yet. Authentik answers with its "access denied" page and its links lead into Authentik. Add them to the group, then have them open the app's address again. |
+| "Log out" ends on the Authentik login page instead of back in the app | The server has no `vibe-provider-invalidation-flow` yet (`vd deploy` warns about it). Logout still works; only the landing page differs. Once a platform admin creates the flow, the next deploy picks it up. |
 | `vd status` says `auth.state: broken` | Something was removed in Authentik by hand. Redeploy — vd recreates it. |
 
 ---

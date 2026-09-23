@@ -290,6 +290,7 @@ Found on the way, all fixed in this branch unless noted:
   `vibe-provider-invalidation-flow` whose `user_logout` binding (`re_evaluate_policies: true`,
   so neither the plan cache nor the policy cache skips it) carries an expression policy that
   sets `goauthentik.io/providers/oauth2/post_logout_redirect_uri` to
-  `application.get_launch_url()`. vd switches its invalidation flow slug once stacks creates it.
+  `application.get_launch_url()`. vd prefers that flow when it exists and falls back to
+  `default-provider-invalidation-flow` with a warning, so no reinstall is tied to its creation.
   vd now also sets `meta_launch_url` to the app URL.
 

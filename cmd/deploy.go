@@ -623,6 +623,11 @@ func resolveAuth(cfg *state.Config) *authPlan {
 		output.Warn("Sign-in lifetime changed to %s. The Authentik outpost may keep the old value "+
 			"for existing sessions until the Authentik server is restarted.", ttl)
 	}
+	if res.InvalidationFlow != authentik.VibeInvalidationFlow {
+		output.Warn("Authentik has no %s flow yet: signing out will end on the Authentik login "+
+			"page instead of returning to the app. A platform admin can create it; the next deploy picks it up.",
+			authentik.VibeInvalidationFlow)
+	}
 	output.Info("Platform login ready — access is membership in the group %s", res.Group)
 	return &authPlan{group: res.Group, ttl: ttl}
 }

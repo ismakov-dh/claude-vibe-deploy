@@ -34,7 +34,15 @@ import (
 const (
 	authorizationFlow = "default-provider-authorization-implicit-consent"
 	invalidationFlow  = "default-provider-invalidation-flow"
-	embeddedOutpost   = "goauthentik.io/outposts/embedded"
+
+	// VibeInvalidationFlow, when it exists, logs the person out globally like the
+	// default and then sends them back to the app's own URL, which starts a fresh
+	// sign-in that returns to the app. The default flow ends on Authentik's login
+	// page and, after the password, its portal: the outpost's sign_out never
+	// passes a post_logout_redirect_uri. The flow is stacks-owned; vd only picks
+	// it up, so a host without it keeps working exactly as before.
+	VibeInvalidationFlow = "vibe-provider-invalidation-flow"
+	embeddedOutpost      = "goauthentik.io/outposts/embedded"
 
 	// DefaultTTL is the owner's decision for vibe apps: non-PHI, no browser tokens,
 	// so a week-long assertion buys an SPA that never meets a 302 mid-session.
@@ -93,6 +101,8 @@ type Result struct {
 	Group      string
 	ProviderPK int
 	AppSlug    string
+	// InvalidationFlow is the slug the provider ended up with.
+	InvalidationFlow string
 	// TTLChanged is set when an existing provider's validity was changed. The
 	// embedded outpost caches it (seen during reporting's rollout) and may keep
 	// the old value until the Authentik server is restarted.
@@ -148,9 +158,16 @@ func (c *Client) Ensure(s Spec) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	inval, err := c.flowPK(invalidationFlow)
+	invalSlug := VibeInvalidationFlow
+	inval, err := c.findFlow(invalSlug)
 	if err != nil {
 		return nil, err
+	}
+	if inval == "" {
+		invalSlug = invalidationFlow
+		if inval, err = c.flowPK(invalSlug); err != nil {
+			return nil, err
+		}
 	}
 
 	groupPK, err := c.ensureGroup(group)
@@ -182,7 +199,8 @@ func (c *Client) Ensure(s Spec) (*Result, error) {
 	if err := c.addToOutpost(prov.PK); err != nil {
 		return nil, err
 	}
-	return &Result{Group: group, ProviderPK: prov.PK, AppSlug: group, TTLChanged: ttlChanged}, nil
+	return &Result{Group: group, ProviderPK: prov.PK, AppSlug: group,
+		InvalidationFlow: invalSlug, TTLChanged: ttlChanged}, nil
 }
 
 // Remove undoes Ensure except for the group: vd holds no delete right on groups,
@@ -277,6 +295,19 @@ func (c *Client) Check(app string) (*Health, error) {
 // --- objects -------------------------------------------------------------
 
 func (c *Client) flowPK(slug string) (string, error) {
+	pk, err := c.findFlow(slug)
+	if err != nil {
+		return "", err
+	}
+	if pk == "" {
+		return "", fmt.Errorf("flow %q not found in Authentik", slug)
+	}
+	return pk, nil
+}
+
+// findFlow returns "" with no error when the flow simply does not exist, so a
+// missing optional flow can be told apart from an API failure.
+func (c *Client) findFlow(slug string) (string, error) {
 	var found string
 	err := c.each("/flows/instances/", url.Values{"slug": {slug}}, func(raw json.RawMessage) {
 		var f struct {
@@ -287,13 +318,7 @@ func (c *Client) flowPK(slug string) (string, error) {
 			found = f.PK
 		}
 	})
-	if err != nil {
-		return "", err
-	}
-	if found == "" {
-		return "", fmt.Errorf("flow %q not found in Authentik", slug)
-	}
-	return found, nil
+	return found, err
 }
 
 func (c *Client) findGroup(name string) (string, error) {
