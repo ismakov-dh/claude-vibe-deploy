@@ -116,3 +116,101 @@ func TestComposeWithoutMCPRendersNoMCPService(t *testing.T) {
 		t.Error("expected vd-db network for an app with a database")
 	}
 }
+
+func authData() ComposeData {
+	return ComposeData{
+		Name:          "myapp",
+		AppType:       "python-fastapi",
+		Port:          8000,
+		Routing:       "subdomain",
+		Domain:        "apps.example.com",
+		HasEnvFile:    true,
+		Auth:          true,
+		IngressSecret: "deadbeef",
+	}
+}
+
+// Forward auth fails open in two quiet ways: a chain in the wrong order, or a
+// strip list that misses a header forwardAuth passes through. Both render a
+// perfectly healthy app that trusts whatever identity a client sends.
+func TestComposeAuthChain(t *testing.T) {
+	body := renderMCP(t, authData())
+
+	chain := line(body, "routers.vd-myapp.middlewares=")
+	want := "vd-myapp-strip-identity,authentik-fa@file,vd-myapp-ingress"
+	if !strings.Contains(chain, want) {
+		t.Fatalf("middleware chain = %q, want %q", chain, want)
+	}
+	if !strings.Contains(body, "vd-myapp-ingress.headers.customrequestheaders.X-Vibe-Ingress=deadbeef") {
+		t.Fatal("ingress secret not stamped")
+	}
+
+	outpost := line(body, "routers.vd-myapp-outpost.rule=")
+	if !strings.Contains(outpost, "Host(`myapp.apps.example.com`) && PathPrefix(`/outpost.goauthentik.io/`)") {
+		t.Fatalf("outpost router rule = %q", outpost)
+	}
+	if line(body, "routers.vd-myapp-outpost.middlewares=") != "" {
+		t.Fatal("outpost router must not sit behind forward auth — it serves the login itself")
+	}
+	if !strings.Contains(line(body, "routers.vd-myapp-outpost.service="), "authentik@file") {
+		t.Fatal("outpost router must point at the file-provider authentik service")
+	}
+}
+
+// The strip list and authResponseHeaders live in two files; this keeps them in
+// step. An entry missing from the strip list is a header a client can forge.
+func TestStripListCoversEveryAuthResponseHeader(t *testing.T) {
+	body := renderMCP(t, authData())
+	dyn, err := os.ReadFile("../../templates/traefik/authentik.yml.tmpl")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var passed []string
+	in := false
+	for _, l := range strings.Split(string(dyn), "\n") {
+		tl := strings.TrimSpace(l)
+		if tl == "authResponseHeaders:" {
+			in = true
+			continue
+		}
+		if in {
+			if !strings.HasPrefix(tl, "- ") {
+				break
+			}
+			passed = append(passed, strings.TrimPrefix(tl, "- "))
+		}
+	}
+	if len(passed) == 0 {
+		t.Fatal("found no authResponseHeaders in the dynamic template")
+	}
+	for _, h := range append(passed, "X-Vibe-Ingress") {
+		if !strings.Contains(body, "vd-myapp-strip-identity.headers.customrequestheaders."+h+"=\"") {
+			t.Errorf("strip-identity does not blank %s", h)
+		}
+	}
+}
+
+func TestComposeWithoutAuthHasNoAuthLabels(t *testing.T) {
+	d := authData()
+	d.Auth = false
+	body := renderMCP(t, d)
+	for _, s := range []string{"authentik", "X-Vibe-Ingress", "outpost"} {
+		if strings.Contains(body, s) {
+			t.Errorf("non-auth app renders %q", s)
+		}
+	}
+}
+
+func TestComposeRefusesAuthWithPathRouting(t *testing.T) {
+	d := authData()
+	d.Routing = "path"
+	out := filepath.Join(t.TempDir(), "c.yml")
+	if err := GenerateComposeFile(os.DirFS("../.."), d, out); err == nil {
+		t.Fatal("rendered forward auth with path routing")
+	}
+	d = authData()
+	d.IngressSecret = ""
+	if err := GenerateComposeFile(os.DirFS("../.."), d, out); err == nil {
+		t.Fatal("rendered forward auth without an ingress secret")
+	}
+}

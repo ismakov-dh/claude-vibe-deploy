@@ -1,6 +1,7 @@
 package docker
 
 import (
+	"fmt"
 	"io/fs"
 	"os"
 	"text/template"
@@ -36,10 +37,22 @@ type ComposeData struct {
 	NeedsMCP     bool
 	MCPImage     string
 	MCPBasicAuth string // htpasswd entry, user:{SHA}base64(sha1(pw))
+
+	// Forward auth via the Authentik embedded outpost. IngressSecret is hex, so
+	// it carries no '$' for compose to interpolate.
+	Auth          bool
+	IngressSecret string
 }
 
 // GenerateComposeFile renders the app compose template and writes it to disk.
 func GenerateComposeFile(tmplFS fs.FS, data ComposeData, destPath string) error {
+	// Refused here as well as in deploy: the outpost router and the provider's
+	// external_host are host-based, and path routing would render an app whose
+	// middleware label collides with the strip-prefix one. Failing at the lowest
+	// layer keeps a future caller from publishing an app it believes is protected.
+	if data.Auth && (data.Routing != "subdomain" || data.IngressSecret == "") {
+		return fmt.Errorf("forward auth needs subdomain routing and an ingress secret")
+	}
 	tmplContent, err := fs.ReadFile(tmplFS, "templates/compose/app.yml.tmpl")
 	if err != nil {
 		return err

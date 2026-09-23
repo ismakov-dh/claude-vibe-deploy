@@ -25,6 +25,32 @@ services:
 {{- end}}
       - "traefik.http.services.vd-{{.Name}}.loadbalancer.server.port={{.Port}}"
       - "traefik.http.routers.vd-{{.Name}}.entrypoints=web"
+{{- if .Auth}}
+      # --- forward auth (docs/plans/forward-auth.md §2) -----------------------
+      # Chain, outermost first: strip whatever identity the client sent, ask the
+      # Authentik outpost, then stamp the ingress secret last so nothing after
+      # it can remove it. The app trusts X-authentik-* only alongside that secret:
+      # every vd app shares vd-net and can reach this container directly.
+      - "traefik.http.routers.vd-{{.Name}}.middlewares=vd-{{.Name}}-strip-identity,authentik-fa@file,vd-{{.Name}}-ingress"
+      # Must list every header in authResponseHeaders (traefik-dynamic/authentik.yml)
+      # name for name: forwardAuth only overwrites the ones the outpost actually
+      # returns, so an unlisted one arrives exactly as the client sent it.
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-authentik-uid="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-authentik-username="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-authentik-email="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-authentik-name="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-authentik-groups="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-Vibe-Ingress="
+      - "traefik.http.middlewares.vd-{{.Name}}-ingress.headers.customrequestheaders.X-Vibe-Ingress={{.IngressSecret}}"
+      # The outpost's own paths (start, callback, sign_out) must reach the outpost
+      # on the app's host, not the app. No explicit priority, same reasoning as
+      # the MCP /.well-known/ router below: this rule is a strict superset of the
+      # app's, so it always wins, where a literal number stops winning once the
+      # app name makes the app rule long enough.
+      - "traefik.http.routers.vd-{{.Name}}-outpost.rule=Host(`{{.Name}}.{{.Domain}}`) && PathPrefix(`/outpost.goauthentik.io/`)"
+      - "traefik.http.routers.vd-{{.Name}}-outpost.entrypoints=web"
+      - "traefik.http.routers.vd-{{.Name}}-outpost.service=authentik@file"
+{{- end}}
     networks:
       - vd-net
 {{- if .NeedsDB}}
