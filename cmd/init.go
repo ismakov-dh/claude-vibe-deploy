@@ -4,6 +4,7 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -25,6 +26,7 @@ var (
 	initAuthentikURL      string
 	initAuthentikInternal string
 	initAuthentikNetwork  string
+	initAuthentikTokenIn  bool
 )
 
 func init() {
@@ -35,6 +37,7 @@ func init() {
 	initCmd.Flags().StringVar(&initAuthentikURL, "authentik-url", "", "public Authentik URL (e.g. https://auth.example.com)")
 	initCmd.Flags().StringVar(&initAuthentikInternal, "authentik-internal", "", "Authentik address on the overlay (e.g. http://authentik_server:9000)")
 	initCmd.Flags().StringVar(&initAuthentikNetwork, "authentik-network", "authentik-forward", "overlay vd-traefik joins to reach Authentik")
+	initCmd.Flags().BoolVar(&initAuthentikTokenIn, "authentik-token-stdin", false, "read the Authentik API token from stdin")
 	rootCmd.AddCommand(initCmd)
 }
 
@@ -121,11 +124,19 @@ func runInit() {
 		cfg.AuthentikNetwork = initAuthentikNetwork
 	}
 
-	// The API token arrives in the environment rather than a flag: a flag is
-	// visible in `ps` and in the ssh wrapper's log line for every caller on the
-	// box. Persisted once, then read from disk on later runs.
-	if tok := os.Getenv("VD_AUTHENTIK_TOKEN"); tok != "" {
-		if err := os.WriteFile(state.AuthentikTokenPath(), []byte(strings.TrimSpace(tok)+"\n"), 0600); err != nil {
+	// The API token arrives on stdin, never as a flag value: a flag is visible in
+	// `ps` and in the ssh wrapper's log line. stdin also works through that
+	// wrapper — `... | ssh vd-server "vd init --authentik-token-stdin"` — so
+	// installing or rotating the token needs no root and no file shuffling, the
+	// same way vd push takes its tar. Persisted 0600, then read from disk.
+	if initAuthentikTokenIn {
+		raw, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+		tok := strings.TrimSpace(string(raw))
+		if err != nil || tok == "" {
+			output.Fail("init", output.NewError("INIT_FAILED",
+				"--authentik-token-stdin given but no token on stdin", "Pipe the token in: ... | vd init --authentik-token-stdin"))
+		}
+		if err := os.WriteFile(state.AuthentikTokenPath(), []byte(tok+"\n"), 0600); err != nil {
 			output.Fail("init", output.NewError("INIT_FAILED",
 				"Failed to write authentik.token", "Check permissions"))
 		}

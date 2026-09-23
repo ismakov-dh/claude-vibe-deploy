@@ -104,8 +104,9 @@ concurrent `vd deploy --auth` runs can drop each other's provider. vd takes a lo
 provider cannot be created, since both flows are foreign keys. **No user model at any level** —
 vd can never create, read, modify or disable an account, by construction.
 
-Host and token come from vd config (`config.json` + an env var for the token, same shape as the
-postgres password), never hardcoded.
+Host comes from `config.json`; the token from `vd init --authentik-token-stdin`, stored 0600 in
+`$VD_HOME/authentik.token`. stdin rather than a flag keeps it out of `ps` and the ssh wrapper's
+log, and works through that wrapper, so installing or rotating it needs no root.
 
 ## 2. Traefik wiring
 
