@@ -128,7 +128,15 @@ def me(user: dict = Depends(current_user)):
 ```
 
 `GET /` may stay without the dependency: the platform health check calls it from inside the
-container, and browsers can only reach it through login anyway.
+container, and browsers can only reach it through login anyway. Declare it for **`HEAD` as
+well** — the health check is `wget --spider`, which sends `HEAD`, and a plain `@app.get("/")`
+answers it `405`, so the deploy fails `UNHEALTHY`:
+
+```python
+@app.api_route("/", methods=["GET", "HEAD"])
+def index():
+    return "ok"
+```
 
 ---
 
