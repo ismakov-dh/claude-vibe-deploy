@@ -7,43 +7,274 @@ description: Add "sign in with the platform account" to a vibe-deploy app. Use w
 
 **IMPORTANT: Always communicate with the user in their language. Detect the language they use and respond in the same language throughout the session.**
 
-The platform's identity provider is **Authentik**. Your app signs people in with the
-**OpenID Connect authorization code flow, run entirely on the server side** — the app is a
-*confidential client*. It exchanges the code for tokens inside the container, reads the
-identity out of the ID token, throws the tokens away, and hands the browser **its own signed
-session cookie**. No OAuth token ever reaches the browser. This is the BFF pattern and it is
-what the platform owner requires.
+The platform signs people in for you. Deploy with **`vd deploy --auth`** and the platform puts
+the app behind its identity provider (Authentik): anyone who is not signed in is sent to the
+platform login page before a single request reaches your code. Your app writes **no login
+code** — it reads who the person is from request headers.
 
-You write this once, from the examples below, and it is ~60 lines. The person you are working
-with cannot debug auth — follow the file exactly rather than improvising a variant.
+> **`--auth` needs vd with forward-auth support.** If `vd deploy --auth` answers
+> `unknown flag: --auth` or `AUTH_NOT_CONFIGURED`, the server is not set up for it yet: use the
+> [fallback](#fallback-server-side-oidc--only-when---auth-is-unavailable) at the end of this
+> file, and tell the user a platform admin can enable `--auth` later.
 
-Load `/vibe` for platform constraints and `/deploy` for the deploy step. Auth is an **external
-integration** with Authentik, not a vd capability.
+Load `/vibe` for platform constraints and `/deploy` for the deploy step.
 
 ---
 
 ## 0. Hard rules — do not negotiate
 
-1. **No signup screen.** Accounts are created centrally in Authentik. Public signup is
-   disabled. Your app has no registration form, no password form, no password reset — the
-   person is sent to Authentik and comes back signed in. If the user asks for "register",
-   explain that the platform admin adds people (§1).
-2. **Subdomain routing only.** Use the `vd deploy` default. **Never** `--routing path`: the
-   redirect URI is registered as an exact string, and a path-routed app shares its cookie
-   origin with every other path-routed app on the same host — their session cookies would
-   collide.
-3. **One container, two jobs.** UI and API in the **same** app (Express + static files,
-   FastAPI + SPA, Next.js). The login round trip and the API must share an origin.
-4. **No refresh tokens, no token storage, no `offline_access`.** After the code exchange the
-   app keeps nothing but its own cookie. When the cookie expires, the app bounces the browser
-   through Authentik again — with a live SSO session (30 days) that returns without a password
-   and without a visible interruption.
-5. **Secrets in `.env` only.** `vd deploy` blocks a hardcoded client secret with
-   `POLICY_VIOLATION`.
+1. **No login screen, no signup screen, no password form, no password reset.** The platform
+   handles all of it. If the user asks for "register", explain that people are added by the
+   platform team (§1).
+2. **Subdomain routing only.** `vd deploy --auth` refuses `--routing path`.
+3. **Trust the identity headers only together with the ingress secret** (§3). Every app on the
+   platform shares one network and can reach yours directly, skipping the login — the secret is
+   what proves a request came through it.
+4. **Key your data on `X-authentik-uid`**, never on email. Do not store email or name.
+5. **One container** serves UI and API, as for every vibe-deploy app.
 
 ---
 
 ## 1. Who does what
+
+| Step | Who |
+|---|---|
+| Everything: code, `vd deploy --auth`, verification | **You, the agent** |
+| Add the people who may use the app to the group **`vibe-<name>`** in Authentik | **The human — the only step** |
+
+`vd deploy --auth` creates that group, the Authentik application and everything else itself,
+and prints the group name in its output (`auth.group`). Tell the user, in their language:
+
+> The app is behind platform login. To let someone in, add them to the group
+> **`vibe-<name>`** in Authentik (`https://auth.platform.acuradai.com`). Nobody else can
+> open it. Removing someone from the group revokes access within `auth.ttl` (a week by
+> default); to lock someone out immediately, deactivate their account.
+
+Until someone is in the group, the app shows "access denied" to everyone — that is correct.
+
+---
+
+## 2. What happens on a request
+
+```
+browser → <name>.apps… → platform login? no session → Authentik login page → back, signed in
+                       → member of vibe-<name>? no → Authentik "access denied" (your app never sees it)
+                       → yes → your app receives the request with identity headers attached
+```
+
+The sign-in lasts `--auth-ttl` (default `days=7`). After that the platform checks again with
+Authentik — silently, without a password, as long as the person's platform session (30 days)
+is alive. No token ever reaches the browser, and your app stores none.
+
+---
+
+## 3. What your app receives
+
+| Header | Meaning | Use |
+|---|---|---|
+| `X-Vibe-Ingress` | secret set by the platform on every request that passed login | **must equal `VIBE_INGRESS_SECRET`**, else answer `401` |
+| `X-authentik-uid` | stable user id (64 hex chars) | your tables' user key |
+| `X-authentik-email` | email | display only — do not store |
+| `X-authentik-name` | full name | display only — do not store |
+| `X-authentik-username` | username | display only |
+| `X-authentik-groups` | `\|`-separated group names | not needed — access was already decided |
+
+`VIBE_INGRESS_SECRET` is injected into the container by `vd deploy --auth`. Do not put it in
+`.env` yourself and do not log it.
+
+`X-authentik-uid` differs between the test and production platforms (separate installations)
+and is otherwise permanent — it survives redeploys.
+
+---
+
+## 4. Python — FastAPI
+
+```python
+# auth.py — the whole of it.
+import hmac
+import os
+from fastapi import HTTPException, Request
+
+INGRESS_SECRET = os.environ["VIBE_INGRESS_SECRET"]
+
+
+def current_user(request: Request) -> dict:
+    """Dependency for every route. Rejects anything that did not come through
+    platform login — including a neighbouring container calling us directly."""
+    got = request.headers.get("x-vibe-ingress", "")
+    if not hmac.compare_digest(got, INGRESS_SECRET):
+        raise HTTPException(401, "not signed in")
+    uid = request.headers.get("x-authentik-uid", "")
+    if not uid:
+        raise HTTPException(401, "not signed in")
+    return {
+        "uid": uid,
+        "email": request.headers.get("x-authentik-email", ""),
+        "name": request.headers.get("x-authentik-name", ""),
+    }
+```
+
+```python
+# main.py
+from fastapi import Depends, FastAPI
+from auth import current_user
+
+app = FastAPI()
+
+
+@app.get("/api/me")
+def me(user: dict = Depends(current_user)):
+    return user
+```
+
+`GET /` may stay without the dependency: the platform health check calls it from inside the
+container, and browsers can only reach it through login anyway.
+
+---
+
+## 5. Node — Express
+
+```js
+// auth.js — the whole of it.
+import { timingSafeEqual } from 'node:crypto'
+
+const SECRET = Buffer.from(process.env.VIBE_INGRESS_SECRET)
+
+// Guard every route. Rejects anything that did not come through platform
+// login — including a neighbouring container calling us directly.
+export function requireUser(req, res, next) {
+  const got = Buffer.from(req.get('x-vibe-ingress') || '')
+  const uid = req.get('x-authentik-uid')
+  if (got.length !== SECRET.length || !timingSafeEqual(got, SECRET) || !uid) {
+    return res.status(401).json({ error: 'not_signed_in' })
+  }
+  req.user = {
+    uid,
+    email: req.get('x-authentik-email') || '',
+    name: req.get('x-authentik-name') || '',
+  }
+  next()
+}
+```
+
+```js
+// server.js
+import express from 'express'
+import { requireUser } from './auth.js'
+
+const app = express()
+app.get('/api/me', requireUser, (req, res) => res.json(req.user))
+app.listen(3000, '0.0.0.0')
+```
+
+(`"type": "module"` in `package.json`. No dependencies beyond `express`.)
+
+---
+
+## 6. The browser side
+
+When the sign-in lapses, the platform answers your SPA's `fetch` with a redirect to the login
+page — which `fetch` cannot follow across origins. Detect it and do a **full-page navigation**:
+
+```js
+async function api(path, init) {
+  const r = await fetch(path, { ...init, credentials: 'same-origin', redirect: 'manual' })
+  if (r.type === 'opaqueredirect' || r.status === 401) {
+    // rd must be a full URL on this app's host; the outpost rejects anything else
+    location.assign('/outpost.goauthentik.io/start?rd=' + encodeURIComponent(location.href))
+    return new Promise(() => {})          // navigating away; never resolve
+  }
+  return r
+}
+```
+
+- `redirect: 'manual'` is what makes the bounce visible (`opaqueredirect`) instead of an
+  anonymous network error. Your own API should not redirect, so nothing legitimate is lost.
+- **Log out** is a navigation too: `location.assign('/outpost.goauthentik.io/sign_out')`. It
+  ends the platform session for **every** platform app; other apps the person has open keep
+  working until their own sign-in lapses, then ask for the password.
+- Warn before navigating away from unsaved input. With the default week-long sign-in this is
+  rare, but it happens.
+
+---
+
+## 7. Per-user data
+
+Key rows on `X-authentik-uid` with a reversible migration (Prisma / Alembic / Django), created
+lazily after the guard passes:
+
+```python
+await db.execute(
+    "INSERT INTO app_users (uid) VALUES (%s) ON CONFLICT (uid) DO NOTHING", (user["uid"],)
+)
+```
+
+Anything finer than "may use the app" — ownership, teams, per-record rights — you model
+yourself on that key. Authentik only decides who gets in.
+
+---
+
+## 8. Deploy
+
+```bash
+tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./<name> \
+  | ssh vd-server "vd push <name> --json"
+
+ssh vd-server "vd deploy /opt/vibe-deploy/push/<name> --name <name> --auth --db postgres --json"
+```
+
+- The JSON carries an `auth` block: `group`, `ttl`, and the sentence to relay to the user (§1).
+- `--auth` is **sticky**: later deploys keep it without the flag. The only way to make the app
+  public again is `vd destroy`, then deploy without `--auth`.
+- `--auth-ttl hours=1` (or any `days=/hours=/minutes=`) shortens the sign-in. Use a short one
+  for apps deployed with `--db prod-ro` — they show production data.
+- `vd status <name> --json` reports `auth.state`: `ok`, `broken` (redeploy fixes it) or
+  `unknown` (Authentik unreachable from the server).
+
+Verify in a browser: open the app → platform login → back in the app; `/api/me` shows the
+right person; a second browser profile that is not in the group gets "access denied".
+
+---
+
+## 9. Checklist
+
+- [ ] No login, signup or password code anywhere in the app.
+- [ ] Every route that serves data uses the guard; the guard checks **`X-Vibe-Ingress`** first.
+- [ ] Constant-time comparison (`hmac.compare_digest` / `timingSafeEqual`).
+- [ ] User rows keyed on `X-authentik-uid`; no email or name stored.
+- [ ] SPA uses `redirect: 'manual'` and navigates to `/outpost.goauthentik.io/start?rd=<full URL>`.
+- [ ] Logout navigates to `/outpost.goauthentik.io/sign_out`.
+- [ ] Deployed with `--auth`, subdomain routing; group name relayed to the user.
+
+---
+
+## 10. Troubleshooting
+
+| Symptom | Cause / fix |
+|---|---|
+| `unknown flag: --auth` | The server's vd predates forward auth. Use the [fallback](#fallback-server-side-oidc--only-when---auth-is-unavailable). |
+| `AUTH_NOT_CONFIGURED` | The server was never set up for Authentik. A platform admin runs `vd init --authentik-url … --authentik-internal …`. Until then, use the fallback. |
+| `AUTH_FAILED` | Authentik rejected the setup. **Nothing was deployed or changed.** Retry once; if it repeats, give the `details` to the platform admin. |
+| `AUTH_REQUIRES_SUBDOMAIN` | Drop `--routing path`. |
+| Every request to your API is `401` | The guard's secret check fails — you compared against a hardcoded value or a stale `.env`. Read `VIBE_INGRESS_SECRET` from the environment. |
+| Everyone gets Authentik's "access denied" | Nobody is in `vibe-<name>` yet. That is the human step (§1). |
+| SPA shows network errors after a while | Missing `redirect: 'manual'`, so the login bounce looks like an outage (§6). |
+| `ROLLBACK_WOULD_UNPROTECT` | The previous version was public; rolling back would publish it. Fix forward and redeploy with `--auth`. |
+| `vd status` says `auth.state: broken` | Something was removed in Authentik by hand. Redeploy — vd recreates it. |
+
+---
+
+# Fallback: server-side OIDC — only when `--auth` is unavailable
+
+Use this **only** if the server cannot do `--auth` (see the note at the top). Here the app does
+the login itself: it is a confidential OIDC client that runs the authorization code flow on the
+server, keeps no tokens, and gives the browser its own signed session cookie. It costs ~60 lines
+and one extra human step — the platform admin registers the app in Authentik (§F1).
+
+Same hard rules as above for signup, subdomain routing and one container. Additionally: **no
+refresh tokens, no token storage, no `offline_access`**, and **secrets in `.env` only**.
+
+## F1. Who does what
 
 | Step | Who |
 |---|---|
@@ -83,7 +314,7 @@ Until this exists you can still build and deploy the app — nobody can sign in 
 
 ---
 
-## 2. `.env` — six variables, nothing in source
+## F2. `.env` — six variables, nothing in source
 
 ```bash
 # .env  — pushed with the app, injected via `vd deploy --env-file`. NEVER commit.
@@ -108,7 +339,7 @@ APP_BASE_URL=https://<name>.apps.platform.acuradai.com
 
 ---
 
-## 3. The session model
+## F3. The session model
 
 ```
 browser ──GET /private──▶ app: no cookie → 302 /auth/login
@@ -135,7 +366,7 @@ signs in again, silently, through the SSO session. Same for rotating `SESSION_SE
 
 ---
 
-## 4. Python — FastAPI + Authlib
+## F4. Python — FastAPI + Authlib
 
 ```
 # requirements.txt
@@ -221,7 +452,7 @@ async def logout(request: Request):
 
 
 def current_user(request: Request) -> dict:
-    """Dependency for every protected route. Returns 401 JSON — never a redirect (§6)."""
+    """Dependency for every protected route. Returns 401 JSON — never a redirect (§F6)."""
     sub = request.session.get("sub")
     if not sub:
         raise HTTPException(401, "not signed in")
@@ -259,11 +490,11 @@ async def me(user: dict = Depends(current_user)):
 ```
 
 Every protected route takes `user: dict = Depends(current_user)`. `GET /` must stay public —
-it is the health check (§8).
+it is the health check (§F8).
 
 ---
 
-## 5. Node — Express + openid-client
+## F5. Node — Express + openid-client
 
 ```jsonc
 // package.json — "type": "module" is required (top-level await below)
@@ -359,7 +590,7 @@ export function mountAuth(app) {
   })
 }
 
-// Guard every protected route. 401 JSON — never a redirect (§6).
+// Guard every protected route. 401 JSON — never a redirect (§F6).
 export async function requireUser(req, res, next) {
   const s = await read(req, 'vd_session')
   if (!s) return res.status(401).json({ error: 'not_signed_in' })
@@ -382,18 +613,18 @@ app.get('/api/me', requireUser, (req, res) => res.json(req.user))
 app.listen(3000, '0.0.0.0')   // 0.0.0.0, always — see /vibe
 ```
 
-`GET /` must stay public — it is the health check (§8).
+`GET /` must stay public — it is the health check (§F8).
 
 (Go: `github.com/coreos/go-oidc/v3/oidc` + `golang.org/x/oauth2`. Same shape — discovery by
 issuer, PKCE, verify the ID token, check `groups`, set your own signed cookie, keep no tokens.)
 
 ---
 
-## 6. The browser side — two rules
+## F6. The browser side — two rules
 
 **1. Your API answers `401` JSON. It never redirects an XHR.** A redirect to Authentik is
 cross-origin; `fetch` cannot follow it usefully and the failure surfaces as an unnamed network
-error. The guard in §4/§5 already does the right thing.
+error. The guard in §F4/§F5 already does the right thing.
 
 **2. The frontend turns a `401` into a full-page navigation:**
 
@@ -417,10 +648,10 @@ async function api(path, init) {
 
 ---
 
-## 7. Per-user data — keyed by `sub`
+## F7. Per-user data — keyed by `sub`
 
 Store per-user rows under the ID-token `sub`. **Do not copy `email`/`name` into your tables** —
-they change in Authentik and your copy goes stale; read them from the session (§4/§5), which is
+they change in Authentik and your copy goes stale; read them from the session (§F4/§F5), which is
 refreshed at every login.
 
 vibe-deploy requires a **migration tool** (Prisma for Node, Alembic for Python, Django's
@@ -459,13 +690,13 @@ per-record permissions — you model yourself, keyed by `sub`. Authentik does no
 
 ---
 
-## 8. Deploy
+## F8. Deploy
 
 Build inside the normal `/vibe` constraints, deploy with `/deploy`. Auth-specific rules:
 
-- **`--name` MUST equal the name from §1** — the URL, the redirect URI and `vibe-<name>` are
+- **`--name` MUST equal the name from §F1** — the URL, the redirect URI and `vibe-<name>` are
   registered against it.
-- **Subdomain routing** — never `--routing path` (§0).
+- **Subdomain routing** — never `--routing path` (hard rule 2 at the top).
 - **`GET /` stays public.** Traefik health-checks it every 30s with no cookie; if it redirects
   or 401s, that is fine (any HTTP response passes), but do not make it slow or DB-dependent.
 - `--db postgres` for the `sub`-keyed table, `--env-file` for `.env`.
@@ -487,10 +718,10 @@ again in a new tab → in without a password; `/auth/logout` → back at the Aut
 
 ---
 
-## 9. Pre-flight checklist
+## F9. Pre-flight checklist
 
 - [ ] App **name** chosen; used for `--name`, the redirect URI and `vibe-<name>`.
-- [ ] Admin checklist (§1) sent to the user; `client_id` / `client_secret` / issuer received.
+- [ ] Admin checklist (§F1) sent to the user; `client_id` / `client_secret` / issuer received.
 - [ ] `.gitignore` written **first**; `.env` not committed; `.env.example` committed.
 - [ ] All six variables in `.env`; `SESSION_SECRET` freshly generated.
 - [ ] Code exchange is server-side; **no token reaches the browser**; nothing stored.
@@ -509,7 +740,7 @@ again in a new tab → in without a password; `/auth/logout` → back at the Aut
 
 ---
 
-## 10. Troubleshooting
+## F10. Troubleshooting
 
 | Symptom | Cause / fix |
 |---|---|
@@ -517,23 +748,10 @@ again in a new tab → in without a password; `/auth/logout` → back at the Aut
 | Loop: login → app → login | The session cookie is not coming back. `Secure` requires HTTPS (fine on the platform), `SameSite=Lax` is required — `Strict` drops the cookie on the return from Authentik. Check `SESSION_SECRET` is set and stable. |
 | `403 no_access` for someone who should have access | Not a member of `vibe-<name>`, or the provider is missing the `profile` scope mapping, so no `groups` claim arrives at all. Ask the admin to check both. |
 | `KeyError: 'userinfo'` (Python) | The provider returned no ID token — the `openid` scope is missing from `client_kwargs`. |
-| Unnamed network error in the SPA, no status | You called `/auth/login` with `fetch`. It must be a top-level navigation (§6). |
+| Unnamed network error in the SPA, no status | You called `/auth/login` with `fetch`. It must be a top-level navigation (§F6). |
 | Signed out every hour while actively working | The cookie is not being re-signed. Python: the session must stay non-empty (do not `clear()` it in a guard). Node: `requireUser` must call `put(...)` on every request. |
 | Logout returns to the app still signed in | You only cleared the cookie. Hit the Authentik end-session endpoint too — otherwise the SSO session immediately signs the person back in. |
-| Logout hits the end-session endpoint and the person is *still* signed in | The provider has no invalidation flow set. Ask the admin for `default-provider-invalidation-flow` (§1) — the SSO session is ended by that flow's stage, not by the redirect itself, so without it the endpoint returns and the session lives on. |
+| Logout hits the end-session endpoint and the person is *still* signed in | The provider has no invalidation flow set. Ask the admin for `default-provider-invalidation-flow` (§F1) — the SSO session is ended by that flow's stage, not by the redirect itself, so without it the endpoint returns and the session lives on. |
 | `POLICY_VIOLATION` on deploy | `OIDC_CLIENT_SECRET` or `SESSION_SECRET` is in source. Move to `.env`, deploy with `--env-file`. |
 
 ---
-
-## 11. Planned: forward auth from the platform
-
-The platform's target is to put an Authentik proxy provider and Traefik `forwardAuth` in front
-of the app (`vd deploy --auth`), after which the app reads identity from `X-authentik-*`
-headers behind a trusted ingress and **carries no auth code at all**. That needs a vd release
-(Traefik file provider, an outpost route per app host, an ingress secret) and does not exist
-yet — everything in this skill is what works today. When it lands, this skill is replaced and
-apps drop §4/§5 entirely.
-
-Background and the session/revocation contract this skill follows:
-auth-service repo, `docs/adr/ADR-005-browser-session-renewal.md` and
-`docs/adr/ADR-004-authentik-replaces-auth-service.md`.

@@ -37,7 +37,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Manual rollback** | `vd rollback` | Revert to any of the last 5 deployments. |
 | **Logs** | `vd logs-snapshot` | Get container logs for debugging. |
 | **File upload** | `vd push` | Send files via tar stream through SSH. No scp needed. |
-| **Platform login** | external integration | "Sign in with platform account" via Authentik OIDC. The app is a confidential client: code exchange server-side, no token in the browser, its own signed session cookie. Agents load the `/auth` skill. Subdomain routing required. |
+| **Platform login** | `--auth` | Authentik forward auth in front of the app. The app writes no login code: it reads `X-authentik-uid/-email/-name` and checks `X-Vibe-Ingress` against `VIBE_INGRESS_SECRET`. Access = membership in `vibe-<name>`. Sticky; subdomain routing only. Agents load the `/auth` skill (it also has a server-side OIDC fallback for servers without `--auth`). |
 
 ### What You DON'T Have
 
@@ -170,6 +170,8 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--db-name` | app name | Database name (required for `prod-ro`) |
 | `--env-file` | none | Path to .env file to inject (merged with auto-generated DATABASE_URL) |
 | `--allow-external` | false | Silence warnings about unsupported external services (Supabase, Firebase, etc.) |
+| `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky; subdomain routing only. Needs `vd init --authentik-url … --authentik-internal …` on the server |
+| `--auth-ttl` | `days=7` | Sign-in lifetime before Authentik is asked again |
 
 **Policy scan**: on every deploy, vd scans the source for hardcoded secrets and unsupported external services. Hardcoded credentials (AWS/OpenAI/Anthropic/GitHub/Google/Slack/Stripe keys, private keys, DB URLs with passwords) **block** the deploy with `POLICY_VIOLATION`. `.env` files are never scanned. Unsupported services (Supabase, Firebase, MongoDB, Redis, S3) produce warnings in the `warnings` field of the JSON response; `--allow-external` silences them. (A hardcoded JWT-shaped token in source also warns — it's there to catch pasted Supabase anon keys, not to flag the use of a JWT library.)
 
@@ -203,6 +205,8 @@ Stop container, remove app files.
 |------|---------|-------------|
 | `--yes` | false | Skip confirmation (always use in automation) |
 | `--drop-db` | false | Also drop the database, its user and the MCP read-only role (vd-managed only, never drops prod) |
+
+For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept.
 
 #### `vd db-create <app-name>`
 
@@ -253,7 +257,7 @@ Error:
 {"ok": false, "command": "deploy", "error": {"code": "BUILD_FAILED", "message": "Docker build failed", "hint": "Check Dockerfile and source code", "details": "..."}}
 ```
 
-Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`
+Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `ROLLBACK_WOULD_UNPROTECT`
 
 ### Troubleshooting
 

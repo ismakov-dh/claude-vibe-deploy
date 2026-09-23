@@ -16,7 +16,7 @@ A platform for non-programmers who build apps with AI (vibecoding) and need to d
 This adds three skills:
 - **`/vibe`** — Load platform constraints before building an app. If there's existing code, audits it for compatibility and proposes fixes. Claude will only use supported infrastructure.
 - **`/deploy`** — Push files and deploy the app to the server via SSH. Shows human-readable results (URL, health, DB status).
-- **`/auth`** — Add "sign in with the platform account" to an app. The app is a server-side OIDC client against the platform IdP (Authentik): the code exchange happens in the container, no token reaches the browser, and the app keeps its own data keyed by user id (`sub`). Load it when the app needs login / accounts / per-user data.
+- **`/auth`** — Add "sign in with the platform account" to an app. `vd deploy --auth` puts it behind the platform IdP (Authentik); the app writes no login code and reads the person from request headers. Access is membership in the group `vibe-<app>`. Load it when the app needs login / accounts / per-user data.
 
 ## What you get
 
@@ -28,7 +28,7 @@ This adds three skills:
 | Prod DB read-only | Dashboards can query existing production data (replica supported) |
 | HTTPS | Automatic via wildcard cert |
 | Cron jobs | Scheduled tasks inside containers |
-| Auth / login | "Sign in with platform account" via Authentik OIDC, server-side — load `/auth` skill |
+| Auth / login | `vd deploy --auth` — Authentik forward auth, no login code in the app — load `/auth` skill |
 | Rollback | Auto-rollback on failed deploy, manual rollback to last 5 versions |
 | File upload | `vd push` — sends files via tar stream, no scp needed |
 
@@ -98,7 +98,7 @@ dig +short A probe.mcp.<domain>
 
 ```bash
 vd push <name>                                    # receive files via stdin tar stream
-vd deploy <dir> --name <n> [--db postgres|prod-ro|none] [--routing subdomain|path]
+vd deploy <dir> --name <n> [--db postgres|prod-ro|none] [--routing subdomain|path] [--auth [--auth-ttl days=7]]
 vd status <name>
 vd list
 vd logs-snapshot <name> [--lines N]

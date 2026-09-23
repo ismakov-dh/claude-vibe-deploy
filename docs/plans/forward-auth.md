@@ -1,6 +1,6 @@
 # Design: `vd deploy --auth` — forward auth via Authentik
 
-**Status:** proposed, 2026-09-22. Decision: auth-service ADR-005 §Consequences.
+**Status:** implemented 2026-09-23 (branch `feat/forward-auth-design`); end-to-end spike on test pending. Decision: auth-service ADR-005 §Consequences.
 **Goal:** `vd deploy --auth` puts the app behind the Authentik embedded outpost. The app writes
 no auth code — it reads identity from request headers. The only human action is adding people
 to the group `vibe-<app>`.
@@ -43,8 +43,12 @@ against the shape the documentation suggests:
   returned reporting's provider. An existence check written that way would find a stranger's
   provider and either skip creation or patch theirs. Use `?name__iexact=` (verified to filter)
   and re-compare the name client-side before believing a hit.
-- **Lists are filtered by object permissions, counts are not.** `core/applications/` reports
-  `count=1` with an empty `results`: the token cannot read the application it does not own. So
+- **Application lists are filtered by the policy engine, counts are not.** `core/applications/`
+  reports `count=1` with an empty `results`. Re-measured 2026-09-23 with a throwaway app: once
+  an application is bound to a group the service account is not in — which is every `vibe-<app>`
+  — it disappears from the list **for its own creator too**, `superuser_full_list=true` makes no
+  difference, and `GET /core/applications/<slug>/` still answers `200`. vd therefore looks
+  applications up by detail only; a list-based check would re-create them on every deploy. So
   "not found" does not mean "free to create" — a slug collision must be handled as a `400` on
   create, with a clear error, not as a crash. Note the sharp edge: `if count > 0 then it exists`
   lies precisely when the token lacks the rights to see the object, which is the case that
