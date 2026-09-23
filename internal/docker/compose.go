@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io/fs"
 	"os"
+	"path/filepath"
+	"syscall"
 	"text/template"
 	"time"
 )
@@ -65,11 +67,21 @@ func GenerateComposeFile(tmplFS fs.FS, data ComposeData, destPath string) error 
 
 	data.Timestamp = time.Now().UTC().Format(time.RFC3339)
 
-	f, err := os.Create(destPath)
+	// 0600: for --auth apps this file holds the ingress secret. Unlinked first so
+	// a vd-user deploy can replace one a root deploy left behind (removal needs
+	// write permission on the directory, not ownership of the file), and chowned
+	// to the app directory's owner for the same two-user reason as mcp.env.
+	os.Remove(destPath)
+	f, err := os.OpenFile(destPath, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0600)
 	if err != nil {
 		return err
 	}
 	defer f.Close()
+	if fi, err := os.Stat(filepath.Dir(destPath)); err == nil {
+		if st, ok := fi.Sys().(*syscall.Stat_t); ok {
+			os.Chown(destPath, int(st.Uid), int(st.Gid))
+		}
+	}
 
 	return t.Execute(f, data)
 }

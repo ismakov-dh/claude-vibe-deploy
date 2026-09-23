@@ -34,7 +34,7 @@ var rollbackCmd = &cobra.Command{
 		// forward-auth chain: the app would come back public. Refuse rather than
 		// quietly drop protection.
 		if cur.Auth {
-			if _, meta, err := backup.Latest(name); err == nil && (meta.Manifest == nil || !meta.Manifest.Auth) {
+			if _, meta, err := backup.Latest(name); err == nil && (meta == nil || meta.Manifest == nil || !meta.Manifest.Auth) {
 				output.Fail("rollback", output.NewError("ROLLBACK_WOULD_UNPROTECT",
 					"The previous version of "+name+" was deployed without platform login; rolling back would make it public",
 					"Redeploy a fixed version with --auth instead"))

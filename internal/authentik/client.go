@@ -101,6 +101,9 @@ type Result struct {
 	Group      string
 	ProviderPK int
 	AppSlug    string
+	// GroupMembers is the size of the access group when Ensure found it already
+	// existing. A first deploy under a reused name inherits those people.
+	GroupMembers int
 	// InvalidationFlow is the slug the provider ended up with.
 	InvalidationFlow string
 	// TTLChanged is set when an existing provider's validity was changed. The
@@ -170,7 +173,7 @@ func (c *Client) Ensure(s Spec) (*Result, error) {
 		}
 	}
 
-	groupPK, err := c.ensureGroup(group)
+	groupPK, members, err := c.ensureGroup(group)
 	if err != nil {
 		return nil, err
 	}
@@ -199,7 +202,7 @@ func (c *Client) Ensure(s Spec) (*Result, error) {
 	if err := c.addToOutpost(prov.PK); err != nil {
 		return nil, err
 	}
-	return &Result{Group: group, ProviderPK: prov.PK, AppSlug: group,
+	return &Result{Group: group, ProviderPK: prov.PK, AppSlug: group, GroupMembers: members,
 		InvalidationFlow: invalSlug, TTLChanged: ttlChanged}, nil
 }
 
@@ -266,7 +269,7 @@ func (c *Client) Check(app string) (*Health, error) {
 		return nil, err
 	}
 	h := &Health{}
-	if pk, err := c.findGroup(group); err != nil {
+	if pk, _, err := c.findGroup(group); err != nil {
 		return nil, err
 	} else {
 		h.Group = pk != ""
@@ -321,40 +324,42 @@ func (c *Client) findFlow(slug string) (string, error) {
 	return found, err
 }
 
-func (c *Client) findGroup(name string) (string, error) {
+func (c *Client) findGroup(name string) (string, int, error) {
 	var found string
+	members := 0
 	err := c.each("/core/groups/", url.Values{"name": {name}}, func(raw json.RawMessage) {
 		var g struct {
-			PK   string `json:"pk"`
-			Name string `json:"name"`
+			PK    string `json:"pk"`
+			Name  string `json:"name"`
+			Users []int  `json:"users"`
 		}
 		if json.Unmarshal(raw, &g) == nil && g.Name == name {
-			found = g.PK
+			found, members = g.PK, len(g.Users)
 		}
 	})
-	return found, err
+	return found, members, err
 }
 
-func (c *Client) ensureGroup(name string) (string, error) {
-	if pk, err := c.findGroup(name); err != nil || pk != "" {
-		return pk, err
+func (c *Client) ensureGroup(name string) (string, int, error) {
+	if pk, members, err := c.findGroup(name); err != nil || pk != "" {
+		return pk, members, err
 	}
 	// Belt and braces: GroupName already checked, but this call is the one that
 	// cannot be undone with the token vd holds.
 	if !groupRe.MatchString(name) {
-		return "", fmt.Errorf("refusing group name %q", name)
+		return "", 0, fmt.Errorf("refusing group name %q", name)
 	}
 	var g struct {
 		PK   string `json:"pk"`
 		Name string `json:"name"`
 	}
 	if _, err := c.do("POST", "/core/groups/", map[string]any{"name": name}, &g); err != nil {
-		return "", fmt.Errorf("create group %s: %w", name, err)
+		return "", 0, fmt.Errorf("create group %s: %w", name, err)
 	}
 	if g.PK == "" || g.Name != name {
-		return "", fmt.Errorf("create group %s: unexpected response", name)
+		return "", 0, fmt.Errorf("create group %s: unexpected response", name)
 	}
-	return g.PK, nil
+	return g.PK, 0, nil
 }
 
 func (c *Client) findProvider(name string) (*provider, error) {
@@ -489,7 +494,19 @@ func (c *Client) embedded() (*outpost, error) {
 }
 
 // setOutpostProviders writes the full list and proves nobody else was dropped.
+//
+// The host lock only serialises vd against vd; stacks and reporting add their
+// own providers here directly. So the list is read again right before writing,
+// and a change since the first read aborts rather than overwrites.
 func (c *Client) setOutpostProviders(o *outpost, next []int) error {
+	now, err := c.embedded()
+	if err != nil {
+		return err
+	}
+	if !slices.Equal(now.Providers, o.Providers) {
+		return fmt.Errorf("embedded outpost's provider list changed while vd was updating it "+
+			"(was %v, now %v) — nothing written; retry", o.Providers, now.Providers)
+	}
 	if _, err := c.do("PATCH", "/outposts/instances/"+o.PK+"/", map[string]any{"providers": next}, nil); err != nil {
 		return fmt.Errorf("update embedded outpost: %w", err)
 	}

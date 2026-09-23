@@ -3,6 +3,7 @@ package docker
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 	"time"
@@ -32,17 +33,39 @@ func NetworkCreate(name string) error {
 // Trusting only loopback would leave nginx untrusted, Traefik would overwrite
 // X-Forwarded-Proto, and the Authentik outpost would build http:// callbacks.
 // The subnet is Docker's choice and differs per host, so it is read, not assumed.
-func NetworkGateway(name string) (string, error) {
+//
+// Returned as host CIDRs, one per address family: a dual-stack network has an
+// IPv4 and an IPv6 gateway, and the earlier version concatenated them into one
+// unparseable string.
+func NetworkGateway(name string) ([]string, error) {
 	r, err := shell.Run(30*time.Second, "docker", "network", "inspect", "--format",
-		"{{range .IPAM.Config}}{{.Gateway}}{{end}}", name)
+		"{{range .IPAM.Config}}{{.Gateway}} {{end}}", name)
 	if err != nil {
-		return "", err
+		return nil, err
 	}
-	gw := strings.TrimSpace(r.Stdout)
-	if gw == "" {
-		return "", fmt.Errorf("network %s reports no gateway", name)
+	cidrs := GatewayCIDRs(r.Stdout)
+	if len(cidrs) == 0 {
+		return nil, fmt.Errorf("network %s reports no gateway", name)
 	}
-	return gw, nil
+	return cidrs, nil
+}
+
+// GatewayCIDRs turns `docker network inspect` gateway output into /32 and /128
+// entries, skipping anything that is not an IP address.
+func GatewayCIDRs(out string) []string {
+	var cidrs []string
+	for _, f := range strings.Fields(out) {
+		ip := net.ParseIP(f)
+		switch {
+		case ip == nil:
+			continue
+		case ip.To4() != nil:
+			cidrs = append(cidrs, ip.String()+"/32")
+		default:
+			cidrs = append(cidrs, ip.String()+"/128")
+		}
+	}
+	return cidrs
 }
 
 // NetworkConnect connects a container to a network.

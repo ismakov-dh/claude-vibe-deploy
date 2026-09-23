@@ -140,6 +140,9 @@ func runInit() {
 			output.Fail("init", output.NewError("INIT_FAILED",
 				"Failed to write authentik.token", "Check permissions"))
 		}
+		// 0600 and root-owned after a root-run init would lock every agent
+		// (vd-user) out of --auth deploys with AUTH_NOT_CONFIGURED.
+		state.ChownLikeHome(state.AuthentikTokenPath())
 		output.Info("Stored Authentik API token at %s", state.AuthentikTokenPath())
 	}
 
@@ -155,8 +158,8 @@ func runInit() {
 			"Failed to read embedded infrastructure template", "This is a bug"))
 	}
 	trusted := "127.0.0.1/32"
-	if gw, err := docker.NetworkGateway("vd-net"); err == nil {
-		trusted += "," + gw + "/32"
+	if gws, err := docker.NetworkGateway("vd-net"); err == nil {
+		trusted += "," + strings.Join(gws, ",")
 	} else {
 		output.Warn("Could not read vd-net gateway (%v) — trusting loopback only. "+
 			"Apps deployed with --auth may see the wrong scheme.", err)
@@ -283,5 +286,7 @@ func writeTraefikDynamic(cfg *state.Config) {
 		output.Fail("init", output.NewError("INIT_FAILED",
 			"Failed to write "+state.AuthentikDynamicPath(), "Check permissions"))
 	}
+	state.ChownLikeHome(state.TraefikDynamicDir())
+	state.ChownLikeHome(state.AuthentikDynamicPath())
 	output.Info("Wrote Traefik dynamic config for %s", cfg.AuthentikInternal)
 }

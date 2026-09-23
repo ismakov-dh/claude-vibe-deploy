@@ -30,6 +30,14 @@ type fake struct {
 
 	// vibeFlow makes vibe-provider-invalidation-flow exist.
 	vibeFlow bool
+
+	// groupUsers are member pks reported for a group, by name.
+	groupUsers map[string][]int
+
+	// onOutpostGet runs on every read of the outpost list, to simulate a writer
+	// that is not vd changing it between vd's reads.
+	onOutpostGet func(n int)
+	outpostGets  int
 }
 
 func newFake() *fake {
@@ -83,7 +91,11 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		name := r.URL.Query().Get("name")
 		var res []any
 		if pk, ok := f.groups[name]; ok {
-			res = append(res, map[string]any{"pk": pk, "name": name})
+			users := f.groupUsers[name]
+			if users == nil {
+				users = []int{}
+			}
+			res = append(res, map[string]any{"pk": pk, "name": name, "users": users})
 		}
 		out(200, page(res, 0))
 	case p == "/core/groups/" && r.Method == "POST":
@@ -194,6 +206,10 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out(204, nil)
 
 	case p == "/outposts/instances/" && r.Method == "GET":
+		f.outpostGets++
+		if f.onOutpostGet != nil {
+			f.onOutpostGet(f.outpostGets)
+		}
 		out(200, page([]any{
 			map[string]any{"pk": "o-ldap", "managed": nil, "providers": []int{99}},
 			map[string]any{"pk": "o-emb", "managed": embeddedOutpost, "providers": f.outpost},
@@ -494,5 +510,40 @@ func TestInvalidationFlowPrefersVibeFlow(t *testing.T) {
 	}
 	if res.InvalidationFlow != VibeInvalidationFlow || f.providers[res.ProviderPK]["invalidation_flow"] != "f-vibe" {
 		t.Fatalf("flow = %s / %v", res.InvalidationFlow, f.providers[res.ProviderPK]["invalidation_flow"])
+	}
+}
+
+// Someone other than vd (stacks, reporting) adds a provider between vd's read
+// and its write. vd must not overwrite the list with its stale copy.
+func TestOutpostChangedConcurrentlyAborts(t *testing.T) {
+	f, c := setup(t)
+	f.onOutpostGet = func(n int) {
+		if n == 2 { // the re-read just before PATCH
+			f.outpost = append(f.outpost, 77)
+		}
+	}
+	_, err := c.Ensure(spec())
+	if err == nil || !strings.Contains(err.Error(), "changed while vd was updating") {
+		t.Fatalf("want concurrent-change abort, got %v", err)
+	}
+	if f.count("PATCH /outposts/") != 0 {
+		t.Fatal("outpost was written despite the concurrent change")
+	}
+	if len(f.outpost) != 2 || f.outpost[1] != 77 {
+		t.Fatalf("other writer's provider lost: %v", f.outpost)
+	}
+}
+
+// A first deploy under a reused name inherits the group's existing members.
+func TestEnsureReportsExistingGroupMembers(t *testing.T) {
+	f, c := setup(t)
+	f.groups["vibe-demo"] = "g-old"
+	f.groupUsers = map[string][]int{"vibe-demo": {5, 6}}
+	res, err := c.Ensure(spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if res.GroupMembers != 2 {
+		t.Fatalf("GroupMembers = %d, want 2", res.GroupMembers)
 	}
 }

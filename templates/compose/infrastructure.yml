@@ -8,7 +8,14 @@ services:
     container_name: vd-traefik
     restart: unless-stopped
     command:
+      # The API lives on the "traefik" entrypoint, bound to the container's own
+      # loopback. It used to listen on every interface, so any container on
+      # vd-net or authentik-forward could read every middleware — basicauth
+      # entries and, for --auth apps, the ingress secret that is supposed to
+      # prove a request came through forward auth. For operations:
+      #   docker exec vd-traefik wget -qO- http://127.0.0.1:8080/api/http/routers
       - "--api.insecure=true"
+      - "--entrypoints.traefik.address=127.0.0.1:8080"
       - "--providers.docker=true"
       - "--providers.docker.exposedbydefault=false"
       - "--providers.docker.network=vd-net"
@@ -32,7 +39,6 @@ services:
       - "--log.level=WARN"
     ports:
       - "127.0.0.1:8080:80"
-      - "127.0.0.1:8099:8080"
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock:ro
       - ./traefik-dynamic:/etc/traefik/dynamic:ro

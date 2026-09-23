@@ -115,8 +115,10 @@ def header(request: Request, name: str) -> str:
 def current_user(request: Request) -> dict:
     """Dependency for every route. Rejects anything that did not come through
     platform login — including a neighbouring container calling us directly."""
-    got = request.headers.get("x-vibe-ingress", "")
-    if not hmac.compare_digest(got, INGRESS_SECRET):
+    # Bytes, not str: compare_digest raises TypeError on a non-ASCII str, which a
+    # client can send and which would surface as a 500 instead of a 401.
+    got = request.headers.get("x-vibe-ingress", "").encode("latin-1")
+    if not hmac.compare_digest(got, INGRESS_SECRET.encode()):
         raise HTTPException(401, "not signed in")
     uid = header(request, "x-authentik-uid")
     if not uid:
@@ -194,6 +196,7 @@ import express from 'express'
 import { requireUser } from './auth.js'
 
 const app = express()
+app.get('/', (req, res) => res.send('ok'))   // health check; Express answers HEAD for GET routes
 app.get('/api/me', requireUser, (req, res) => res.json(req.user))
 app.listen(3000, '0.0.0.0')
 ```
@@ -210,10 +213,16 @@ page — which `fetch` cannot follow across origins. Detect it and do a **full-p
 ```js
 async function api(path, init) {
   const r = await fetch(path, { ...init, credentials: 'same-origin', redirect: 'manual' })
-  if (r.type === 'opaqueredirect' || r.status === 401) {
-    // rd must be a full URL on this app's host; the outpost rejects anything else
+  if (r.type === 'opaqueredirect') {
+    // The sign-in lapsed and the platform bounced us to login.
+    // rd must be a full URL on this app's host; the outpost rejects anything else.
     location.assign('/outpost.goauthentik.io/start?rd=' + encodeURIComponent(location.href))
     return new Promise(() => {})          // navigating away; never resolve
+  }
+  if (r.status === 401) {
+    // From your own guard, not the platform: the request did not come through
+    // login at all (a misconfiguration). Navigating to login would loop forever.
+    throw new Error('not signed in — the app is misconfigured, reload or contact the admin')
   }
   return r
 }
@@ -221,6 +230,8 @@ async function api(path, init) {
 
 - `redirect: 'manual'` is what makes the bounce visible (`opaqueredirect`) instead of an
   anonymous network error. Your own API should not redirect, so nothing legitimate is lost.
+- Only the bounce means "sign in again". A `401` comes from your own guard and means the
+  request never passed the platform login — reloading into login cannot fix it and would loop.
 - **Log out** is a navigation too: `location.assign('/outpost.goauthentik.io/sign_out')`. It
   ends the platform session for **every** platform app; other apps the person has open keep
   working until their own sign-in lapses, then ask for the password.
@@ -271,9 +282,9 @@ right person; a second browser profile that is not in the group gets "access den
 
 - [ ] No login, signup or password code anywhere in the app.
 - [ ] Every route that serves data uses the guard; the guard checks **`X-Vibe-Ingress`** first.
-- [ ] Constant-time comparison (`hmac.compare_digest` / `timingSafeEqual`).
+- [ ] Constant-time comparison on **bytes** (`hmac.compare_digest(a.encode(...), b.encode())` / `timingSafeEqual`).
 - [ ] User rows keyed on `X-authentik-uid`; no email or name stored.
-- [ ] SPA uses `redirect: 'manual'` and navigates to `/outpost.goauthentik.io/start?rd=<full URL>`.
+- [ ] SPA uses `redirect: 'manual'`; **only** `opaqueredirect` navigates to `/outpost.goauthentik.io/start?rd=<full URL>`, a `401` is an error.
 - [ ] Logout navigates to `/outpost.goauthentik.io/sign_out`.
 - [ ] Deployed with `--auth`, subdomain routing; group name relayed to the user.
 

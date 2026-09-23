@@ -3,6 +3,7 @@ package cmd
 import (
 	"crypto/sha1"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"io/fs"
 	"os"
@@ -388,6 +389,13 @@ func runDeploy(srcPath string) {
 		manifest.AuthGroup = auth.group
 	}
 	if err := state.SaveManifest(manifest); err != nil {
+		if auth != nil {
+			// The app is up and protected, but the record that keeps it protected
+			// on the next deploy is missing. Say so loudly rather than succeed.
+			output.Fail("deploy", output.NewError("MANIFEST_WRITE_FAILED",
+				"The app is deployed with platform login, but its manifest could not be saved: "+err.Error(),
+				"Fix permissions on "+state.AppDir(deployName)+" and redeploy with --auth"))
+		}
 		output.Warn("Failed to save manifest: %v", err)
 	}
 
@@ -564,8 +572,19 @@ type authPlan struct {
 // resolveAuth decides whether this deploy is protected and, if so, provisions
 // Authentik. It returns nil for a public app and exits on any failure.
 func resolveAuth(cfg *state.Config) *authPlan {
-	prev, _ := state.LoadManifest(deployName)
-	want := deployAuth || (prev != nil && prev.Auth)
+	// Protection must not depend on one file being readable. A manifest that
+	// exists but cannot be read is a stop, not "no previous deploy", and the
+	// app's own files are consulted too: either half of the ingress secret on
+	// disk means this app was deployed behind forward auth.
+	prev, err := state.LoadManifest(deployName)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		output.Fail("deploy", output.NewError("MANIFEST_UNREADABLE",
+			"Cannot read the existing manifest of "+deployName+": "+err.Error(),
+			"Fix or restore "+state.AppManifestPath(deployName)+" — refusing to guess whether the app is protected"))
+	}
+	protectedOnDisk := envValue(state.AppEnvPath(deployName), ingressEnvKey) != "" ||
+		fileContains(state.AppComposePath(deployName), "authentik-fa@file")
+	want := deployAuth || (prev != nil && prev.Auth) || protectedOnDisk
 	if !want {
 		if deployAuthTTL != "" {
 			output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
@@ -623,6 +642,11 @@ func resolveAuth(cfg *state.Config) *authPlan {
 		output.Warn("Sign-in lifetime changed to %s. The Authentik outpost may keep the old value "+
 			"for existing sessions until the Authentik server is restarted.", ttl)
 	}
+	if prev == nil && res.GroupMembers > 0 {
+		output.Warn("The group %s already has %d member(s) — probably left from an earlier app of the same name. "+
+			"They can use this app immediately; check the group in Authentik if that is not intended.",
+			res.Group, res.GroupMembers)
+	}
 	if res.InvalidationFlow != authentik.VibeInvalidationFlow {
 		output.Warn("Authentik has no %s flow yet: signing out will end on the Authentik login "+
 			"page instead of returning to the app. A platform admin can create it; the next deploy picks it up.",
@@ -630,6 +654,12 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	}
 	output.Info("Platform login ready — access is membership in the group %s", res.Group)
 	return &authPlan{group: res.Group, ttl: ttl}
+}
+
+// fileContains reports whether path exists and contains s.
+func fileContains(path, s string) bool {
+	data, err := os.ReadFile(path)
+	return err == nil && strings.Contains(string(data), s)
 }
 
 // envValue reads one key from a .env file, or "" when absent.

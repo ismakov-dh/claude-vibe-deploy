@@ -149,8 +149,12 @@ func TestComposeAuthChain(t *testing.T) {
 	if !strings.Contains(outpost, "Host(`myapp.apps.example.com`) && PathPrefix(`/outpost.goauthentik.io/`)") {
 		t.Fatalf("outpost router rule = %q", outpost)
 	}
-	if line(body, "routers.vd-myapp-outpost.middlewares=") != "" {
+	outMW := line(body, "routers.vd-myapp-outpost.middlewares=")
+	if strings.Contains(outMW, "authentik-fa") {
 		t.Fatal("outpost router must not sit behind forward auth — it serves the login itself")
+	}
+	if !strings.Contains(outMW, "vd-myapp-strip-identity") {
+		t.Fatalf("outpost router must pin X-Forwarded-Host too, got %q", outMW)
 	}
 	if !strings.Contains(line(body, "routers.vd-myapp-outpost.service="), "authentik@file") {
 		t.Fatal("outpost router must point at the file-provider authentik service")
@@ -212,5 +216,72 @@ func TestComposeRefusesAuthWithPathRouting(t *testing.T) {
 	d.IngressSecret = ""
 	if err := GenerateComposeFile(os.DirFS("../.."), d, out); err == nil {
 		t.Fatal("rendered forward auth without an ingress secret")
+	}
+}
+
+// A client-supplied X-Forwarded-Host picks the outpost's application; if it
+// survives to forwardAuth, a member of one app passes as another. The router
+// matched the real host, so strip-identity must force exactly that and blank
+// the headers forwardAuth would otherwise relay from the client.
+func TestComposePinsForwardedHost(t *testing.T) {
+	body := renderMCP(t, authData())
+	want := map[string]string{
+		"X-Forwarded-Host":   "myapp.apps.example.com",
+		"X-Forwarded-Uri":    "",
+		"X-Forwarded-Method": "",
+		"X-Forwarded-Port":   "",
+	}
+	for h, v := range want {
+		l := "vd-myapp-strip-identity.headers.customrequestheaders." + h + "=" + v + "\""
+		if !strings.Contains(body, l) {
+			t.Errorf("strip-identity does not set %s=%q", h, v)
+		}
+	}
+}
+
+// The compose file of an --auth app carries the ingress secret.
+func TestComposeFileIsPrivate(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "docker-compose.vd.yml")
+	os.WriteFile(out, []byte("old"), 0644) // a pre-existing, world-readable file
+	if err := GenerateComposeFile(os.DirFS("../.."), authData(), out); err != nil {
+		t.Fatal(err)
+	}
+	fi, err := os.Stat(out)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode().Perm() != 0600 {
+		t.Fatalf("compose file mode = %o, want 600", fi.Mode().Perm())
+	}
+}
+
+// The Traefik API must not be reachable from vd-net: it lists every
+// middleware, ingress secrets included.
+func TestInfraKeepsTraefikAPIOnLoopback(t *testing.T) {
+	b, err := os.ReadFile("../../templates/compose/infrastructure.yml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := string(b)
+	if !strings.Contains(body, `"--entrypoints.traefik.address=127.0.0.1:8080"`) {
+		t.Error("traefik entrypoint (API) is not bound to the container's loopback")
+	}
+	if strings.Contains(body, "8099") {
+		t.Error("API port 8099 is still published")
+	}
+}
+
+func TestGatewayCIDRs(t *testing.T) {
+	cases := map[string][]string{
+		"172.24.0.1 ":           {"172.24.0.1/32"},
+		"172.24.0.1 fd00:1::1 ": {"172.24.0.1/32", "fd00:1::1/128"},
+		"":                      nil,
+		"<no value> 10.0.0.1":   {"10.0.0.1/32"},
+	}
+	for in, want := range cases {
+		got := GatewayCIDRs(in)
+		if strings.Join(got, ",") != strings.Join(want, ",") {
+			t.Errorf("GatewayCIDRs(%q) = %v, want %v", in, got, want)
+		}
 	}
 }

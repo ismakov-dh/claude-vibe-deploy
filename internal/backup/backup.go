@@ -145,7 +145,12 @@ func Latest(appName string) (string, *Metadata, error) {
 		return "", nil, fmt.Errorf("no backups found for %s", appName)
 	}
 	dir := dirs[len(dirs)-1]
-	meta, _ := loadMetadata(dir)
+	meta, err := loadMetadata(dir)
+	if err != nil || meta == nil {
+		// Restoring a backup whose manifest cannot be read would mean guessing
+		// what it was — including whether it was deployed with --auth.
+		return "", nil, fmt.Errorf("backup %s has unreadable metadata: %v", dir, err)
+	}
 	return dir, meta, nil
 }
 
