@@ -122,9 +122,10 @@ type Result struct {
 	GroupMembers int
 	// InvalidationFlow is the slug the provider ended up with.
 	InvalidationFlow string
-	// TTLChanged is set when an existing provider's validity was changed. The
-	// embedded outpost caches it (seen during reporting's rollout) and may keep
-	// the old value until the Authentik server is restarted.
+	// TTLChanged is set when an existing provider's validity was changed.
+	// Measured on prod 2026-09-24: the embedded outpost picked up days=7 →
+	// minutes=2 on its 5-minute refresh, no restart (reporting's rollout needed
+	// one, on the older outpost). Sessions already issued keep their old lifetime.
 	TTLChanged bool
 }
 

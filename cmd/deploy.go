@@ -657,8 +657,8 @@ func resolveAuth(cfg *state.Config) *authPlan {
 			"to lock them out. The platform default is %s.", ttl, res.Group, authentik.DefaultTTL)
 	}
 	if res.TTLChanged {
-		plan.warn("Sign-in lifetime changed to %s. The Authentik outpost may keep the old value "+
-			"for existing sessions until the Authentik server is restarted.", ttl)
+		plan.warn("Sign-in lifetime changed to %s. New sign-ins get it once the outpost next refreshes "+
+			"(up to 5 minutes); sessions issued before keep the lifetime they were issued with.", ttl)
 	}
 	if prev == nil && res.GroupMembers > 0 {
 		plan.warn("The group %s already has %d member(s) — probably left from an earlier app of the same name. "+
