@@ -179,7 +179,7 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--env-file` | none | Path to .env file on server |
 | `--allow-external` | false | Silence warnings about unsupported external services |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky. Subdomain routing only |
-| `--auth-ttl` | `days=7` | How long a sign-in lasts before Authentik is asked again (`days=`, `hours=`, `minutes=`) |
+| `--auth-ttl` | `hours=1` | How long a sign-in lasts before Authentik is asked again (`hours=`, `minutes=`, `days=`). Longer than a day produces a warning: group removal then takes that long to bite |
 
 `--db postgres` additionally provisions a read-only MCP for the app's database and
 returns it in the `mcp` field — see step 3b.
@@ -252,7 +252,7 @@ Always check `ok` field. On error, read `hint` for the fix.
 | `AUTH_NOT_CONFIGURED` | Server not set up for `--auth` — use the fallback in `/auth` until a platform admin runs `vd init --authentik-…` |
 | `AUTH_FAILED` | Authentik rejected the setup; **nothing was changed**. Retry once, then pass `details` to the platform admin |
 | `AUTH_REQUIRES_SUBDOMAIN` | Drop `--routing path` |
-| `INVALID_AUTH_TTL` | Use `days=7`, `hours=1`, …; `--auth-ttl` needs `--auth` |
+| `INVALID_AUTH_TTL` | Use `hours=1`, `minutes=30`, …; `--auth-ttl` needs `--auth` |
 | `ROLLBACK_WOULD_UNPROTECT` | Previous version was public — fix forward and redeploy instead |
 | `MANIFEST_UNREADABLE` | The app's manifest exists but cannot be read — vd will not guess whether it is protected. Ask the platform admin |
 | `MANIFEST_WRITE_FAILED` | An `--auth` app deployed but its manifest was not saved — ask the platform admin to fix permissions, then redeploy with `--auth` |

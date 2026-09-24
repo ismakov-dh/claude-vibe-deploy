@@ -44,11 +44,12 @@ const (
 	VibeInvalidationFlow = "vibe-provider-invalidation-flow"
 	embeddedOutpost      = "goauthentik.io/outposts/embedded"
 
-	// DefaultTTL is the owner's decision for vibe apps: non-PHI, no browser tokens,
-	// so a week-long assertion buys an SPA that never meets a 302 mid-session.
-	// Group removal therefore takes up to this long to bite; deactivating the
-	// account is the immediate lever.
-	DefaultTTL = "days=7"
+	// DefaultTTL is the owner's decision for vibe apps (2026-09-24, replacing an
+	// earlier days=7): an hour, like reporting. Removing someone from the group
+	// takes effect within it. The SPA does not notice the expiry — the /auth
+	// skill's api() helper renews silently through the platform session — and a
+	// page navigation after it renews without a password as well.
+	DefaultTTL = "hours=1"
 )
 
 // groupRe is the only shape of group vd may create. The token holds add but not
@@ -70,6 +71,21 @@ func GroupName(app string) (string, error) {
 
 // ValidTTL reports whether s is an Authentik timedelta string such as "days=7".
 func ValidTTL(s string) bool { return ttlRe.MatchString(s) }
+
+// TTLSeconds totals a valid timedelta string; 0 for an invalid one.
+func TTLSeconds(s string) int {
+	if !ValidTTL(s) {
+		return 0
+	}
+	unit := map[string]int{"weeks": 604800, "days": 86400, "hours": 3600, "minutes": 60, "seconds": 1}
+	total := 0
+	for _, part := range strings.Split(s, ";") {
+		k, v, _ := strings.Cut(part, "=")
+		n, _ := strconv.Atoi(v)
+		total += n * unit[k]
+	}
+	return total
+}
 
 // Client talks to one Authentik installation.
 type Client struct {
@@ -93,7 +109,7 @@ func New(publicURL, token string) *Client {
 type Spec struct {
 	App          string // already validated app name
 	ExternalHost string // https://<app>.<domain>
-	TTL          string // e.g. days=7
+	TTL          string // e.g. hours=1
 }
 
 // Result reports what Ensure did.

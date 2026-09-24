@@ -47,7 +47,7 @@ func init() {
 	deployCmd.Flags().StringVar(&deployEnvFile, "env-file", "", "path to .env file")
 	deployCmd.Flags().BoolVar(&deployAllowExternal, "allow-external", false, "silence warnings about unsupported external services (Supabase, Firebase, etc.)")
 	deployCmd.Flags().BoolVar(&deployAuth, "auth", false, "put the app behind platform login (Authentik forward auth); sticky once set")
-	deployCmd.Flags().StringVar(&deployAuthTTL, "auth-ttl", "", "how long a sign-in lasts before re-checking with Authentik, e.g. days=7 or hours=1 (default days=7)")
+	deployCmd.Flags().StringVar(&deployAuthTTL, "auth-ttl", "", "how long a sign-in lasts before re-checking with Authentik, e.g. hours=1 or minutes=30 (default hours=1)")
 	rootCmd.AddCommand(deployCmd)
 }
 
@@ -618,7 +618,7 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	}
 	if !authentik.ValidTTL(ttl) {
 		output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
-			"Invalid --auth-ttl: "+ttl, "Use Authentik's format, e.g. days=7, hours=1, days=1;hours=12"))
+			"Invalid --auth-ttl: "+ttl, "Use Authentik's format, e.g. hours=1, minutes=30, days=1;hours=12"))
 	}
 	if deployRouting != "subdomain" {
 		output.Fail("deploy", output.NewError("AUTH_REQUIRES_SUBDOMAIN",
@@ -652,6 +652,10 @@ func resolveAuth(cfg *state.Config) *authPlan {
 		output.Fail("deploy", e)
 	}
 	plan := &authPlan{group: res.Group, ttl: ttl}
+	if authentik.TTLSeconds(ttl) > 86400 {
+		plan.warn("Sign-in lifetime %s is longer than a day: removing someone from %s takes up to that long "+
+			"to lock them out. The platform default is %s.", ttl, res.Group, authentik.DefaultTTL)
+	}
 	if res.TTLChanged {
 		plan.warn("Sign-in lifetime changed to %s. The Authentik outpost may keep the old value "+
 			"for existing sessions until the Authentik server is restarted.", ttl)

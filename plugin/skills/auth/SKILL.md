@@ -47,7 +47,7 @@ and prints the group name in its output (`auth.group`). Tell the user, in their 
 
 > The app is behind platform login. To let someone in, add them to the group
 > **`vibe-<name>`** in Authentik (`https://auth.platform.acuradai.com`). Nobody else can
-> open it. Removing someone from the group revokes access within `auth.ttl` (a week by
+> open it. Removing someone from the group revokes access within `auth.ttl` (an hour by
 > default); to lock someone out immediately, deactivate their account.
 
 Until someone is in the group, the app shows "access denied" to everyone — that is correct.
@@ -62,9 +62,10 @@ browser → <name>.apps… → platform login? no session → Authentik login pa
                        → yes → your app receives the request with identity headers attached
 ```
 
-The sign-in lasts `--auth-ttl` (default `days=7`). After that the platform checks again with
+The sign-in lasts `--auth-ttl` (default `hours=1`). After that the platform checks again with
 Authentik — silently, without a password, as long as the person's platform session (30 days)
-is alive. No token ever reaches the browser, and your app stores none.
+is alive: a page load just goes round and comes back, and an SPA's API calls renew through the
+`api()` helper in §6. No token ever reaches the browser, and your app stores none.
 
 ---
 
@@ -207,36 +208,58 @@ app.listen(3000, '0.0.0.0')
 
 ## 6. The browser side
 
-When the sign-in lapses, the platform answers your SPA's `fetch` with a redirect to the login
-page — which `fetch` cannot follow across origins. Detect it and do a **full-page navigation**:
+The sign-in lasts an hour. When it lapses, the platform answers your SPA's `fetch` with a
+redirect towards Authentik, which `fetch` cannot follow across origins. Route **every** API call
+through this helper; it renews silently and the person never notices:
 
 ```js
-async function api(path, init) {
-  const r = await fetch(path, { ...init, credentials: 'same-origin', redirect: 'manual' })
-  if (r.type === 'opaqueredirect') {
-    // The sign-in lapsed and the platform bounced us to login.
-    // rd must be a full URL on this app's host; the outpost rejects anything else.
-    location.assign('/outpost.goauthentik.io/start?rd=' + encodeURIComponent(location.href))
-    return new Promise(() => {})          // navigating away; never resolve
+// api.js — the only frontend auth code the app needs.
+const RETRYABLE = new Set(['GET', 'HEAD'])
+
+export async function api(path, init = {}) {
+  const call = () => fetch(path, { ...init, credentials: 'same-origin', redirect: 'manual' })
+  let r = await call()
+  if (r.type !== 'opaqueredirect') return check(r)
+
+  // The sign-in lapsed. One silent round through the platform session sets a
+  // fresh one: no password, no navigation, the page and its unsaved state stay.
+  await fetch('/outpost.goauthentik.io/start?rd=' + encodeURIComponent(location.pathname),
+              { mode: 'no-cors', credentials: 'include' })
+  if (!RETRYABLE.has((init.method || 'GET').toUpperCase())) {
+    // Never replay a write on your own: it may or may not have happened.
+    throw new Error('Your session was renewed — please repeat the action.')
   }
-  if (r.status === 401) {
-    // From your own guard, not the platform: the request did not come through
-    // login at all (a misconfiguration). Navigating to login would loop forever.
-    throw new Error('not signed in — the app is misconfigured, reload or contact the admin')
+  r = await call()
+  if (r.type === 'opaqueredirect') {   // the platform session itself is gone
+    location.reload()                  // full navigation → the sign-in page
+    return new Promise(() => {})
   }
+  return check(r)
+}
+
+function check(r) {
+  // A 401 comes from your own guard, not the platform: the request never went
+  // through login at all. Navigating would loop; this is a misconfiguration.
+  if (r.status === 401) throw new Error('not signed in — the app is misconfigured, contact the admin')
   return r
 }
 ```
 
 - `redirect: 'manual'` is what makes the bounce visible (`opaqueredirect`) instead of an
   anonymous network error. Your own API should not redirect, so nothing legitimate is lost.
-- Only the bounce means "sign in again". A `401` comes from your own guard and means the
-  request never passed the platform login — reloading into login cannot fix it and would loop.
+- The renewal is one `no-cors` round trip to the platform's `start` endpoint: with a live
+  platform session it sets a fresh sign-in cookie in about a second. It is tried **once**; if the
+  retry is bounced again, the platform session is over and a reload shows the sign-in page.
+- Writes (`POST`, `PUT`, `PATCH`, `DELETE`) are **not** repeated after a renewal — show the
+  error and let the person press the button again. A retried write could run twice.
+- Only the bounce means "sign in again". A `401` is your own guard, and navigating on it loops.
+- `rd` is a path on this app's host (a full URL on the same host works too); the platform
+  refuses anything pointing elsewhere.
 - **Log out** is a navigation too: `location.assign('/outpost.goauthentik.io/sign_out')`. It
   ends the platform session for **every** platform app; other apps the person has open keep
   working until their own sign-in lapses, then ask for the password.
-- Warn before navigating away from unsaved input. With the default week-long sign-in this is
-  rare, but it happens.
+- Warn before navigating away from unsaved input: the reload above only happens when the whole
+  platform session has ended (30 days, or someone signed out), but then it does happen.
 
 ---
 
@@ -301,6 +324,8 @@ right person; a second browser profile that is not in the group gets "access den
 | Every request to your API is `401` | The guard's secret check fails — you compared against a hardcoded value or a stale `.env`. Read `VIBE_INGRESS_SECRET` from the environment. |
 | Everyone gets Authentik's "access denied" | Nobody is in `vibe-<name>` yet. That is the human step (§1). |
 | SPA shows network errors after a while | Missing `redirect: 'manual'`, so the login bounce looks like an outage (§6). |
+| SPA calls fail about an hour after the page was opened, a reload fixes it | API calls do not go through the `api()` helper, so the hourly renewal never happens (§6). |
+| "Your session was renewed — please repeat the action" | Expected, rare: a write hit the hourly renewal and was deliberately not repeated. The person presses the button again. |
 | `ROLLBACK_WOULD_UNPROTECT` | The previous version was public; rolling back would publish it. Fix forward and redeploy with `--auth`. |
 | `404` from the app for a few minutes right after the **first** `--auth` deploy | The platform's login service picks up new apps on a 5-minute refresh. `vd status` shows `auth.state: ok` already; wait five minutes and retry before debugging anything. |
 | Names show as `Ð Ð°Ð¼Ð¸Ñ…` | Headers read raw. Use the `header()` helper (§4/§5): UTF-8 bytes decoded as latin-1. |

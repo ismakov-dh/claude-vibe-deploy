@@ -98,7 +98,7 @@ dig +short A probe.mcp.<domain>
 
 ```bash
 vd push <name>                                    # receive files via stdin tar stream
-vd deploy <dir> --name <n> [--db postgres|prod-ro|none] [--routing subdomain|path] [--auth [--auth-ttl days=7]]
+vd deploy <dir> --name <n> [--db postgres|prod-ro|none] [--routing subdomain|path] [--auth [--auth-ttl hours=1]]
 vd status <name>
 vd list
 vd logs-snapshot <name> [--lines N]

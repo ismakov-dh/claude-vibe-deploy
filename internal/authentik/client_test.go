@@ -547,3 +547,17 @@ func TestEnsureReportsExistingGroupMembers(t *testing.T) {
 		t.Fatalf("GroupMembers = %d, want 2", res.GroupMembers)
 	}
 }
+
+func TestTTLSeconds(t *testing.T) {
+	for in, want := range map[string]int{
+		"hours=1": 3600, "days=7": 604800, "days=1;hours=12": 129600,
+		"minutes=2": 120, "weeks=1": 604800, "bogus": 0, "": 0,
+	} {
+		if got := TTLSeconds(in); got != want {
+			t.Errorf("TTLSeconds(%q) = %d, want %d", in, got, want)
+		}
+	}
+	if TTLSeconds(DefaultTTL) != 3600 {
+		t.Errorf("default sign-in lifetime is %s, the owner's decision is one hour", DefaultTTL)
+	}
+}

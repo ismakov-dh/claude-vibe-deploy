@@ -15,7 +15,7 @@ Idempotent: look up by name/slug, then create or patch. All five, in this order:
 | Object | Key | Settings |
 |---|---|---|
 | Group | `vibe-<app>` | created if absent; vd never patches or deletes it (it only holds `add`+`view`) |
-| Proxy provider | `vibe-<app>` | `mode=forward_single`, `external_host=https://<app>.<domain>`, `access_token_validity=days=7`, `intercept_header_auth=false`, authorization flow `default-provider-authorization-implicit-consent`, invalidation flow `default-provider-invalidation-flow` |
+| Proxy provider | `vibe-<app>` | `mode=forward_single`, `external_host=https://<app>.<domain>`, `access_token_validity=hours=1`, `intercept_header_auth=false`, authorization flow `default-provider-authorization-implicit-consent`, invalidation flow `default-provider-invalidation-flow` |
 | Application | slug `vibe-<app>` | bound to that provider |
 | Policy binding | application → group | so only group members pass `authorize` |
 | Embedded outpost | `providers += <pk>` | **without this the outpost does not serve the provider at all** |
@@ -75,11 +75,13 @@ configuration option, and the token's `add` right makes a mistake here permanent
 outpost. The group stays — vd has no right to delete it, and re-deploying must not silently
 restore access somebody revoked.
 
-`access_token_validity=days=7` is the owner's decision for vibe apps (non-PHI, no browser
-tokens). Consequence, recorded deliberately: **removing someone from the group takes up to a
-week to bite.** The immediate lever is deactivating the account, which kills the SSO session at
-once. `--auth-ttl` overrides it per app — use a short one for `--db prod-ro` apps, which read
-production data.
+`access_token_validity=hours=1` is the owner's decision for vibe apps (2026-09-24; it
+replaced `days=7`, which he rejected as too long): removing someone from the group takes effect
+within the hour, like reporting. Deactivating the account remains the immediate lever. The
+expiry is invisible to people: a page load renews through the 30-day SSO session without a
+password, and SPA calls renew through the `/auth` skill's `api()` helper — one `no-cors` round
+to the outpost's `start`, the mechanism ADR-005 measured on reporting. `--auth-ttl` still
+overrides per app; anything over a day produces a deploy warning.
 
 The outpost's `providers` list is one shared object and read-modify-write is not atomic, so two
 concurrent `vd deploy --auth` runs can drop each other's provider. vd takes a lock file in
@@ -215,12 +217,12 @@ every SSO application. With a 7-day assertion both are rare.
 The outpost's cookie is `authentik_proxy_<hash>`, host-only on the provider's `external_host`,
 so there is one per app and no sharing across vibe apps. Signing out of one app therefore does
 not log the others out immediately: it kills the SSO session, and each other app keeps working
-on its own cookie until that expires — up to a week — then lands on the login page at its next
+on its own cookie until that expires — up to the TTL — then lands on the login page at its next
 round trip. Worth saying out loud in the skill; "log out" is not an instant global eviction.
 
 ## 4. vd surface
 
-- `--auth` on `vd deploy`; `--auth-ttl` (default `days=7`).
+- `--auth` on `vd deploy`; `--auth-ttl` (default `hours=1`).
 - `vd status` reports auth on/off, group name, provider health.
 - `vd destroy` tears down as in §1.
 - Deploy fails closed: if the Authentik phase fails, no partially-protected app is published.
