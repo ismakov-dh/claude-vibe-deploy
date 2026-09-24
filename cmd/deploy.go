@@ -640,7 +640,7 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	}
 	plan := &authPlan{group: res.Group, ttl: ttl}
 	if authentik.TTLSeconds(ttl) > 86400 {
-		plan.warn("Sign-in lifetime %s is longer than a day: removing someone from %s takes up to that long "+
+		output.Warn("Sign-in lifetime %s is longer than a day: removing someone from %s takes up to that long "+
 			"to lock them out. The platform default is %s.", ttl, res.Group, authentik.DefaultTTL)
 	}
 	if res.TTLChanged {
