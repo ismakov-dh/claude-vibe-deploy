@@ -33,5 +33,16 @@ func LogsDir() string                    { return filepath.Join(VDHome(), "logs"
 func AppLogsDir(name string) string      { return filepath.Join(LogsDir(), name) }
 func ConfigPath() string                 { return filepath.Join(VDHome(), "config.json") }
 func InfraComposePath() string           { return filepath.Join(VDHome(), "infrastructure.yml") }
-func InfraEnvPath() string               { return filepath.Join(VDHome(), ".env") }
-func PushDir(name string) string         { return filepath.Join(VDHome(), "push", name) }
+
+// TraefikDynamicDir holds Traefik's file-provider configuration, mounted read-only
+// into vd-traefik. The docker provider cannot express an upstream that is not a
+// container, and Authentik is not one — see docs/plans/forward-auth.md.
+func TraefikDynamicDir() string    { return filepath.Join(VDHome(), "traefik-dynamic") }
+func AuthentikDynamicPath() string { return filepath.Join(TraefikDynamicDir(), "authentik.yml") }
+
+// AuthentikTokenPath holds the Authentik admin API token. Mode 0600, and kept out
+// of config.json: config.json is read and printed in ordinary operation, a token
+// is not.
+func AuthentikTokenPath() string { return filepath.Join(VDHome(), "authentik.token") }
+func InfraEnvPath() string       { return filepath.Join(VDHome(), ".env") }
+func PushDir(name string) string { return filepath.Join(VDHome(), "push", name) }

@@ -55,11 +55,11 @@ func NewError(code, message, hint string) *VDError {
 
 // Response is the top-level JSON output envelope.
 type Response struct {
-	OK       bool        `json:"ok"`
-	Command  string      `json:"command"`
-	Data     any         `json:"data,omitempty"`
-	Error    *VDError    `json:"error,omitempty"`
-	Warnings []string    `json:"warnings,omitempty"`
+	OK       bool     `json:"ok"`
+	Command  string   `json:"command"`
+	Data     any      `json:"data,omitempty"`
+	Error    *VDError `json:"error,omitempty"`
+	Warnings []string `json:"warnings,omitempty"`
 }
 
 // Success prints a success response.

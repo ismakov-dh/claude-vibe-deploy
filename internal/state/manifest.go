@@ -27,6 +27,13 @@ type Manifest struct {
 	// have a database and no MCP container until their next deploy, and deriving it
 	// would make vd status advertise a URL that 404s.
 	MCP bool `json:"mcp,omitempty"`
+
+	// Forward auth. Sticky: once an app is deployed with --auth, later deploys
+	// keep it on even without the flag, so an agent that forgets the flag cannot
+	// quietly publish a protected app. Removing protection means vd destroy.
+	Auth      bool   `json:"auth,omitempty"`
+	AuthTTL   string `json:"auth_ttl,omitempty"`
+	AuthGroup string `json:"auth_group,omitempty"`
 }
 
 func LoadManifest(appName string) (*Manifest, error) {

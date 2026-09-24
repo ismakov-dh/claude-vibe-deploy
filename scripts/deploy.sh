@@ -245,12 +245,25 @@ if [[ -n "$DOMAIN" ]]; then
     NGINX_CONF="/etc/nginx/sites-enabled/vd-proxy.conf"
 
     SSL_BLOCK=""
+    REDIRECT_LINE=""
     if sudo test -f "/etc/letsencrypt/live/$DOMAIN/fullchain.pem"; then
         SSL_BLOCK="
     listen 443 ssl;
     ssl_certificate /etc/letsencrypt/live/$DOMAIN/fullchain.pem;
     ssl_certificate_key /etc/letsencrypt/live/$DOMAIN/privkey.pem;
     ssl_protocols TLSv1.2 TLSv1.3;"
+
+        # Without this, http://<app>.$DOMAIN is served happily and propagates
+        # X-Forwarded-Proto: http through Traefik to the app — and, for apps
+        # deployed with --auth, to the Authentik outpost, which then builds its
+        # callback on http://. Only added when a cert exists: redirecting to
+        # https without one would take every app down.
+        #
+        # `if` inside a location is usually a trap; `return` is one of the two
+        # uses nginx documents as safe.
+        REDIRECT_LINE='
+        if ($scheme != "https") { return 301 https://$host$request_uri; }
+'
     fi
 
     # An nginx server_name wildcard, unlike a TLS or DNS one, matches more than
@@ -272,12 +285,16 @@ server {
     listen 80;${SSL_BLOCK}
     server_name *.$DOMAIN $DOMAIN;
 
-    location / {
+    location / {${REDIRECT_LINE}
         proxy_pass http://127.0.0.1:8080;
         proxy_set_header Host \$host;
         proxy_set_header X-Real-IP \$remote_addr;
         proxy_set_header X-Forwarded-For \$proxy_add_x_forwarded_for;
         proxy_set_header X-Forwarded-Proto \$scheme;
+        # Overwrite, never pass through: a client-supplied X-Forwarded-Host would
+        # otherwise travel the trusted chain into Traefik and the Authentik
+        # outpost, which picks the application by it.
+        proxy_set_header X-Forwarded-Host \$host;
         proxy_set_header Upgrade \$http_upgrade;
         proxy_set_header Connection \$vd_connection_upgrade;
 

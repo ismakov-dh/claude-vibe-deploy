@@ -73,11 +73,16 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db prod
 # With extra environment variables (.env is pushed with app files, NEVER commit .env to git)
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db postgres --env-file /opt/vibe-deploy/push/<app-name>/.env --json"
 
+# Behind platform login — the app gets identity headers, writes no login code (load /auth)
+$SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --auth --db postgres --json"
+
 # Path-based routing instead of subdomain
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing path --json"
 ```
 
-**`--db prod-ro` apps must have login before they are deployed** — they expose production data, so gate them on Authentik group membership first (load `/auth`). Apps using platform login also require the default **subdomain** routing, never `--routing path`.
+**`--db prod-ro` apps must have login before they are deployed** — they expose production data. Deploy them with `--auth` (and a short `--auth-ttl`, e.g. `hours=1`); load `/auth` first. Platform login requires the default **subdomain** routing, never `--routing path`.
+
+**`--auth` is sticky.** Once an app is deployed with it, later deploys keep it on without the flag. After an `--auth` deploy, relay the `auth.group` from the JSON to the user: people get access by being added to that group in Authentik — that is the only human step.
 
 ### 3. Verify
 
@@ -173,6 +178,8 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--db-name` | app name | Database name (required for `prod-ro`) |
 | `--env-file` | none | Path to .env file on server |
 | `--allow-external` | false | Silence warnings about unsupported external services |
+| `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky. Subdomain routing only |
+| `--auth-ttl` | `hours=1` | How long a sign-in lasts before Authentik is asked again (`hours=`, `minutes=`, `days=`). Longer than a day produces a warning: group removal then takes that long to bite |
 
 `--db postgres` additionally provisions a read-only MCP for the app's database and
 returns it in the `mcp` field — see step 3b.
@@ -180,8 +187,9 @@ returns it in the `mcp` field — see step 3b.
 **Policy scan on every deploy:** vd scans source for hardcoded secrets and unsupported external services. Hardcoded credentials (API keys, private keys, DB URLs with passwords) **block** the deploy (`POLICY_VIOLATION`) — move them to a `.env` and use `--env-file` (`.env` is never scanned). Unsupported services (Supabase, Firebase, MongoDB, Redis, S3) appear as warnings in the response `warnings` field; pass `--allow-external` only if deliberate.
 
 ### `vd status <app-name>`
-Returns state, health, URL, deploy time, and the `mcp` block for apps deployed
-with `--db postgres`.
+Returns state, health, URL, deploy time, the `mcp` block for apps deployed
+with `--db postgres`, and for `--auth` apps an `auth` block whose `state` is `ok`,
+`broken` (redeploy to repair) or `unknown` (Authentik unreachable).
 
 ### `vd list`
 All deployed apps.
@@ -190,10 +198,10 @@ All deployed apps.
 One-shot log dump. Default 100 lines. **Always use this, not `vd logs`** (which streams forever).
 
 ### `vd rollback <app-name> [--restore-db]`
-Revert to previous deployment. Last 5 backups kept. If the app has a vd-managed database, **ask the user if they want to also restore the database** — if yes, add `--restore-db`. This restores the database to the state at the time of the previous deploy. Without this flag, only the container is rolled back.
+Revert to previous deployment. Last 5 backups kept. Refused with `ROLLBACK_WOULD_UNPROTECT` when the app now has platform login and the previous version did not — it would come back public. If the app has a vd-managed database, **ask the user if they want to also restore the database** — if yes, add `--restore-db`. This restores the database to the state at the time of the previous deploy. Without this flag, only the container is rolled back.
 
 ### `vd destroy <app-name> --yes [--drop-db]`
-Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping.
+Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping. For `--auth` apps it also removes the app's Authentik application and provider; the access group `vibe-<app>` is kept, so redeploying under the same name restores access for the same people.
 
 ### `vd cron-set <app-name> --schedule "..." --command "..."`
 Add a scheduled task. Runs inside the container.
@@ -241,6 +249,13 @@ Always check `ok` field. On error, read `hint` for the fix.
 | `NO_DB` | App has no vd-managed database |
 | `RESTORE_FAILED` | Check backup file integrity |
 | `POLICY_VIOLATION` | Hardcoded secret in source — move it to `.env`, use `--env-file` |
+| `AUTH_NOT_CONFIGURED` | Server not set up for `--auth` — use the fallback in `/auth` until a platform admin runs `vd init --authentik-…` |
+| `AUTH_FAILED` | Authentik rejected the setup; **nothing was changed**. Retry once, then pass `details` to the platform admin |
+| `AUTH_REQUIRES_SUBDOMAIN` | Drop `--routing path` |
+| `INVALID_AUTH_TTL` | Use `hours=1`, `minutes=30`, …; `--auth-ttl` needs `--auth` |
+| `ROLLBACK_WOULD_UNPROTECT` | Previous version was public — fix forward and redeploy instead |
+| `MANIFEST_UNREADABLE` | The app's manifest exists but cannot be read — vd will not guess whether it is protected. Ask the platform admin |
+| `MANIFEST_WRITE_FAILED` | An `--auth` app deployed but its manifest was not saved — ask the platform admin to fix permissions, then redeploy with `--auth` |
 
 ## App Naming Rules
 

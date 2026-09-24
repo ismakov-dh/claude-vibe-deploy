@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/vibe-deploy/vd/internal/authentik"
 	"github.com/vibe-deploy/vd/internal/docker"
 	"github.com/vibe-deploy/vd/internal/output"
 	"github.com/vibe-deploy/vd/internal/state"
@@ -49,6 +50,10 @@ var statusCmd = &cobra.Command{
 				output.Info("MCP:       %s (%s)", mcp["url"], mcpHealth)
 			}
 		}
+		authInfo := authStatus(m, cfg)
+		if authInfo != nil && !output.IsJSON() {
+			output.Info("Login:     group %s, sign-in lasts %s (%s)", m.AuthGroup, m.AuthTTL, authInfo["state"])
+		}
 
 		data := map[string]any{
 			"name":        m.Name,
@@ -66,6 +71,9 @@ var statusCmd = &cobra.Command{
 		if mcp != nil {
 			mcp["health"] = mcpHealth
 			data["mcp"] = mcp
+		}
+		if authInfo != nil {
+			data["auth"] = authInfo
 		}
 		output.Success("status", data)
 	},
@@ -117,4 +125,33 @@ func mcpContainerHealth(appName string) string {
 		return cs.Health
 	}
 	return cs.Status
+}
+
+// authStatus asks Authentik what exists for the app. It reads, never writes, and
+// an unreachable Authentik is reported as such rather than failing vd status.
+func authStatus(m *state.Manifest, cfg *state.Config) map[string]any {
+	if !m.Auth {
+		return nil
+	}
+	info := map[string]any{"enabled": true, "group": m.AuthGroup, "ttl": m.AuthTTL}
+	token, err := state.LoadAuthentikToken()
+	if err != nil || cfg == nil || cfg.AuthentikURL == "" {
+		info["state"] = "unknown"
+		info["error"] = "Authentik is not configured on this server"
+		return info
+	}
+	h, err := authentik.New(cfg.AuthentikURL, token).Check(m.Name)
+	if err != nil {
+		info["state"] = "unknown"
+		info["error"] = err.Error()
+		return info
+	}
+	info["authentik"] = h
+	if h.OK() {
+		info["state"] = "ok"
+	} else {
+		info["state"] = "broken"
+		info["hint"] = "redeploy the app to recreate its Authentik objects"
+	}
+	return info
 }

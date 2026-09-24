@@ -60,9 +60,9 @@ For each issue found, explain what needs to change and why. Then propose a plan 
 - TLS/HTTPS is automatic (wildcard cert). All apps are HTTPS.
 
 ### Sign in with the platform account (optional)
-- The platform IdP is **Authentik**. The app is a server-side OIDC client: it runs the authorization code flow inside the container, keeps no tokens, and gives the browser its own signed session cookie. Single container serves UI + API.
-- If the user's idea needs **login / accounts / per-user data**, stop here and load the **`/auth`** skill — it has the working code for Python and Node, the session/revocation rules, and the checklist to hand the platform admin. **Do not** start writing login code without `/auth` loaded.
-- Auth requires **subdomain routing** (the default). The one human step is the platform admin creating the provider, application and access group `vibe-<name>` in Authentik and handing back a client id and secret; everything else is yours to do.
+- `vd deploy --auth` puts the app behind the platform login (Authentik). The app writes **no login code**: it reads the signed-in person from request headers and checks one platform-injected secret. Single container serves UI + API.
+- If the user's idea needs **login / accounts / per-user data**, stop here and load the **`/auth`** skill — it has the header contract, copy-paste Python/Node guards, and a fallback for servers without `--auth`. **Do not** write login code of your own.
+- Requires **subdomain routing** (the default). The only human step: adding the people who may use the app to the group `vibe-<name>` in Authentik. `vd deploy --auth` creates everything else.
 
 ## What You CANNOT Use
 
@@ -127,7 +127,7 @@ public/
 ```
 Deploy with `--db prod-ro --db-name <existing-database>`.
 
-**A `--db prod-ro` app reads production data and must not ship without login.** Load `/auth` and gate it on `vibe-<name>` membership before deploying — the group is the access control, and "it's just an internal dashboard" is not one.
+**A `--db prod-ro` app reads production data and must not ship without login.** Load `/auth` and deploy it with `--auth` (a short `--auth-ttl`, e.g. `hours=1`) — membership in `vibe-<name>` is the access control, and "it's just an internal dashboard" is not one.
 
 ## Rules for Writing Code
 

@@ -3,6 +3,7 @@ package docker
 import (
 	"encoding/json"
 	"fmt"
+	"net"
 	"os/exec"
 	"strings"
 	"time"
@@ -22,6 +23,49 @@ func NetworkExists(name string) bool {
 func NetworkCreate(name string) error {
 	_, err := shell.Run(30*time.Second, "docker", "network", "create", name)
 	return err
+}
+
+// NetworkGateway returns a network's gateway address.
+//
+// Traefik needs it: nginx proxies to vd-traefik's published port on 127.0.0.1,
+// but a loopback-published port arrives through docker-proxy, so the container
+// sees the bridge gateway (172.24.0.1 here) as the client — not 127.0.0.1.
+// Trusting only loopback would leave nginx untrusted, Traefik would overwrite
+// X-Forwarded-Proto, and the Authentik outpost would build http:// callbacks.
+// The subnet is Docker's choice and differs per host, so it is read, not assumed.
+//
+// Returned as host CIDRs, one per address family: a dual-stack network has an
+// IPv4 and an IPv6 gateway, and the earlier version concatenated them into one
+// unparseable string.
+func NetworkGateway(name string) ([]string, error) {
+	r, err := shell.Run(30*time.Second, "docker", "network", "inspect", "--format",
+		"{{range .IPAM.Config}}{{.Gateway}} {{end}}", name)
+	if err != nil {
+		return nil, err
+	}
+	cidrs := GatewayCIDRs(r.Stdout)
+	if len(cidrs) == 0 {
+		return nil, fmt.Errorf("network %s reports no gateway", name)
+	}
+	return cidrs, nil
+}
+
+// GatewayCIDRs turns `docker network inspect` gateway output into /32 and /128
+// entries, skipping anything that is not an IP address.
+func GatewayCIDRs(out string) []string {
+	var cidrs []string
+	for _, f := range strings.Fields(out) {
+		ip := net.ParseIP(f)
+		switch {
+		case ip == nil:
+			continue
+		case ip.To4() != nil:
+			cidrs = append(cidrs, ip.String()+"/32")
+		default:
+			cidrs = append(cidrs, ip.String()+"/128")
+		}
+	}
+	return cidrs
 }
 
 // NetworkConnect connects a container to a network.
@@ -51,6 +95,20 @@ func ComposeBuild(dir, composefile string) error {
 // ComposeUp runs docker compose up -d in the given directory.
 func ComposeUp(dir, composefile string) error {
 	r, err := shell.Run(defaultTimeout, "docker", "compose", "-f", dir+"/"+composefile, "up", "-d", "--build", "--force-recreate")
+	if err != nil {
+		return fmt.Errorf("docker compose up failed: %s", r.Stderr)
+	}
+	return nil
+}
+
+// ComposeApply brings a compose file's services to the declared state, recreating
+// only the ones whose configuration changed. For shared infrastructure, where
+// ComposeUp's --force-recreate is wrong: vd init used it, so every init — even
+// one that changed nothing but Traefik — recreated vd-postgres and dropped every
+// app's database connections at once. Seen 2026-09-23: three apps logged
+// "terminating connection due to administrator command", one answered a 500.
+func ComposeApply(dir, composefile string) error {
+	r, err := shell.Run(defaultTimeout, "docker", "compose", "-f", dir+"/"+composefile, "up", "-d")
 	if err != nil {
 		return fmt.Errorf("docker compose up failed: %s", r.Stderr)
 	}

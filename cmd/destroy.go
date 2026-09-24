@@ -5,6 +5,7 @@ import (
 	"os"
 
 	"github.com/spf13/cobra"
+	"github.com/vibe-deploy/vd/internal/authentik"
 	"github.com/vibe-deploy/vd/internal/db"
 	"github.com/vibe-deploy/vd/internal/docker"
 	"github.com/vibe-deploy/vd/internal/output"
@@ -51,6 +52,35 @@ var destroyCmd = &cobra.Command{
 		output.Info("Stopping container...")
 		appDir := state.AppDir(name)
 		docker.ComposeDown(appDir, "docker-compose.vd.yml")
+
+		// Take the app's objects out of Authentik. The container is already down,
+		// so a failure here leaves no exposed app — only litter to clean up — and
+		// must not stop the destroy the caller asked for. It is reported, loudly.
+		authRemoved := ""
+		if m.Auth {
+			authRemoved = "removed"
+			cfg, _ := state.LoadConfig()
+			token, terr := state.LoadAuthentikToken()
+			switch {
+			case cfg == nil || cfg.AuthentikURL == "":
+				authRemoved = "failed: Authentik is not configured on this server"
+			case terr != nil:
+				authRemoved = "failed: " + terr.Error()
+			default:
+				output.Info("Removing platform login from Authentik (the group is kept)...")
+				if unlock, lerr := state.LockAuthentik(); lerr != nil {
+					authRemoved = "failed: " + lerr.Error()
+				} else {
+					if err := authentik.New(cfg.AuthentikURL, token).Remove(name); err != nil {
+						authRemoved = "failed: " + err.Error()
+					}
+					unlock()
+				}
+			}
+			if authRemoved != "removed" {
+				output.Warn("Authentik cleanup %s — a platform admin should remove the provider and application vibe-%s by hand", authRemoved, name)
+			}
+		}
 
 		// Backup database before dropping
 		if destroyDropDB && m.DB == "postgres" {
@@ -110,11 +140,15 @@ var destroyCmd = &cobra.Command{
 
 		output.Info("Destroyed %s (backups retained at %s)", name, state.AppBackupsDir(name))
 
-		output.Success("destroy", map[string]any{
+		data := map[string]any{
 			"name":             name,
 			"destroyed":        true,
 			"db_dropped":       dbDropped,
 			"backups_retained": state.AppBackupsDir(name),
-		})
+		}
+		if m.Auth {
+			data["auth"] = map[string]any{"cleanup": authRemoved, "group_kept": m.AuthGroup}
+		}
+		output.Success("destroy", data)
 	},
 }

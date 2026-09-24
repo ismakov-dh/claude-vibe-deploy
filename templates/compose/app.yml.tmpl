@@ -25,6 +25,47 @@ services:
 {{- end}}
       - "traefik.http.services.vd-{{.Name}}.loadbalancer.server.port={{.Port}}"
       - "traefik.http.routers.vd-{{.Name}}.entrypoints=web"
+{{- if .Auth}}
+      # --- forward auth (docs/plans/forward-auth.md §2) -----------------------
+      # Chain, outermost first: strip whatever identity the client sent, ask the
+      # Authentik outpost, then stamp the ingress secret last so nothing after
+      # it can remove it. The app trusts X-authentik-* only alongside that secret:
+      # every vd app shares vd-net and can reach this container directly.
+      - "traefik.http.routers.vd-{{.Name}}.middlewares=vd-{{.Name}}-strip-identity,authentik-fa@file,vd-{{.Name}}-ingress"
+      # Must list every header in authResponseHeaders (traefik-dynamic/authentik.yml)
+      # name for name: forwardAuth only overwrites the ones the outpost actually
+      # returns, so an unlisted one arrives exactly as the client sent it.
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-authentik-uid="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-authentik-username="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-authentik-email="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-authentik-name="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-authentik-groups="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-Vibe-Ingress="
+      # Pin what the outpost uses to pick a provider. nginx and the entrypoint
+      # trust chain pass a client's X-Forwarded-Host through, forwardAuth with
+      # trustForwardHeader relays it, and the outpost resolves the application
+      # from it: a member of app A could send X-Forwarded-Host: A to B's host
+      # with A's cookie, pass as A, and receive B's ingress secret. The router
+      # already matched this host, so it is the only correct value. Uri, Method
+      # and Port are blanked, not forced: forwardAuth then fills them from the
+      # real request (traefik v3.3 pkg/middlewares/auth/forward.go writeHeader).
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-Forwarded-Host={{.Name}}.{{.Domain}}"
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-Forwarded-Uri="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-Forwarded-Method="
+      - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-Forwarded-Port="
+      - "traefik.http.middlewares.vd-{{.Name}}-ingress.headers.customrequestheaders.X-Vibe-Ingress={{.IngressSecret}}"
+      # The outpost's own paths (start, callback, sign_out) must reach the outpost
+      # on the app's host, not the app. No explicit priority, same reasoning as
+      # the MCP /.well-known/ router below: this rule is a strict superset of the
+      # app's, so it always wins, where a literal number stops winning once the
+      # app name makes the app rule long enough.
+      - "traefik.http.routers.vd-{{.Name}}-outpost.rule=Host(`{{.Name}}.{{.Domain}}`) && PathPrefix(`/outpost.goauthentik.io/`)"
+      - "traefik.http.routers.vd-{{.Name}}-outpost.entrypoints=web"
+      - "traefik.http.routers.vd-{{.Name}}-outpost.service=authentik@file"
+      # The outpost resolves start/callback/sign_out by X-Forwarded-Host too, so
+      # the same pinning applies here. No forwardAuth: this router is the login.
+      - "traefik.http.routers.vd-{{.Name}}-outpost.middlewares=vd-{{.Name}}-strip-identity"
+{{- end}}
     networks:
       - vd-net
 {{- if .NeedsDB}}
