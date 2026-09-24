@@ -4,9 +4,23 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"slices"
 )
 
 var jsonMode bool
+
+// warnings collects Warn calls in --json mode. Every agent runs vd with --json,
+// and Warn used to print nothing there — so "DB provisioning failed, deploying
+// without DB" or "Backup failed (continuing anyway)" reached no one while the
+// response said ok: true. They now ride along in the response, success or
+// failure, from whichever command raised them.
+var warnings []string
+
+func addWarning(w string) {
+	if !slices.Contains(warnings, w) {
+		warnings = append(warnings, w)
+	}
+}
 
 func SetJSON(v bool) { jsonMode = v }
 func IsJSON() bool   { return jsonMode }
@@ -27,10 +41,12 @@ func Info(msg string, args ...any) {
 }
 
 func Warn(msg string, args ...any) {
+	w := fmt.Sprintf(msg, args...)
 	if jsonMode {
+		addWarning(w)
 		return
 	}
-	fmt.Fprintf(os.Stderr, yellow+"[vd warning]"+reset+" "+msg+"\n", args...)
+	fmt.Fprintf(os.Stderr, yellow+"[vd warning]"+reset+" %s\n", w)
 }
 
 func Error(msg string, args ...any) {
@@ -65,15 +81,19 @@ type Response struct {
 // Success prints a success response.
 func Success(command string, data any) {
 	if jsonMode {
-		r := Response{OK: true, Command: command, Data: data}
+		r := Response{OK: true, Command: command, Data: data, Warnings: warnings}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(r)
 	}
 }
 
-// SuccessWithWarnings prints a success response with warnings.
-func SuccessWithWarnings(command string, data any, warnings []string) {
+// SuccessWithWarnings prints a success response with warnings, merged with
+// anything Warn collected (without repeats — callers often do both).
+func SuccessWithWarnings(command string, data any, extra []string) {
+	for _, w := range extra {
+		addWarning(w)
+	}
 	if jsonMode {
 		r := Response{OK: true, Command: command, Data: data, Warnings: warnings}
 		enc := json.NewEncoder(os.Stdout)
@@ -85,7 +105,7 @@ func SuccessWithWarnings(command string, data any, warnings []string) {
 // Fail prints an error response and exits.
 func Fail(command string, err *VDError) {
 	if jsonMode {
-		r := Response{OK: false, Command: command, Error: err}
+		r := Response{OK: false, Command: command, Error: err, Warnings: warnings}
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
 		enc.Encode(r)
