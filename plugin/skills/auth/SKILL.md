@@ -19,6 +19,10 @@ code** — it reads who the person is from request headers.
 
 Load `/vibe` for platform constraints and `/deploy` for the deploy step.
 
+A complete, running example — guard, `api()` helper, sign-out — is
+[`examples/auth-demo`](https://github.com/ismakov-dh/claude-vibe-deploy/tree/main/examples/auth-demo),
+live at `https://auth-demo.apps.platform.acuradai.com`. Copy from it when in doubt.
+
 ---
 
 ## 0. Hard rules — do not negotiate
