@@ -20,6 +20,7 @@ package authentik
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -152,10 +153,21 @@ type application struct {
 }
 
 type binding struct {
-	PK     string `json:"pk,omitempty"`
-	Target string `json:"target"`
-	Group  string `json:"group"`
-	Order  int    `json:"order"`
+	PK      string `json:"pk,omitempty"`
+	Target  string `json:"target"`
+	Group   string `json:"group"`
+	Order   int    `json:"order"`
+	Enabled *bool  `json:"enabled,omitempty"`
+	Negate  *bool  `json:"negate,omitempty"`
+}
+
+// guards reports whether b actually restricts the application to groupPK.
+// Authentik ignores a disabled binding, and an application with no active
+// binding admits every signed-in account; a negated group binding admits
+// everyone except the group. Either one looks like protection and is not.
+// Authentik's defaults are enabled=true, negate=false.
+func (b binding) guards(groupPK string) bool {
+	return b.Group == groupPK && (b.Enabled == nil || *b.Enabled) && (b.Negate == nil || !*b.Negate)
 }
 
 type outpost struct {
@@ -209,18 +221,44 @@ func (c *Client) Ensure(s Spec) (*Result, error) {
 		return nil, err
 	}
 
-	app, err := c.ensureApplication(group, prov.PK, s.ExternalHost+"/")
+	app, created, err := c.ensureApplication(group, prov.PK, s.ExternalHost+"/")
 	if err != nil {
 		return nil, err
 	}
 	if err := c.ensureBinding(app.PK, groupPK); err != nil {
-		return nil, err
+		// An Authentik application without a group binding is open to anyone who
+		// can sign in — and the prod pool has invited accounts with no groups at
+		// all. Fail closed: take the provider off the outpost so the host answers
+		// 404, and drop an application this run created. Best effort, since the
+		// API just failed; every outcome is reported.
+		return nil, c.failClosed(group, prov.PK, created, err)
 	}
 	if err := c.addToOutpost(prov.PK); err != nil {
 		return nil, err
 	}
 	return &Result{Group: group, ProviderPK: prov.PK, AppSlug: group, GroupMembers: members,
 		InvalidationFlow: invalSlug, TTLChanged: ttlChanged}, nil
+}
+
+// failClosed undoes publication after a failed group binding and says exactly
+// what it managed to undo.
+func (c *Client) failClosed(slug string, providerPK int, created bool, cause error) error {
+	notes := []string{"group binding failed: " + cause.Error()}
+	if err := c.removeFromOutpost(providerPK); err != nil {
+		notes = append(notes, "COULD NOT take the provider off the outpost ("+err.Error()+
+			") — the app may be reachable by any signed-in user; remove provider "+strconv.Itoa(providerPK)+
+			" from the embedded outpost by hand")
+	} else {
+		notes = append(notes, "provider is not on the outpost, so the app is not served")
+	}
+	if created {
+		if _, err := c.do("DELETE", "/core/applications/"+slug+"/", nil, nil); err != nil {
+			notes = append(notes, "could not delete the application created in this run: "+err.Error())
+		} else {
+			notes = append(notes, "application created in this run was deleted")
+		}
+	}
+	return errors.New(strings.Join(notes, "; "))
 }
 
 // Remove undoes Ensure except for the group: vd holds no delete right on groups,
@@ -269,15 +307,20 @@ func (c *Client) Remove(app string) error {
 
 // Health describes what exists for an app, for vd status.
 type Health struct {
-	Group       bool   `json:"group"`
-	Provider    bool   `json:"provider"`
-	Application bool   `json:"application"`
+	Group       bool `json:"group"`
+	Provider    bool `json:"provider"`
+	Application bool `json:"application"`
+	// Binding is an enabled, non-negated binding of the application to its
+	// group. Without it the app is open to every signed-in account.
+	Binding     bool   `json:"binding"`
 	InOutpost   bool   `json:"in_outpost"`
 	ProviderTTL string `json:"provider_ttl,omitempty"`
 }
 
 // OK is true when the app is actually protected and servable.
-func (h *Health) OK() bool { return h.Group && h.Provider && h.Application && h.InOutpost }
+func (h *Health) OK() bool {
+	return h.Group && h.Provider && h.Application && h.Binding && h.InOutpost
+}
 
 // Check reads, never writes.
 func (c *Client) Check(app string) (*Health, error) {
@@ -286,11 +329,11 @@ func (c *Client) Check(app string) (*Health, error) {
 		return nil, err
 	}
 	h := &Health{}
-	if pk, _, err := c.findGroup(group); err != nil {
+	groupPK, _, err := c.findGroup(group)
+	if err != nil {
 		return nil, err
-	} else {
-		h.Group = pk != ""
 	}
+	h.Group = groupPK != ""
 	prov, err := c.findProvider(group)
 	if err != nil {
 		return nil, err
@@ -304,11 +347,23 @@ func (c *Client) Check(app string) (*Health, error) {
 		}
 		h.InOutpost = slices.Contains(o.Providers, prov.PK)
 	}
-	code, err := c.do("GET", "/core/applications/"+group+"/", nil, nil)
+	var a application
+	code, err := c.do("GET", "/core/applications/"+group+"/", nil, &a)
 	if err != nil && code != http.StatusNotFound {
 		return nil, err
 	}
 	h.Application = code == http.StatusOK
+	if h.Application && h.Group {
+		bs, err := c.bindingsFor(a.PK)
+		if err != nil {
+			return nil, err
+		}
+		for _, b := range bs {
+			if b.guards(groupPK) {
+				h.Binding = true
+			}
+		}
+	}
 	return h, nil
 }
 
@@ -426,40 +481,42 @@ func (c *Client) ensureProvider(want provider) (*provider, bool, error) {
 	return &back, ttlChanged, nil
 }
 
-func (c *Client) ensureApplication(slug string, providerPK int, launchURL string) (*application, error) {
+func (c *Client) ensureApplication(slug string, providerPK int, launchURL string) (*application, bool, error) {
 	var cur application
 	code, err := c.do("GET", "/core/applications/"+slug+"/", nil, &cur)
 	if err != nil && code != http.StatusNotFound {
-		return nil, err
+		return nil, false, err
 	}
+	created := false
 	want := application{Name: slug, Slug: slug, Provider: &providerPK, LaunchURL: launchURL}
 	var got application
 	if code == http.StatusNotFound {
 		if code, err := c.do("POST", "/core/applications/", want, &got); err != nil {
 			if code == http.StatusBadRequest {
-				return nil, fmt.Errorf("application slug %q exists but is not readable by vd "+
+				return nil, false, fmt.Errorf("application slug %q exists but is not readable by vd "+
 					"(hidden from its list, or owned by someone else) — resolve in Authentik: %w", slug, err)
 			}
-			return nil, fmt.Errorf("create application %s: %w", slug, err)
+			return nil, false, fmt.Errorf("create application %s: %w", slug, err)
 		}
+		created = true
 	} else if cur.Provider == nil || *cur.Provider != providerPK || cur.LaunchURL != launchURL {
 		patch := map[string]any{"provider": providerPK, "meta_launch_url": launchURL}
 		if _, err := c.do("PATCH", "/core/applications/"+slug+"/", patch, &got); err != nil {
-			return nil, fmt.Errorf("update application %s: %w", slug, err)
+			return nil, false, fmt.Errorf("update application %s: %w", slug, err)
 		}
 	}
 
 	var back application
 	if _, err := c.do("GET", "/core/applications/"+slug+"/", nil, &back); err != nil {
-		return nil, err
+		return nil, created, err
 	}
 	if back.Provider == nil || *back.Provider != providerPK {
-		return nil, fmt.Errorf("application %s is not bound to provider %d after write", slug, providerPK)
+		return nil, created, fmt.Errorf("application %s is not bound to provider %d after write", slug, providerPK)
 	}
 	if back.LaunchURL != launchURL {
-		return nil, fmt.Errorf("application %s launch URL is %q after write, want %q", slug, back.LaunchURL, launchURL)
+		return nil, created, fmt.Errorf("application %s launch URL is %q after write, want %q", slug, back.LaunchURL, launchURL)
 	}
-	return &back, nil
+	return &back, created, nil
 }
 
 func (c *Client) bindingsFor(target string) ([]binding, error) {
@@ -478,19 +535,39 @@ func (c *Client) ensureBinding(appPK, groupPK string) error {
 	if err != nil {
 		return err
 	}
+	var weak *binding
+	for i, b := range bs {
+		if b.guards(groupPK) {
+			return nil
+		}
+		if b.Group == groupPK && weak == nil {
+			weak = &bs[i]
+		}
+	}
+	on, off := true, false
+	if weak != nil {
+		// A group binding exists but is disabled or negated: repair it rather than
+		// add a second one next to it.
+		if _, err := c.do("PATCH", "/policies/bindings/"+weak.PK+"/",
+			map[string]any{"enabled": true, "negate": false}, nil); err != nil {
+			return fmt.Errorf("re-enable group binding: %w", err)
+		}
+	} else if _, err := c.do("POST", "/policies/bindings/",
+		binding{Target: appPK, Group: groupPK, Order: 0, Enabled: &on, Negate: &off}, nil); err != nil {
+		return fmt.Errorf("bind application to group: %w", err)
+	}
+
+	// Re-read, as with every other write here.
+	bs, err = c.bindingsFor(appPK)
+	if err != nil {
+		return err
+	}
 	for _, b := range bs {
-		if b.Group == groupPK {
+		if b.guards(groupPK) {
 			return nil
 		}
 	}
-	var got binding
-	if _, err := c.do("POST", "/policies/bindings/", binding{Target: appPK, Group: groupPK, Order: 0}, &got); err != nil {
-		return fmt.Errorf("bind application to group: %w", err)
-	}
-	if got.Target != appPK || got.Group != groupPK {
-		return fmt.Errorf("group binding did not take: got %+v", got)
-	}
-	return nil
+	return fmt.Errorf("no enabled, non-negated binding to the group after write")
 }
 
 func (c *Client) embedded() (*outpost, error) {
