@@ -17,7 +17,7 @@ Idempotent: look up by name/slug, then create or patch. All five, in this order:
 | Group | `vibe-<app>` | created if absent; vd never patches or deletes it (it only holds `add`+`view`) |
 | Proxy provider | `vibe-<app>` | `mode=forward_single`, `external_host=https://<app>.<domain>`, `access_token_validity=hours=1`, `intercept_header_auth=false`, authorization flow `default-provider-authorization-implicit-consent`, invalidation flow `default-provider-invalidation-flow` |
 | Application | slug `vibe-<app>` | bound to that provider |
-| Policy binding | application → group | so only group members pass `authorize` |
+| Policy binding | application → group | so only group members pass `authorize`. **Load-bearing:** an application with no binding is open to any signed-in account, and the prod pool holds invited accounts with no groups at all. If the binding cannot be made, `Ensure` fails closed — provider off the outpost, an application created in the same run deleted. A disabled or negated binding counts as none and is repaired in place; `vd status` reports `binding` and is `broken` without it |
 | Embedded outpost | `providers += <pk>` | **without this the outpost does not serve the provider at all** |
 
 ### What the API actually does — measured on test, 2026-09-22

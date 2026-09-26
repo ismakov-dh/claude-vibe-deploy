@@ -189,7 +189,7 @@ returns it in the `mcp` field — see step 3b.
 ### `vd status <app-name>`
 Returns state, health, URL, deploy time, the `mcp` block for apps deployed
 with `--db postgres`, and for `--auth` apps an `auth` block whose `state` is `ok`,
-`broken` (redeploy to repair) or `unknown` (Authentik unreachable).
+`broken` (redeploy to repair; `auth.authentik.binding: false` means the app is open to every signed-in account until then) or `unknown` (Authentik unreachable).
 
 ### `vd list`
 All deployed apps.
@@ -260,7 +260,7 @@ report the deploy as fully done while one of them describes a missing piece.
 | `RESTORE_FAILED` | Check backup file integrity |
 | `POLICY_VIOLATION` | Hardcoded secret in source — move it to `.env`, use `--env-file` |
 | `AUTH_NOT_CONFIGURED` | Server not set up for `--auth` — use the fallback in `/auth` until a platform admin runs `vd init --authentik-…` |
-| `AUTH_FAILED` | Authentik rejected the setup; **nothing was changed**. Retry once, then pass `details` to the platform admin |
+| `AUTH_FAILED` | Authentik rejected the setup; nothing was deployed on the server. If the group binding failed, vd also unpublished the app (`404`, never open) — see `details`. Retry once, then pass `details` to the platform admin |
 | `AUTH_REQUIRES_SUBDOMAIN` | Drop `--routing path` |
 | `INVALID_AUTH_TTL` | Use `hours=1`, `minutes=30`, …; `--auth-ttl` needs `--auth` |
 | `ROLLBACK_WOULD_UNPROTECT` | Previous version was public — fix forward and redeploy instead |

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,6 +39,9 @@ type fake struct {
 	// that is not vd changing it between vd's reads.
 	onOutpostGet func(n int)
 	outpostGets  int
+
+	// failBindings makes creating or patching a policy binding fail.
+	failBindings bool
 }
 
 func newFake() *fake {
@@ -190,11 +194,29 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			next = 0
 		}
 		out(200, page([]any{f.bindings[n-1]}, next))
+	case p == "/policies/bindings/" && r.Method == "POST" && f.failBindings:
+		out(500, map[string]any{"detail": "fake: binding refused"})
 	case p == "/policies/bindings/" && r.Method == "POST":
 		f.nextPK++
 		body["pk"] = "b-" + strconv.Itoa(f.nextPK)
 		f.bindings = append(f.bindings, body)
 		out(201, body)
+	case strings.HasPrefix(p, "/policies/bindings/") && r.Method == "PATCH":
+		if f.failBindings {
+			out(500, map[string]any{"detail": "fake: binding refused"})
+			return
+		}
+		pk := strings.Trim(strings.TrimPrefix(p, "/policies/bindings/"), "/")
+		for _, b := range f.bindings {
+			if b["pk"] == pk {
+				for k, v := range body {
+					b[k] = v
+				}
+				out(200, b)
+				return
+			}
+		}
+		out(404, map[string]any{"detail": "Not found."})
 	case strings.HasPrefix(p, "/policies/bindings/") && r.Method == "DELETE":
 		pk := strings.Trim(strings.TrimPrefix(p, "/policies/bindings/"), "/")
 		for i, b := range f.bindings {
@@ -559,5 +581,87 @@ func TestTTLSeconds(t *testing.T) {
 	}
 	if TTLSeconds(DefaultTTL) != 3600 {
 		t.Errorf("default sign-in lifetime is %s, the owner's decision is one hour", DefaultTTL)
+	}
+}
+
+// First deploy, binding refused: the app must never be served, and the
+// application object created in this run must not be left behind unbound.
+func TestBindingFailureOnFirstDeployLeavesNothingOpen(t *testing.T) {
+	f, c := setup(t)
+	f.failBindings = true
+	_, err := c.Ensure(spec())
+	if err == nil || !strings.Contains(err.Error(), "group binding failed") {
+		t.Fatalf("want binding failure, got %v", err)
+	}
+	if len(f.outpost) != 1 || f.outpost[0] != 2 {
+		t.Fatalf("outpost = %v, want the stranger only", f.outpost)
+	}
+	if _, ok := f.apps["vibe-demo"]; ok {
+		t.Fatal("unbound application left behind")
+	}
+}
+
+// A published app whose binding was removed by hand, redeployed while the API
+// refuses bindings: it must be taken off the outpost, not left open to every
+// signed-in account. The application pre-existed, so it is kept.
+func TestBindingFailureOnPublishedAppUnpublishes(t *testing.T) {
+	f, c := setup(t)
+	res, err := c.Ensure(spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	f.bindings = nil // someone deleted it
+	f.failBindings = true
+	_, err = c.Ensure(spec())
+	if err == nil || !strings.Contains(err.Error(), "not served") {
+		t.Fatalf("want fail-closed error, got %v", err)
+	}
+	if slices.Contains(f.outpost, res.ProviderPK) {
+		t.Fatalf("provider still on the outpost: %v", f.outpost)
+	}
+	if !slices.Contains(f.outpost, 2) {
+		t.Fatal("stranger's provider dropped while unpublishing ours")
+	}
+	if _, ok := f.apps["vibe-demo"]; !ok {
+		t.Fatal("pre-existing application deleted")
+	}
+}
+
+// A disabled or negated group binding does not protect anything. Ensure repairs
+// it in place, and Check does not count it.
+func TestWeakBindingIsRepairedAndNotCounted(t *testing.T) {
+	for _, field := range []string{"enabled", "negate"} {
+		f, c := setup(t)
+		if _, err := c.Ensure(spec()); err != nil {
+			t.Fatal(err)
+		}
+		f.bindings[0][field] = field == "negate" // enabled=false, or negate=true
+		if h, _ := c.Check("demo"); h.Binding || h.OK() {
+			t.Fatalf("%s: Check counts a weak binding: %+v", field, h)
+		}
+		if _, err := c.Ensure(spec()); err != nil {
+			t.Fatal(err)
+		}
+		if len(f.bindings) != 1 {
+			t.Fatalf("%s: duplicate binding instead of repair: %v", field, f.bindings)
+		}
+		if h, _ := c.Check("demo"); !h.Binding || !h.OK() {
+			t.Fatalf("%s: not repaired: %+v", field, h)
+		}
+	}
+}
+
+func TestCheckReportsMissingBinding(t *testing.T) {
+	f, c := setup(t)
+	if _, err := c.Ensure(spec()); err != nil {
+		t.Fatal(err)
+	}
+	f.bindings = nil
+	h, err := c.Check("demo")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if h.Binding || h.OK() {
+		t.Fatalf("unbound app reported healthy: %+v", h)
 	}
 }

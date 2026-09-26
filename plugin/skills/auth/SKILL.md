@@ -323,7 +323,7 @@ right person; a second browser profile that is not in the group gets "access den
 |---|---|
 | `unknown flag: --auth` | The server's vd predates forward auth. Use the [fallback](#fallback-server-side-oidc--only-when---auth-is-unavailable). |
 | `AUTH_NOT_CONFIGURED` | The server was never set up for Authentik. A platform admin runs `vd init --authentik-url … --authentik-internal …`. Until then, use the fallback. |
-| `AUTH_FAILED` | Authentik rejected the setup. **Nothing was deployed or changed.** Retry once; if it repeats, give the `details` to the platform admin. |
+| `AUTH_FAILED` | Authentik rejected the setup. Nothing was deployed on the server. If the group binding could not be made, vd also takes the app off the platform login service, so it answers `404` instead of being open to everyone — `details` says what it undid. Retry once; if it repeats, give the `details` to the platform admin. |
 | `AUTH_REQUIRES_SUBDOMAIN` | Drop `--routing path`. |
 | Every request to your API is `401` | The guard's secret check fails — you compared against a hardcoded value or a stale `.env`. Read `VIBE_INGRESS_SECRET` from the environment. |
 | Everyone gets Authentik's "access denied" | Nobody is in `vibe-<name>` yet. That is the human step (§1). |
@@ -335,7 +335,7 @@ right person; a second browser profile that is not in the group gets "access den
 | Names show as `Ð Ð°Ð¼Ð¸Ñ…` | Headers read raw. Use the `header()` helper (§4/§5): UTF-8 bytes decoded as latin-1. |
 | After typing the password the person lands in Authentik's own screens, not the app | They are not in `vibe-<name>` yet. Authentik answers with its "access denied" page and its links lead into Authentik. Add them to the group, then have them open the app's address again. |
 | "Log out" ends on the Authentik login page instead of back in the app | The server has no `vibe-provider-invalidation-flow` yet (`vd deploy` warns about it). Logout still works; only the landing page differs. Once a platform admin creates the flow, the next deploy picks it up. |
-| `vd status` says `auth.state: broken` | Something was removed in Authentik by hand. Redeploy — vd recreates it. |
+| `vd status` says `auth.state: broken` | Something was removed or changed in Authentik by hand — look at `auth.authentik`. `binding: false` is the serious one: without an enabled binding to `vibe-<name>` the app is open to **every** signed-in account. Redeploy — vd recreates or repairs it. |
 
 ---
 
