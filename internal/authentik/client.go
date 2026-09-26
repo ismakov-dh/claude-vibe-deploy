@@ -161,11 +161,11 @@ type binding struct {
 	Negate  *bool  `json:"negate,omitempty"`
 }
 
-// guards reports whether b actually restricts the application to groupPK. A
-// binding that is disabled or negated is worse than none looking like one: the
-// application's default policy engine mode lets everyone through when no
-// binding passes judgement, and a negated group binding admits everyone but the
-// group. Authentik's defaults are enabled=true, negate=false.
+// guards reports whether b actually restricts the application to groupPK.
+// Authentik ignores a disabled binding, and an application with no active
+// binding admits every signed-in account; a negated group binding admits
+// everyone except the group. Either one looks like protection and is not.
+// Authentik's defaults are enabled=true, negate=false.
 func (b binding) guards(groupPK string) bool {
 	return b.Group == groupPK && (b.Enabled == nil || *b.Enabled) && (b.Negate == nil || !*b.Negate)
 }
