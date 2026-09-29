@@ -69,6 +69,7 @@ func TestRollbackProdROGate(t *testing.T) {
 		{"backup without login", cur, &state.Manifest{DB: "prod-ro", ProdRONetwork: "net"}, true},
 		{"backup with long sign-in", cur, &state.Manifest{DB: "prod-ro", Auth: true, AuthTTL: "days=7", ProdRONetwork: "net"}, true},
 		{"no current manifest", nil, good, true},
+		{"backup without manifest", cur, nil, true},
 	} {
 		if got := rollbackProdROGate(c.cur, c.b) != nil; got != c.refuse {
 			t.Errorf("%s: refused=%v", c.name, got)
@@ -114,7 +115,7 @@ func TestEnsureDockerignoreKeepsEnvOutOfTheImage(t *testing.T) {
 	if err := ensureDockerignore(dir); err != nil {
 		t.Fatal(err)
 	}
-	if b, _ := os.ReadFile(filepath.Join(dir, ".dockerignore")); string(b) != ".env\n.env.*\n" {
+	if b, _ := os.ReadFile(filepath.Join(dir, ".dockerignore")); string(b) != ".env\n.env.local\n" {
 		t.Fatalf("new .dockerignore: %q", b)
 	}
 	if err := os.WriteFile(filepath.Join(dir, ".dockerignore"), []byte("node_modules\n.env"), 0644); err != nil {
@@ -125,7 +126,7 @@ func TestEnsureDockerignoreKeepsEnvOutOfTheImage(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if b, _ := os.ReadFile(filepath.Join(dir, ".dockerignore")); string(b) != "node_modules\n.env\n.env.*\n" {
+	if b, _ := os.ReadFile(filepath.Join(dir, ".dockerignore")); string(b) != "node_modules\n.env\n.env.local\n" {
 		t.Fatalf("existing .dockerignore: %q", b)
 	}
 }

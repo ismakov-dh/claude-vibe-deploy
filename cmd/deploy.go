@@ -798,9 +798,10 @@ func dropProdRODSN(envPath string, wasProdRO bool) bool {
 	return removeEnvVar(envPath, "DATABASE_URL") == nil
 }
 
-// dockerignoreLines keep secrets out of the build context. Build-time config
-// for static builds must therefore live in the source, not in .env.
-var dockerignoreLines = []string{".env", ".env.*"}
+// dockerignoreLines keep the files vd and local tooling put secrets in out of
+// the build context. Not .env.*: a committed .env.production is build config
+// that Next and Vite read, and vd never writes there.
+var dockerignoreLines = []string{".env", ".env.local"}
 
 // ensureDockerignore adds dockerignoreLines to dir/.dockerignore, keeping
 // whatever the app already ignores.

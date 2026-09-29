@@ -34,7 +34,15 @@ func keepAuthBearer(name string, bearer bool) error {
 // onto an app that is prod-ro now (so detaching or leaving prod-ro stays
 // done), only from the replica design, and only if it passes the same gate.
 func rollbackProdROGate(cur, b *state.Manifest) *output.VDError {
-	if b == nil || b.DB != "prod-ro" {
+	if b == nil {
+		// Nothing says what the backup restores — prod access included.
+		// ponytail: refuses all such rollbacks; none of the 52 backups on prod
+		// had a nil manifest when this was written.
+		return output.NewError("ROLLBACK_WOULD_UNPROTECT",
+			"The backup carries no manifest, so vd cannot tell what access it would restore",
+			"Redeploy a fixed version instead")
+	}
+	if b.DB != "prod-ro" {
 		return nil
 	}
 	refuse := func(why string) *output.VDError {
