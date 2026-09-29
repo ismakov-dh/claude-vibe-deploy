@@ -198,3 +198,30 @@ func TestMCPName(t *testing.T) {
 		t.Fatal("accepted a bad name")
 	}
 }
+
+func TestMCPGroupNotCreatedByVdIsNeitherAdoptedNorDeleted(t *testing.T) {
+	f, c := setup(t)
+	f.groups["mcp-vibe-demo"] = "g-foreign" // same name, no vd_managed
+	if _, err := c.EnsureMCP(mcpSpec()); err == nil || !strings.Contains(err.Error(), "refusing to adopt") {
+		t.Fatalf("foreign group adopted: %v", err)
+	}
+	if n := f.count("POST "); n != 0 {
+		t.Fatalf("created objects next to a foreign group: %v", f.calls)
+	}
+
+	// vd's resource exists, then someone swaps the group: destroy touches nothing.
+	delete(f.groups, "mcp-vibe-demo")
+	if _, err := c.EnsureMCP(mcpSpec()); err != nil {
+		t.Fatal(err)
+	}
+	f.groupAttrs["mcp-vibe-demo"] = nil
+	if err := c.RemoveMCP("demo"); err == nil {
+		t.Fatal("foreign group removal reported as success")
+	}
+	if _, ok := f.apps["mcp-vibe-demo"]; !ok || len(f.oauth2) != 1 {
+		t.Fatal("application or provider deleted before the group check")
+	}
+	if _, ok := f.groups["mcp-vibe-demo"]; !ok {
+		t.Fatal("foreign group deleted")
+	}
+}

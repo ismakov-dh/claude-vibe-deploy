@@ -18,9 +18,10 @@ through Authentik instead of shared Basic credentials — without breaking anyon
   created. Same fail-closed rules as `--auth`: no filter trusted, every write re-read, an
   unbindable application deleted. Order closes the open window: application created without a
   provider → group binding → provider attached; destroy deletes the application first (bindings
-  cascade) and touches provider and group only after that worked. The group is deleted too —
-  EnsureMCP adopts a group by name, so a kept one would hand its members to the next app of that
-  name. Revocation delay is the token lifetime (5 min).
+  cascade) and touches provider and group only after that worked. The group is deleted too, so
+  it cannot hand its members to the next app of that name. vd marks the groups it creates with
+  the attribute `vd_managed: true`; a same-named group without it is neither adopted by deploy
+  nor deleted by destroy — both refuse before changing anything. Revocation delay is the token lifetime (5 min).
 - **Owner:** `--mcp-owner <email>` adds one existing account to the group. Lookup by whole email (case-insensitive),
   only the pk is kept; ambiguous matches are refused. Without it the group starts empty. Safe
   because users cannot change their own email or username (`default_user_change_email=false`,
