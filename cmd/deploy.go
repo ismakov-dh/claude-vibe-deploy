@@ -379,6 +379,7 @@ func runDeploy(srcPath string) {
 		e := output.NewError("BUILD_FAILED",
 			"Docker build/start failed", "Check Dockerfile and source code")
 		e.Details = err.Error()
+		stopFailedFirstDeploy(appDir, isRedeploy)
 		output.Fail("deploy", e)
 	}
 
@@ -389,7 +390,7 @@ func runDeploy(srcPath string) {
 		// Get logs for debugging
 		logs, _ := docker.ContainerLogs(containerName, 30)
 		e := output.NewError("UNHEALTHY",
-			"Container did not become healthy within 60s",
+			"Container did not become healthy within 120s",
 			"Check logs with: vd logs "+deployName)
 		e.Details = logs
 		// Rollback if this was a redeploy
@@ -398,6 +399,7 @@ func runDeploy(srcPath string) {
 			docker.ComposeDown(appDir, "docker-compose.vd.yml")
 			backup.Restore(deployName)
 		}
+		stopFailedFirstDeploy(appDir, isRedeploy)
 		output.Fail("deploy", e)
 	}
 	output.Info("Container is healthy")
@@ -773,6 +775,16 @@ func bearerFor(auth bool, prev *state.Manifest, set, val bool) (bool, error) {
 		return val, nil
 	}
 	return prev != nil && prev.AuthBearer, nil
+}
+
+// stopFailedFirstDeploy takes down the container of a first deploy that failed.
+// No manifest is written for it, so vd status, destroy and the MCP gateway do
+// not know it exists — and a --db prod-ro one would sit on the replica network
+// with the DSN. The files stay for the next attempt; the logs are in the error.
+func stopFailedFirstDeploy(appDir string, isRedeploy bool) {
+	if !isRedeploy {
+		docker.ComposeDown(appDir, "docker-compose.vd.yml")
+	}
 }
 
 // prevDB is the database type of the running deploy, "" if none.
