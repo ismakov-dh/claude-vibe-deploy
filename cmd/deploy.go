@@ -411,6 +411,7 @@ func runDeploy(srcPath string) {
 	// Keep the intent even if Authentik failed this time, so the next deploy
 	// retries; the route follows only what actually exists (MCP && res != nil).
 	manifest.MCPOAuth = wantMCPOAuth
+	manifest.MCPOAuthLive = mcpRes != nil
 	if deployMCPOwner != "" {
 		manifest.MCPOwner = deployMCPOwner
 	} else if prevM != nil {

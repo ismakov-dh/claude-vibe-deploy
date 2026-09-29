@@ -13,7 +13,7 @@ import (
 func mcpHost(app string, cfg *state.Config) string { return app + ".mcp." + cfg.Domain }
 
 // syncMCPGateway rewrites vd-mcpgw's routes from the manifests on disk: one
-// route per app with MCPOAuth and an MCP. Called after every change that can
+// route per app with MCPOAuthLive and an MCP. Called after every change that can
 // add or remove one — deploy, destroy, rollback, init — so the file is always
 // derived, never edited.
 func syncMCPGateway(cfg *state.Config) error {
@@ -24,7 +24,7 @@ func syncMCPGateway(cfg *state.Config) error {
 	var routes []mcpgw.Route
 	for _, app := range apps {
 		m, err := state.LoadManifest(app)
-		if err != nil || !m.MCPOAuth || !m.MCP {
+		if err != nil || !m.MCPOAuthLive || !m.MCP {
 			continue
 		}
 		if cfg.AuthentikURL == "" {
@@ -68,7 +68,7 @@ func mcpOAuthInfo(app string, cfg *state.Config, owner string, res *authentik.MC
 	switch {
 	case owner == "":
 		info["owner"] = nil
-		info["grant"] = "No owner given: the group is empty. A platform admin adds people to " + res.Name + "."
+		info["grant"] = "No --mcp-owner this time: nobody was added. Access is membership in " + res.Name + ", managed by platform admins."
 	case res.OwnerAdded:
 		info["owner"] = owner // the email the caller gave, never directory data
 	case res.OwnerMissing:
