@@ -111,6 +111,10 @@ type Spec struct {
 	App          string // already validated app name
 	ExternalHost string // https://<app>.<domain>
 	TTL          string // e.g. hours=1
+	// Bearer lets the outpost accept Authorization: Bearer <client_credentials
+	// token of this provider> (and Basic) instead of a browser session —
+	// intercept_header_auth. For service accounts in the app's group.
+	Bearer bool
 }
 
 // Result reports what Ensure did.
@@ -214,7 +218,7 @@ func (c *Client) Ensure(s Spec) (*Result, error) {
 		AccessTokenValidity: s.TTL,
 		AuthorizationFlow:   authz,
 		InvalidationFlow:    inval,
-		InterceptHeaderAuth: false,
+		InterceptHeaderAuth: s.Bearer,
 	}
 	prov, ttlChanged, err := c.ensureProvider(want)
 	if err != nil {
@@ -315,6 +319,9 @@ type Health struct {
 	Binding     bool   `json:"binding"`
 	InOutpost   bool   `json:"in_outpost"`
 	ProviderTTL string `json:"provider_ttl,omitempty"`
+	// HeaderAuth is the provider's intercept_header_auth: whether the outpost
+	// accepts Basic/Bearer headers, not just browser sessions.
+	HeaderAuth bool `json:"header_auth"`
 }
 
 // OK is true when the app is actually protected and servable.
@@ -341,6 +348,7 @@ func (c *Client) Check(app string) (*Health, error) {
 	if prov != nil {
 		h.Provider = true
 		h.ProviderTTL = prov.AccessTokenValidity
+		h.HeaderAuth = prov.InterceptHeaderAuth
 		o, err := c.embedded()
 		if err != nil {
 			return nil, err

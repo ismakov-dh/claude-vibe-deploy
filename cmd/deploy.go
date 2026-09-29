@@ -35,6 +35,8 @@ var (
 	deployAllowExternal bool
 	deployAuth          bool
 	deployAuthTTL       string
+	deployAuthBearer    bool
+	deployAuthBearerSet bool // --auth-bearer given explicitly, true or false
 	deployMCPOAuth      bool
 	deployMCPOwner      string
 )
@@ -51,6 +53,7 @@ func init() {
 	deployCmd.Flags().BoolVar(&deployAuth, "auth", false, "put the app behind platform login (Authentik forward auth); sticky once set")
 	deployCmd.Flags().BoolVar(&deployMCPOAuth, "mcp-oauth", false, "also put the database MCP behind platform login (Authentik via vd-mcpgw); Basic keeps working. Sticky once set")
 	deployCmd.Flags().StringVar(&deployMCPOwner, "mcp-owner", "", "email of a person to add to the MCP's access group (with --mcp-oauth)")
+	deployCmd.Flags().BoolVar(&deployAuthBearer, "auth-bearer", false, "with --auth: also accept Authorization: Bearer/Basic from service accounts in the app's group (intercept_header_auth). Sticky; --auth-bearer=false turns it off")
 	deployCmd.Flags().StringVar(&deployAuthTTL, "auth-ttl", "", "how long a sign-in lasts before re-checking with Authentik, e.g. hours=1 or minutes=30 (default hours=1)")
 	rootCmd.AddCommand(deployCmd)
 }
@@ -62,6 +65,7 @@ var deployCmd = &cobra.Command{
 	Short: "Deploy an app",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
+		deployAuthBearerSet = cmd.Flags().Changed("auth-bearer")
 		runDeploy(args[0])
 	},
 }
@@ -406,6 +410,7 @@ func runDeploy(srcPath string) {
 	if auth != nil {
 		manifest.Auth = true
 		manifest.AuthTTL = auth.ttl
+		manifest.AuthBearer = auth.bearer
 		manifest.AuthGroup = auth.group
 	}
 	// Keep the intent even if Authentik failed this time, so the next deploy
@@ -459,6 +464,7 @@ func runDeploy(srcPath string) {
 			"enabled":   true,
 			"group":     auth.group,
 			"ttl":       auth.ttl,
+			"bearer":    auth.bearer,
 			"authentik": cfg.AuthentikURL,
 			"grant":     "Add people to the group " + auth.group + " in Authentik — nothing else is needed.",
 		}
@@ -603,8 +609,9 @@ func copyDir(src, dst string) error {
 const ingressEnvKey = "VIBE_INGRESS_SECRET"
 
 type authPlan struct {
-	group string
-	ttl   string
+	group  string
+	ttl    string
+	bearer bool
 }
 
 // resolveAuth decides whether this deploy is protected and, if so, provisions
@@ -623,10 +630,15 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	protectedOnDisk := envValue(state.AppEnvPath(deployName), ingressEnvKey) != "" ||
 		fileContains(state.AppComposePath(deployName), "authentik-fa@file")
 	want := deployAuth || (prev != nil && prev.Auth) || protectedOnDisk
+	bearer, bearerErr := bearerFor(want, prev, deployAuthBearerSet, deployAuthBearer)
 	if !want {
 		if deployAuthTTL != "" {
 			output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
 				"--auth-ttl given without --auth", "Add --auth, or drop --auth-ttl"))
+		}
+		if bearerErr != nil {
+			output.Fail("deploy", output.NewError("AUTH_BEARER_REQUIRES_AUTH",
+				bearerErr.Error(), "Add --auth, or drop --auth-bearer"))
 		}
 		return nil
 	}
@@ -667,6 +679,7 @@ func resolveAuth(cfg *state.Config) *authPlan {
 		App:          deployName,
 		ExternalHost: "https://" + deployName + "." + cfg.Domain,
 		TTL:          ttl,
+		Bearer:       bearer,
 	})
 	unlock()
 	if err != nil {
@@ -676,7 +689,13 @@ func resolveAuth(cfg *state.Config) *authPlan {
 		e.Details = err.Error()
 		output.Fail("deploy", e)
 	}
-	plan := &authPlan{group: res.Group, ttl: ttl}
+	plan := &authPlan{group: res.Group, ttl: ttl, bearer: bearer}
+	if bearer {
+		output.Warn("--auth-bearer: the outpost also accepts Authorization headers (Bearer tokens of this provider, "+
+			"Basic) from members of %s. The app sees such a service account in the same X-authentik-* headers and "+
+			"must limit its routes itself. Any member can also create an Authentik app password and use it as Basic, "+
+			"skipping the login page (and MFA, if enabled).", res.Group)
+	}
 	if authentik.TTLSeconds(ttl) > 86400 {
 		output.Warn("Sign-in lifetime %s is longer than a day: removing someone from %s takes up to that long "+
 			"to lock them out. The platform default is %s.", ttl, res.Group, authentik.DefaultTTL)
@@ -697,6 +716,22 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	}
 	output.Info("Platform login ready — access is membership in the group %s", res.Group)
 	return plan
+}
+
+// bearerFor decides header auth for this deploy. Sticky like the rest of
+// --auth: without the flag the last deploy's choice stands; only an explicit
+// --auth-bearer=false turns it off. The flag without --auth is an error.
+func bearerFor(auth bool, prev *state.Manifest, set, val bool) (bool, error) {
+	if !auth {
+		if set {
+			return false, errors.New("--auth-bearer given without --auth")
+		}
+		return false, nil
+	}
+	if set {
+		return val, nil
+	}
+	return prev != nil && prev.AuthBearer, nil
 }
 
 // fileContains reports whether path exists and contains s.

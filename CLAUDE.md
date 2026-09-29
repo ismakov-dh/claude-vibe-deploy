@@ -172,6 +172,7 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--allow-external` | false | Silence warnings about unsupported external services (Supabase, Firebase, etc.) |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky; subdomain routing only. Needs `vd init --authentik-url … --authentik-internal …` on the server |
 | `--auth-ttl` | `hours=1` | Sign-in lifetime before Authentik is asked again; over a day warns |
+| `--auth-bearer` | false | With `--auth`: outpost also accepts Bearer (this provider's client_credentials tokens) and Basic from group members; the app restricts service accounts' routes. Sticky; `=false` turns off |
 | `--mcp-oauth` | false | Database MCP also behind Authentik (vd-mcpgw, group `mcp-vibe-<name>`); Basic keeps working. Sticky |
 | `--mcp-owner` | none | Email added to `mcp-vibe-<name>` (with `--mcp-oauth`) |
 
@@ -264,7 +265,7 @@ would print as `[vd warning]` in human mode. `ok: true` with a warning such as `
 failed … deploying without DB` means the app runs without that piece; agents must read and relay
 `warnings`, not just `ok`.
 
-Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`
+Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`
 
 ### Troubleshooting
 

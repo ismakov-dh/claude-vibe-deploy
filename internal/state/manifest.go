@@ -34,6 +34,8 @@ type Manifest struct {
 	Auth      bool   `json:"auth,omitempty"`
 	AuthTTL   string `json:"auth_ttl,omitempty"`
 	AuthGroup string `json:"auth_group,omitempty"`
+	// AuthBearer mirrors the provider's intercept_header_auth (--auth-bearer).
+	AuthBearer bool `json:"auth_bearer,omitempty"`
 
 	// MCP behind vd-mcpgw and Authentik. Sticky like Auth. Basic keeps working
 	// alongside it until it is switched off per app.
