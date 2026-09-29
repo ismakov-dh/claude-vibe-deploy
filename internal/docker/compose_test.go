@@ -285,3 +285,54 @@ func TestGatewayCIDRs(t *testing.T) {
 		}
 	}
 }
+
+func oauthData() ComposeData {
+	d := mcpData()
+	d.MCPOAuth = true
+	return d
+}
+
+func ruleOf(body, router string) string {
+	l := line(body, "routers."+router+".rule=")
+	return l[strings.Index(l, ".rule=")+len(".rule=") : strings.LastIndex(l, `"`)]
+}
+
+// The seamless transition rests on one ordering: a request with Basic
+// credentials must match the Basic router on every path, /.well-known/
+// included, or a Basic client could be shown OAuth metadata and drop its
+// credentials. Traefik orders same-entrypoint routers by rule length.
+func TestComposeMCPOAuthKeepsBasicFirst(t *testing.T) {
+	body := renderMCP(t, oauthData())
+	basic, wk, main := ruleOf(body, "vd-myapp-mcp-basic"), ruleOf(body, "vd-myapp-mcp-wellknown"), ruleOf(body, "vd-myapp-mcp")
+	if !(len(basic) > len(wk) && len(wk) > len(main)) {
+		t.Fatalf("priority by length broken: basic %d, wellknown %d, main %d", len(basic), len(wk), len(main))
+	}
+	if !strings.Contains(basic, "HeaderRegexp(`Authorization`, `^Basic `)") {
+		t.Fatalf("basic rule %q", basic)
+	}
+	if !strings.Contains(line(body, "routers.vd-myapp-mcp-basic.middlewares="), "vd-myapp-mcp-auth") {
+		t.Fatal("Basic router lost its basicauth")
+	}
+	if !strings.Contains(line(body, "routers.vd-myapp-mcp-basic.service="), "vd-myapp-mcp\"") {
+		t.Fatal("Basic router must go straight to the MCP container")
+	}
+	for _, r := range []string{"vd-myapp-mcp", "vd-myapp-mcp-wellknown"} {
+		if !strings.Contains(line(body, "routers."+r+".service="), "vd-mcpgw@docker") {
+			t.Errorf("%s must go to the gateway", r)
+		}
+	}
+	if line(body, "routers.vd-myapp-mcp.middlewares=") != "" {
+		t.Fatal("the gateway router must not sit behind basicauth")
+	}
+}
+
+// Without --mcp-oauth nothing changes for existing apps.
+func TestComposeMCPWithoutOAuthUnchanged(t *testing.T) {
+	body := renderMCP(t, mcpData())
+	if strings.Contains(body, "vd-mcpgw") || strings.Contains(body, "mcp-basic") {
+		t.Fatal("OAuth labels rendered without --mcp-oauth")
+	}
+	if !strings.Contains(line(body, "routers.vd-myapp-mcp.middlewares="), "vd-myapp-mcp-auth") {
+		t.Fatal("Basic-only MCP lost its basicauth")
+	}
+}

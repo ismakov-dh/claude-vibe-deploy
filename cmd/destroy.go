@@ -82,6 +82,31 @@ var destroyCmd = &cobra.Command{
 			}
 		}
 
+		mcpRemoved := ""
+		if m.MCPOAuth {
+			mcpRemoved = "removed"
+			cfg, _ := state.LoadConfig()
+			token, terr := state.LoadAuthentikToken()
+			switch {
+			case cfg == nil || cfg.AuthentikURL == "":
+				mcpRemoved = "failed: Authentik is not configured on this server"
+			case terr != nil:
+				mcpRemoved = "failed: " + terr.Error()
+			default:
+				if unlock, lerr := state.LockAuthentik(); lerr != nil {
+					mcpRemoved = "failed: " + lerr.Error()
+				} else {
+					if err := authentik.New(cfg.AuthentikURL, token).RemoveMCP(name); err != nil {
+						mcpRemoved = "failed: " + err.Error()
+					}
+					unlock()
+				}
+			}
+			if mcpRemoved != "removed" {
+				output.Warn("MCP OAuth cleanup %s — a platform admin should remove the provider and application mcp-vibe-%s by hand", mcpRemoved, name)
+			}
+		}
+
 		// Backup database before dropping
 		if destroyDropDB && m.DB == "postgres" {
 			dbName := m.DBName
@@ -138,6 +163,15 @@ var destroyCmd = &cobra.Command{
 		output.Info("Removing app files...")
 		os.RemoveAll(appDir)
 
+		// The manifest is gone now, so the rebuilt routes file no longer has it.
+		if m.MCPOAuth {
+			if cfg, _ := state.LoadConfig(); cfg != nil {
+				if err := syncMCPGateway(cfg); err != nil {
+					output.Warn("Could not rewrite vd-mcpgw routes: %v", err)
+				}
+			}
+		}
+
 		output.Info("Destroyed %s (backups retained at %s)", name, state.AppBackupsDir(name))
 
 		data := map[string]any{
@@ -148,6 +182,9 @@ var destroyCmd = &cobra.Command{
 		}
 		if m.Auth {
 			data["auth"] = map[string]any{"cleanup": authRemoved, "group_kept": m.AuthGroup}
+		}
+		if m.MCPOAuth {
+			data["mcp_oauth"] = map[string]any{"cleanup": mcpRemoved, "group_kept": "mcp-vibe-" + name}
 		}
 		output.Success("destroy", data)
 	},

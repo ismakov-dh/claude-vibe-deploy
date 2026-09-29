@@ -39,6 +39,8 @@ type ComposeData struct {
 	NeedsMCP     bool
 	MCPImage     string
 	MCPBasicAuth string // htpasswd entry, user:{SHA}base64(sha1(pw))
+	// MCPOAuth puts the MCP behind vd-mcpgw and Authentik, keeping Basic working.
+	MCPOAuth bool
 
 	// Forward auth via the Authentik embedded outpost. IngressSecret is hex, so
 	// it carries no '$' for compose to interpolate.
@@ -52,6 +54,9 @@ func GenerateComposeFile(tmplFS fs.FS, data ComposeData, destPath string) error 
 	// external_host are host-based, and path routing would render an app whose
 	// middleware label collides with the strip-prefix one. Failing at the lowest
 	// layer keeps a future caller from publishing an app it believes is protected.
+	if data.MCPOAuth && !data.NeedsMCP {
+		return fmt.Errorf("MCP OAuth needs an MCP to protect")
+	}
 	if data.Auth && (data.Routing != "subdomain" || data.IngressSecret == "") {
 		return fmt.Errorf("forward auth needs subdomain routing and an ingress secret")
 	}

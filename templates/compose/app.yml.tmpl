@@ -101,9 +101,25 @@ services:
       - "traefik.http.services.vd-{{.Name}}-mcp.loadbalancer.server.port=8089"
       - "traefik.http.routers.vd-{{.Name}}-mcp.rule=Host(`{{.Name}}.mcp.{{.Domain}}`)"
       - "traefik.http.routers.vd-{{.Name}}-mcp.entrypoints=web"
+      - "traefik.http.middlewares.vd-{{.Name}}-mcp-auth.basicauth.users={{.MCPBasicAuth}}"
+{{- if .MCPOAuth}}
+      # --- OAuth via vd-mcpgw, with Basic kept working (docs/plans/mcp-oauth.md) ---
+      # Anything that is not Basic — no credentials, or a Bearer token — goes to
+      # the gateway, which does the OAuth dance and checks the group.
+      - "traefik.http.routers.vd-{{.Name}}-mcp.service=vd-mcpgw@docker"
+      # A request carrying Basic credentials goes exactly where it always went.
+      # This rule is longer than both others, so it wins on every path —
+      # including a client's probe of /.well-known/ — and a Basic client keeps
+      # getting the same answers as before, never OAuth metadata that could make
+      # it drop the credentials it holds.
+      - "traefik.http.routers.vd-{{.Name}}-mcp-basic.rule=Host(`{{.Name}}.mcp.{{.Domain}}`) && HeaderRegexp(`Authorization`, `^Basic `)"
+      - "traefik.http.routers.vd-{{.Name}}-mcp-basic.entrypoints=web"
+      - "traefik.http.routers.vd-{{.Name}}-mcp-basic.service=vd-{{.Name}}-mcp"
+      - "traefik.http.routers.vd-{{.Name}}-mcp-basic.middlewares=vd-{{.Name}}-mcp-auth"
+{{- else}}
       - "traefik.http.routers.vd-{{.Name}}-mcp.service=vd-{{.Name}}-mcp"
       - "traefik.http.routers.vd-{{.Name}}-mcp.middlewares=vd-{{.Name}}-mcp-auth"
-      - "traefik.http.middlewares.vd-{{.Name}}-mcp-auth.basicauth.users={{.MCPBasicAuth}}"
+{{- end}}
       # /.well-known/* must NOT sit behind basicauth. MCP clients probe it for
       # OAuth metadata; a 401 there reads as "do the OAuth flow" and the client
       # drops the Basic credentials it already holds. A 404 is the answer it needs.
@@ -115,7 +131,13 @@ services:
       # the auth middleware.
       - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.rule=Host(`{{.Name}}.mcp.{{.Domain}}`) && PathPrefix(`/.well-known/`)"
       - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.entrypoints=web"
+{{- if .MCPOAuth}}
+      # With OAuth on, /.well-known/ for clients without Basic is the gateway's
+      # protected-resource and authorization-server metadata.
+      - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.service=vd-mcpgw@docker"
+{{- else}}
       - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.service=vd-{{.Name}}-mcp"
+{{- end}}
     networks:
       - vd-net
       - vd-db

@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 	"github.com/vibe-deploy/vd/internal/docker"
+	"github.com/vibe-deploy/vd/internal/mcpgw"
 	"github.com/vibe-deploy/vd/internal/output"
 	"github.com/vibe-deploy/vd/internal/state"
 )
@@ -170,7 +171,7 @@ func runInit() {
 			"Failed to parse infrastructure template", "This is a bug"))
 	}
 	var infraOut strings.Builder
-	if err := infraTmpl.Execute(&infraOut, map[string]string{"TrustedIPs": trusted}); err != nil {
+	if err := infraTmpl.Execute(&infraOut, map[string]string{"TrustedIPs": trusted, "MCPGWImage": mcpgw.Image}); err != nil {
 		output.Fail("init", output.NewError("INIT_FAILED",
 			"Failed to render infrastructure template", "This is a bug"))
 	}
@@ -180,6 +181,16 @@ func runInit() {
 	}
 
 	writeTraefikDynamic(cfg)
+
+	// vd-mcpgw needs its routes file before it can start. Derived from the
+	// manifests, so on a host with no --mcp-oauth apps it is the 404 fallback.
+	output.Info("Pulling %s...", mcpgw.Image)
+	if err := docker.PullImage(mcpgw.Image); err != nil {
+		output.Warn("Could not pull %s: %v", mcpgw.Image, err)
+	}
+	if err := syncMCPGateway(cfg); err != nil {
+		output.Warn("Could not write vd-mcpgw routes: %v", err)
+	}
 
 	// Write .env for infrastructure compose (postgres password)
 	envContent := fmt.Sprintf("VD_POSTGRES_PASSWORD=%s\n", cfg.VDPostgresPassword)

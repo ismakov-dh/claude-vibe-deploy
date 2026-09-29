@@ -34,6 +34,11 @@ type Manifest struct {
 	Auth      bool   `json:"auth,omitempty"`
 	AuthTTL   string `json:"auth_ttl,omitempty"`
 	AuthGroup string `json:"auth_group,omitempty"`
+
+	// MCP behind vd-mcpgw and Authentik. Sticky like Auth. Basic keeps working
+	// alongside it until it is switched off per app.
+	MCPOAuth bool   `json:"mcp_oauth,omitempty"`
+	MCPOwner string `json:"mcp_owner,omitempty"`
 }
 
 func LoadManifest(appName string) (*Manifest, error) {

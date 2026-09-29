@@ -112,6 +112,23 @@ block:
 Run the `add` command verbatim — it already contains the encoded credentials.
 Then use it to read the app's tables.
 
+**With `--mcp-oauth`** the block also carries `mcp.oauth`:
+
+```json
+"oauth": {
+  "url": "https://<app-name>.mcp.<apps-domain>/mcp",
+  "group": "mcp-vibe-<app-name>",
+  "add": "claude mcp add --transport http <app-name>-db https://…/mcp",
+  "owner": "<the email you passed, or null>"
+}
+```
+
+Prefer this `add`: no password to hand around; the client opens a browser for sign-in. Access is
+membership in `mcp-vibe-<app-name>` — pass `--mcp-owner <email>` for the person you are working
+with, otherwise tell the user a platform admin adds people. The Basic `add` keeps working on the
+same host meanwhile. If `oauth` is missing and `warnings` says why, the MCP is on Basic only —
+still protected; redeploy to retry.
+
 Notes worth knowing:
 
 - **SELECT only.** The MCP connects as a separate read-only role and runs in
@@ -179,6 +196,8 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--env-file` | none | Path to .env file on server |
 | `--allow-external` | false | Silence warnings about unsupported external services |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky. Subdomain routing only |
+| `--mcp-oauth` | false | Also put the database MCP behind platform login (browser sign-in, group `mcp-vibe-<app>`). Basic keeps working alongside. Needs `--db postgres`. Sticky |
+| `--mcp-owner` | none | Email of one person to add to `mcp-vibe-<app>` (with `--mcp-oauth`) |
 | `--auth-ttl` | `hours=1` | How long a sign-in lasts before Authentik is asked again (`hours=`, `minutes=`, `days=`). Longer than a day produces a warning: group removal then takes that long to bite |
 
 `--db postgres` additionally provisions a read-only MCP for the app's database and
