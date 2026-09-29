@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -136,7 +137,7 @@ func authStatus(m *state.Manifest, cfg *state.Config) map[string]any {
 	if !m.Auth {
 		return nil
 	}
-	info := map[string]any{"enabled": true, "group": m.AuthGroup, "ttl": m.AuthTTL}
+	info := map[string]any{"enabled": true, "group": m.AuthGroup, "ttl": m.AuthTTL, "bearer": m.AuthBearer}
 	token, err := state.LoadAuthentikToken()
 	if err != nil || cfg == nil || cfg.AuthentikURL == "" {
 		info["state"] = "unknown"
@@ -150,13 +151,24 @@ func authStatus(m *state.Manifest, cfg *state.Config) map[string]any {
 		return info
 	}
 	info["authentik"] = h
-	if h.OK() {
-		info["state"] = "ok"
-	} else {
-		info["state"] = "broken"
-		info["hint"] = "redeploy the app to recreate its Authentik objects"
+	info["state"], info["hint"] = authState(h, m.AuthBearer)
+	if info["hint"] == "" {
+		delete(info, "hint")
 	}
 	return info
+}
+
+func authState(h *authentik.Health, bearer bool) (state, hint string) {
+	switch {
+	case !h.OK():
+		return "broken", "redeploy the app to recreate its Authentik objects"
+	case h.HeaderAuth != bearer:
+		// Header auth on without vd asking for it lets service accounts in; off
+		// when asked for breaks them. Either way the record and reality differ.
+		return "drift", fmt.Sprintf("Authentik has header auth %v, vd deployed %v — redeploy with --auth-bearer=%v to confirm, or the other value to change it",
+			h.HeaderAuth, bearer, bearer)
+	}
+	return "ok", ""
 }
 
 // mcpOAuthStatus reads what exists in Authentik for the app's MCP resource.

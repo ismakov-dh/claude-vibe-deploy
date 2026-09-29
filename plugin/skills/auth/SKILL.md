@@ -297,8 +297,25 @@ ssh vd-server "vd deploy /opt/vibe-deploy/push/<name> --name <name> --auth --db 
   public again is `vd destroy`, then deploy without `--auth`.
 - `--auth-ttl hours=1` (or any `days=/hours=/minutes=`) shortens the sign-in. Use a short one
   for apps deployed with `--db prod-ro` — they show production data.
-- `vd status <name> --json` reports `auth.state`: `ok`, `broken` (redeploy fixes it) or
-  `unknown` (Authentik unreachable from the server).
+- `vd status <name> --json` reports `auth.state`: `ok`, `broken` (redeploy fixes it),
+  `drift` (header auth in Authentik differs from what vd deployed, see below) or `unknown`
+  (Authentik unreachable from the server).
+
+### Service accounts: `--auth-bearer` (off by default)
+
+Only when a script, not a person, must call the app (an export job, a cron elsewhere). With
+`--auth-bearer` the outpost also accepts `Authorization: Bearer <token>` — a client_credentials
+token issued by **this app's** provider — and `Authorization: Basic`, from accounts in the app's
+group. A platform admin creates the service account and puts it in `vibe-<name>`.
+
+- The outpost handles both headers. Your app writes no token code and sees the service account
+  in the same `X-authentik-uid/-email/-name` headers as a person, with the same `X-Vibe-Ingress`.
+- **Limiting it is your app's job.** The group admits the account to every route. Recognise it
+  by `X-authentik-uid` (or email) and allow only what it needs, e.g. `GET` on the export
+  endpoints; answer 403 to everything else.
+- Sticky: redeploys keep it; `--auth-bearer=false` turns it off. Needs `--auth`
+  (`AUTH_BEARER_REQUIRES_AUTH` otherwise). The deploy JSON's `auth.bearer` and `vd status`
+  report it.
 
 Verify in a browser: open the app → platform login → back in the app; `/api/me` shows the
 right person; a second browser profile that is not in the group gets "access denied".

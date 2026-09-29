@@ -204,6 +204,7 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky. Subdomain routing only |
 | `--mcp-oauth` | false | Also put the database MCP behind platform login (browser sign-in, group `mcp-vibe-<app>`). Basic keeps working alongside. Needs `--db postgres`. Sticky |
 | `--mcp-owner` | none | Email of one person to add to `mcp-vibe-<app>` (with `--mcp-oauth`) |
+| `--auth-bearer` | false | With `--auth`: the outpost also accepts `Authorization: Bearer`/`Basic` from service accounts in the app's group. The app must restrict their routes itself — see `/auth`. Sticky; `--auth-bearer=false` turns it off |
 | `--auth-ttl` | `hours=1` | How long a sign-in lasts before Authentik is asked again (`hours=`, `minutes=`, `days=`). Longer than a day produces a warning: group removal then takes that long to bite |
 
 `--db postgres` additionally provisions a read-only MCP for the app's database and
@@ -288,6 +289,7 @@ report the deploy as fully done while one of them describes a missing piece.
 | `AUTH_FAILED` | Authentik rejected the setup; nothing was deployed on the server. If the group binding failed, vd also unpublished the app (`404`, never open) — see `details`. Retry once, then pass `details` to the platform admin |
 | `AUTH_REQUIRES_SUBDOMAIN` | Drop `--routing path` |
 | `INVALID_AUTH_TTL` | Use `hours=1`, `minutes=30`, …; `--auth-ttl` needs `--auth` |
+| `AUTH_BEARER_REQUIRES_AUTH` | `--auth-bearer` needs `--auth` |
 | `ROLLBACK_WOULD_UNPROTECT` | Previous version was public — fix forward and redeploy instead |
 | `MANIFEST_UNREADABLE` | The app's manifest exists but cannot be read — vd will not guess whether it is protected. Ask the platform admin |
 | `MANIFEST_WRITE_FAILED` | An `--auth` app deployed but its manifest was not saved — ask the platform admin to fix permissions, then redeploy with `--auth` |

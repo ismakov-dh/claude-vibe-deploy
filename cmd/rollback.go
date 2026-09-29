@@ -19,6 +19,15 @@ func init() {
 	rootCmd.AddCommand(backupsCmd)
 }
 
+func keepAuthBearer(name string, bearer bool) error {
+	restored, err := state.LoadManifest(name)
+	if err != nil || restored.AuthBearer == bearer {
+		return err
+	}
+	restored.AuthBearer = bearer
+	return state.SaveManifest(restored)
+}
+
 var rollbackCmd = &cobra.Command{
 	Use:   "rollback <app-name>",
 	Short: "Revert to the previous deployment",
@@ -45,6 +54,13 @@ var rollbackCmd = &cobra.Command{
 		meta, err := backup.Restore(name)
 		if err != nil {
 			output.Fail("rollback", output.NewError("ROLLBACK_FAILED", err.Error(), "Check backup integrity with: vd backups "+name))
+		}
+
+		// Rollback restores code, not Authentik: the provider keeps its header
+		// auth, so the manifest must keep saying so, or the next plain redeploy
+		// would silently turn a service account's access off (or on).
+		if err := keepAuthBearer(name, cur.AuthBearer); err != nil {
+			output.Warn("Could not keep auth_bearer=%v in the restored manifest: %v", cur.AuthBearer, err)
 		}
 
 		// The restored manifest decides whether the MCP has an OAuth route.

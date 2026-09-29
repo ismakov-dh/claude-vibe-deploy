@@ -765,3 +765,37 @@ func TestCheckReportsMissingBinding(t *testing.T) {
 		t.Fatalf("unbound app reported healthy: %+v", h)
 	}
 }
+
+func TestEnsureBearerSetsAndClearsHeaderAuth(t *testing.T) {
+	f, c := setup(t)
+	header := func() bool {
+		for _, p := range f.providers {
+			if p["name"] == "vibe-demo" {
+				return p["intercept_header_auth"] == true
+			}
+		}
+		t.Fatal("no provider")
+		return false
+	}
+	s := spec()
+	s.Bearer = true
+	if _, err := c.Ensure(s); err != nil {
+		t.Fatal(err)
+	}
+	if !header() {
+		t.Fatal("--auth-bearer did not reach intercept_header_auth")
+	}
+	if h, err := c.Check("demo"); err != nil || !h.HeaderAuth {
+		t.Fatalf("Check does not report header auth: %+v %v", h, err)
+	}
+	s.Bearer = false
+	if _, err := c.Ensure(s); err != nil {
+		t.Fatal(err)
+	}
+	if header() {
+		t.Fatal("header auth left on after --auth-bearer=false")
+	}
+	if h, _ := c.Check("demo"); h.HeaderAuth {
+		t.Fatal("Check reports header auth that is off")
+	}
+}
