@@ -211,6 +211,17 @@ func runDeploy(srcPath string) {
 	mcpHostName := ""
 	mcpPassword := ""
 
+	// Leaving prod-ro — or an --env-file carrying its DSN — must not leave the
+	// DSN behind: detaching the network is not enough if the value survives in
+	// .env, backups and whatever the app does with it.
+	if deployDB != "prod-ro" {
+		// A fresh --env-file replaced .env already: only the value itself counts.
+		wasProdRO := prevDB(deployName) == "prod-ro" && deployEnvFile == ""
+		if dropProdRODSN(state.AppEnvPath(deployName), wasProdRO) {
+			output.Info("Removed the production read-only DATABASE_URL: this deploy is not --db prod-ro")
+		}
+	}
+
 	// Production replica: no provisioning, the platform owns the role. The DSN
 	// goes into the app's .env (0600) and nowhere else — not the JSON, not a log.
 	if deployDB == "prod-ro" {
@@ -319,6 +330,14 @@ func runDeploy(srcPath string) {
 		os.WriteFile(filepath.Join(appSrcDir, "Dockerfile.vd"), data, 0644)
 	}
 
+	// .env reaches the container through env_file, never through the image:
+	// every template does COPY . ., which would bake DATABASE_URL (the prod DSN
+	// for prod-ro) and the ingress secret into a layer.
+	if err := ensureDockerignore(appSrcDir); err != nil {
+		output.Fail("deploy", output.NewError("COPY_FAILED",
+			"Could not write .dockerignore: "+err.Error(), "Check permissions on "+appSrcDir))
+	}
+
 	// Generate docker-compose.vd.yml
 	needsDB := deployDB == "postgres"
 	domain := buildDomain(deployName, cfg.Domain, deployRouting)
@@ -401,6 +420,9 @@ func runDeploy(srcPath string) {
 		DeployCount:   deployCount,
 		HasEnvFile:    hasEnvFile,
 		MCP:           needsMCP,
+	}
+	if deployDB == "prod-ro" {
+		manifest.ProdRONetwork = cfg.ProdRONetwork
 	}
 	if auth != nil {
 		manifest.Auth = true
@@ -541,6 +563,24 @@ func writeMCPEnv(appName, dbURI, user, password string) error {
 // setEnvVar replaces a key in a .env file, or appends it. Appending blindly —
 // which is what this used to do — left one DATABASE_URL line per deploy, and
 // rollback has to be able to read the password back out of this file.
+// removeEnvVar drops key from the env file at path, keeping it 0600.
+func removeEnvVar(path, key string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" && !strings.HasPrefix(line, key+"=") {
+			kept = append(kept, line)
+		}
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0600)
+}
+
 func setEnvVar(path, key, value string) error {
 	var kept []string
 	if data, err := os.ReadFile(path); err == nil {
@@ -733,6 +773,57 @@ func bearerFor(auth bool, prev *state.Manifest, set, val bool) (bool, error) {
 		return val, nil
 	}
 	return prev != nil && prev.AuthBearer, nil
+}
+
+// prevDB is the database type of the running deploy, "" if none.
+func prevDB(app string) string {
+	if m, err := state.LoadManifest(app); err == nil {
+		return m.DB
+	}
+	return ""
+}
+
+// dropProdRODSN removes DATABASE_URL from envPath when it is the stored prod-ro
+// DSN, or unconditionally when the previous deploy was prod-ro (the stored DSN
+// may have been rotated since). Reports whether it removed anything.
+func dropProdRODSN(envPath string, wasProdRO bool) bool {
+	cur := envValue(envPath, "DATABASE_URL")
+	if cur == "" {
+		return false
+	}
+	dsn, _ := state.LoadProdROURL()
+	if !wasProdRO && (dsn == "" || cur != dsn) {
+		return false
+	}
+	return removeEnvVar(envPath, "DATABASE_URL") == nil
+}
+
+// dockerignoreLines keep secrets out of the build context. Build-time config
+// for static builds must therefore live in the source, not in .env.
+var dockerignoreLines = []string{".env", ".env.*"}
+
+// ensureDockerignore adds dockerignoreLines to dir/.dockerignore, keeping
+// whatever the app already ignores.
+func ensureDockerignore(dir string) error {
+	path := filepath.Join(dir, ".dockerignore")
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	have := map[string]bool{}
+	for _, l := range strings.Split(string(data), "\n") {
+		have[strings.TrimSpace(l)] = true
+	}
+	out := string(data)
+	if out != "" && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	for _, l := range dockerignoreLines {
+		if !have[l] {
+			out += l + "\n"
+		}
+	}
+	return os.WriteFile(path, []byte(out), 0644)
 }
 
 // prodROMaxTTL caps the sign-in of an app that reads the production replica:

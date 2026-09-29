@@ -21,10 +21,7 @@ import (
 )
 
 var (
-	initDomain      string
-	initProdPrimary string
-	initProdReplica string
-	initProdUser    string
+	initDomain string
 
 	initAuthentikURL      string
 	initAuthentikInternal string
@@ -37,9 +34,6 @@ var (
 
 func init() {
 	initCmd.Flags().StringVar(&initDomain, "domain", "", "base domain for apps (e.g. apps.example.com)")
-	initCmd.Flags().StringVar(&initProdPrimary, "prod-db", "", "prod postgres primary container (for creating users)")
-	initCmd.Flags().StringVar(&initProdReplica, "prod-db-replica", "", "prod postgres replica container (for app connections, defaults to primary)")
-	initCmd.Flags().StringVar(&initProdUser, "prod-db-user", "postgres", "admin user on the prod postgres")
 	initCmd.Flags().StringVar(&initAuthentikURL, "authentik-url", "", "public Authentik URL (e.g. https://auth.example.com)")
 	initCmd.Flags().StringVar(&initAuthentikInternal, "authentik-internal", "", "Authentik address on the overlay (e.g. http://authentik_server:9000)")
 	initCmd.Flags().StringVar(&initAuthentikNetwork, "authentik-network", "authentik-forward", "overlay vd-traefik joins to reach Authentik")
@@ -101,27 +95,6 @@ func runInit() {
 	}
 
 	// Connect existing prod DB containers if specified
-	if initProdPrimary != "" {
-		cfg.ProdDBPrimary = initProdPrimary
-		// Connect primary to vd-db network
-		if err := docker.NetworkConnect("vd-db", initProdPrimary); err != nil {
-			output.Warn("Could not connect %s to vd-db: %v", initProdPrimary, err)
-		} else {
-			output.Info("Connected prod primary %s to vd-db", initProdPrimary)
-		}
-	}
-	if initProdReplica != "" {
-		cfg.ProdDBReplica = initProdReplica
-		if err := docker.NetworkConnect("vd-db", initProdReplica); err != nil {
-			output.Warn("Could not connect %s to vd-db: %v", initProdReplica, err)
-		} else {
-			output.Info("Connected prod replica %s to vd-db", initProdReplica)
-		}
-	}
-	if initProdUser != "postgres" || cfg.ProdDBUser == "" {
-		cfg.ProdDBUser = initProdUser
-	}
-
 	if initAuthentikURL != "" {
 		cfg.AuthentikURL = strings.TrimRight(initAuthentikURL, "/")
 	}
@@ -276,9 +249,6 @@ func runInit() {
 	}
 
 	output.Info("vibe-deploy initialized at %s", state.VDHome())
-	if cfg.ProdDBPrimary == "" {
-		output.Info("To attach prod DB: vd init --prod-db <primary> [--prod-db-replica <replica>] --prod-db-user <user>")
-	}
 	if cfg.Domain == "" {
 		output.Warn("No domain set. Use: vd init --domain apps.example.com")
 	}
@@ -286,8 +256,7 @@ func runInit() {
 	output.Success("init", map[string]any{
 		"home":            state.VDHome(),
 		"domain":          cfg.Domain,
-		"prod_db_primary": cfg.ProdDBPrimary,
-		"prod_db_replica": cfg.ProdDBReplica,
+		"prod_ro_network": cfg.ProdRONetwork,
 		"vd_postgres":     "vd-postgres",
 		"networks":        []string{"vd-net", "vd-db"},
 	})

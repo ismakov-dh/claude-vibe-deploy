@@ -142,6 +142,7 @@ Deploy with `--db prod-ro --auth` (the platform's DSN picks the database).
 7. Use `.vd-type` file to override auto-detection if needed (contains type name, e.g. `node-server`)
 8. **Always use database migrations** — never raw `CREATE TABLE IF NOT EXISTS` (see below)
 9. **NEVER commit secrets or .env files to git.** No API keys, passwords, tokens, or DATABASE_URL values in source code or tracked files. Pass secrets via `--env-file` on deploy. `vd deploy` **blocks** when it finds hardcoded credentials in source (`POLICY_VIOLATION`) — keep them in `.env` only
+10. `.env` is **not in the image**: vd adds `.env` and `.env.*` to `.dockerignore`, and the values arrive as environment variables at runtime. Build steps cannot read `.env` — a Vite/static build that needs config at build time keeps it in source (`vite.config`, a committed `config.ts`), and only non-secret values
 10. **Always create a `.gitignore` first**, before writing any code, containing at least:
     ```gitignore
     .env

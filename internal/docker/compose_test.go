@@ -364,3 +364,11 @@ func TestComposeRefusesUnsafeProdRO(t *testing.T) {
 		}
 	}
 }
+
+// Leaving prod-ro: the regenerated compose no longer names the replica network,
+// so the recreated container is detached from it.
+func TestComposeWithoutProdROHasNoReplicaNetwork(t *testing.T) {
+	if body := renderMCP(t, authData()); strings.Contains(body, "vd-prod-ro") {
+		t.Fatalf("replica network without prod-ro:\n%s", body)
+	}
+}

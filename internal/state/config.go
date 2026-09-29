@@ -16,11 +16,6 @@ type Config struct {
 	// VD-managed postgres (for apps that need their own database)
 	VDPostgresPassword string `json:"vd_postgres_password,omitempty"`
 
-	// External prod DB (read-only attach for dashboards)
-	ProdDBPrimary string `json:"prod_db_primary,omitempty"` // primary — where users are created
-	ProdDBReplica string `json:"prod_db_replica,omitempty"` // replica — where apps connect to read
-	ProdDBUser    string `json:"prod_db_user,omitempty"`    // admin user for creating roles
-
 	// --db prod-ro: a stack-owned attachable overlay on which only the prod
 	// read-only replica resolves, and one shared role whose DSN is kept in
 	// ProdROURLPath (never in this file, which is 0644). Revoking an app is

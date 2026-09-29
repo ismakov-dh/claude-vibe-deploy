@@ -95,9 +95,16 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing
 > - The app must not copy patient fields into its own storage, logs, error messages or the browser
 >   beyond what the page shows. Never log `DATABASE_URL` or query results.
 > - `--db-name` is ignored: the platform's DSN fixes the database.
-> - Revoking one app: a platform admin runs `docker network disconnect <prod-ro network> vd-<app>`
->   (a redeploy reconnects it — destroy the app to make it stick). Revoking all: the platform
->   admins disable the shared role.
+> - All prod-ro apps share **one** database role and one network. They can reach each other on
+>   that network, and the credentials in any one app are the credentials of all of them.
+> - Revoking one app: a platform admin runs `docker network disconnect <prod-ro network> vd-<app>`.
+>   That holds only as long as the replica is reachable through that network alone, and a
+>   redeploy reconnects it — destroy the app to make it stick. The app still holds the shared
+>   credentials. Revoking for real, for everyone: the platform admins rotate `vibe_ro` (or set it
+>   `NOLOGIN`), then redeploy the prod-ro apps that should keep access.
+> - Redeploying without `--db prod-ro` removes the DSN from the app's `.env` and detaches it.
+>   Rollback refuses to bring prod-ro back onto an app that left it, from a backup that predates
+>   the replica, or from one without login or with a sign-in over `hours=1`.
 
 Platform login requires the default **subdomain** routing, never `--routing path`.
 
