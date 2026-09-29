@@ -67,8 +67,8 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --json"
 # With its own PostgreSQL database (auto-provisioned, DATABASE_URL auto-injected)
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db postgres --json"
 
-# Dashboard reading production data (read-only access)
-$SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db prod-ro --db-name <existing-db> --json"
+# Dashboard reading production data (read-only replica) — ONLY after the confirmation below
+$SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db prod-ro --auth --json"
 
 # With extra environment variables (.env is pushed with app files, NEVER commit .env to git)
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db postgres --env-file /opt/vibe-deploy/push/<app-name>/.env --json"
@@ -80,7 +80,26 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --auth --
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing path --json"
 ```
 
-**`--db prod-ro` apps must have login before they are deployed** — they expose production data. Deploy them with `--auth` (and a short `--auth-ttl`, e.g. `hours=1`); load `/auth` first. Platform login requires the default **subdomain** routing, never `--routing path`.
+> ### ⚠️ `--db prod-ro` gives the app PATIENT DATA
+>
+> The app connects to the production read-only replica with a role that can read **every table**,
+> including `studies` (patient id — not hashed —, sex, age, accession number, report text) and
+> `reports` (protocol, findings, impression, transcript). Before the first `--db prod-ro` deploy of
+> an app, **stop and ask the user to confirm**, in their language, that this app should see patient
+> data and that the people they will add to its group may see it. Deploy only on an explicit yes;
+> "it's just a dashboard" is not one. Prefer aggregates in the app over rows.
+>
+> - vd enforces the rest: `--auth` is required (`PROD_RO_REQUIRES_AUTH`), the sign-in lasts at most
+>   `hours=1` (`--auth-ttl` longer → `INVALID_AUTH_TTL`), no MCP is created, and `DATABASE_URL` never
+>   appears in the JSON, `vd status` or vd's output.
+> - The app must not copy patient fields into its own storage, logs, error messages or the browser
+>   beyond what the page shows. Never log `DATABASE_URL` or query results.
+> - `--db-name` is ignored: the platform's DSN fixes the database.
+> - Revoking one app: a platform admin runs `docker network disconnect <prod-ro network> vd-<app>`
+>   (a redeploy reconnects it — destroy the app to make it stick). Revoking all: the platform
+>   admins disable the shared role.
+
+Platform login requires the default **subdomain** routing, never `--routing path`.
 
 **`--auth` is sticky.** Once an app is deployed with it, later deploys keep it on without the flag. After an `--auth` deploy, relay the `auth.group` from the JSON to the user: people get access by being added to that group in Authentik — that is the only human step.
 
@@ -198,7 +217,7 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--routing` | `subdomain` | `subdomain` or `path` |
 | `--db` | `none` | `postgres` (own DB), `prod-ro` (read-only prod), `none` |
 | `--db-access` | `rw` | `rw` or `ro` |
-| `--db-name` | app name | Database name (required for `prod-ro`) |
+| `--db-name` | app name | Database name (`postgres` only; ignored for `prod-ro`) |
 | `--env-file` | none | Path to .env file on server |
 | `--allow-external` | false | Silence warnings about unsupported external services |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky. Subdomain routing only |
@@ -288,6 +307,7 @@ report the deploy as fully done while one of them describes a missing piece.
 | `AUTH_NOT_CONFIGURED` | Server not set up for `--auth` — use the fallback in `/auth` until a platform admin runs `vd init --authentik-…` |
 | `AUTH_FAILED` | Authentik rejected the setup; nothing was deployed on the server. If the group binding failed, vd also unpublished the app (`404`, never open) — see `details`. Retry once, then pass `details` to the platform admin |
 | `AUTH_REQUIRES_SUBDOMAIN` | Drop `--routing path` |
+| `PROD_RO_REQUIRES_AUTH` | `--db prod-ro` only behind `--auth` — and only after the user confirmed patient-data access |
 | `INVALID_AUTH_TTL` | Use `hours=1`, `minutes=30`, …; `--auth-ttl` needs `--auth` |
 | `AUTH_BEARER_REQUIRES_AUTH` | `--auth-bearer` needs `--auth` |
 | `ROLLBACK_WOULD_UNPROTECT` | Previous version was public — fix forward and redeploy instead |

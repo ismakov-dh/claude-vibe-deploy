@@ -71,6 +71,11 @@ services:
 {{- if .NeedsDB}}
       - vd-db
 {{- end}}
+{{- if .ProdRONetwork}}
+      # Production read-only replica; nothing else resolves on this network.
+      # Revoking this app's access: docker network disconnect {{.ProdRONetwork}} vd-{{.Name}}
+      - vd-prod-ro
+{{- end}}
     logging:
       driver: json-file
       options:
@@ -163,5 +168,10 @@ networks:
     external: true
 {{- if or .NeedsDB .NeedsMCP}}
   vd-db:
+    external: true
+{{- end}}
+{{- if .ProdRONetwork}}
+  vd-prod-ro:
+    name: {{.ProdRONetwork}}
     external: true
 {{- end}}

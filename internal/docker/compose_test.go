@@ -336,3 +336,31 @@ func TestComposeMCPWithoutOAuthUnchanged(t *testing.T) {
 		t.Fatal("Basic-only MCP lost its basicauth")
 	}
 }
+
+func TestComposeProdROJoinsOnlyTheReplicaNetwork(t *testing.T) {
+	d := authData()
+	d.ProdRONetwork = "stack_vd-prod-ro"
+	body := renderMCP(t, d)
+	if !strings.Contains(body, "      - vd-prod-ro\n") || !strings.Contains(body, "    name: stack_vd-prod-ro\n    external: true") {
+		t.Fatalf("app not on the replica network:\n%s", body)
+	}
+	if strings.Contains(body, "vd-db") || strings.Contains(body, "-mcp:") {
+		t.Fatalf("prod-ro app must get neither vd-db nor an MCP:\n%s", body)
+	}
+}
+
+func TestComposeRefusesUnsafeProdRO(t *testing.T) {
+	out := filepath.Join(t.TempDir(), "c.yml")
+	for name, mut := range map[string]func(*ComposeData){
+		"no auth":  func(d *ComposeData) { d.Auth = false; d.IngressSecret = "" },
+		"with MCP": func(d *ComposeData) { d.NeedsMCP = true; d.MCPImage = "x"; d.MCPBasicAuth = "a:b" },
+		"on vd-db": func(d *ComposeData) { d.NeedsDB = true },
+	} {
+		d := authData()
+		d.ProdRONetwork = "stack_vd-prod-ro"
+		mut(&d)
+		if err := GenerateComposeFile(os.DirFS("../.."), d, out); err == nil {
+			t.Errorf("%s: rendered", name)
+		}
+	}
+}

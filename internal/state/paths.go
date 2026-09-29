@@ -47,5 +47,8 @@ func AuthentikDynamicPath() string { return filepath.Join(TraefikDynamicDir(), "
 func MCPGWDir() string { return filepath.Join(VDHome(), "mcpgw") }
 
 func AuthentikTokenPath() string { return filepath.Join(VDHome(), "authentik.token") }
+
+// ProdROURLPath holds the --db prod-ro DSN (the shared vibe_ro role). Mode 0600.
+func ProdROURLPath() string      { return filepath.Join(VDHome(), "prod-ro.url") }
 func InfraEnvPath() string       { return filepath.Join(VDHome(), ".env") }
 func PushDir(name string) string { return filepath.Join(VDHome(), "push", name) }

@@ -211,43 +211,35 @@ func runDeploy(srcPath string) {
 	mcpHostName := ""
 	mcpPassword := ""
 
+	// Production replica: no provisioning, the platform owns the role. The DSN
+	// goes into the app's .env (0600) and nowhere else — not the JSON, not a log.
+	if deployDB == "prod-ro" {
+		dsn, err := state.LoadProdROURL()
+		if err != nil || cfg.ProdRONetwork == "" {
+			output.Fail("deploy", output.NewError("DB_NOT_FOUND",
+				"The production read-only replica is not set up on this server",
+				"A platform admin runs: vd init --prod-ro-network <overlay> and pipes the DSN into vd init --prod-ro-url-stdin"))
+		}
+		if deployDBName != "" {
+			output.Warn("--db-name ignored for prod-ro: the platform's DSN fixes the database")
+		}
+		if err := setEnvVar(state.AppEnvPath(deployName), "DATABASE_URL", dsn); err != nil {
+			output.Fail("deploy", output.NewError("DB_PROVISION_FAILED",
+				"Could not write DATABASE_URL: "+err.Error(), "Check permissions on "+state.AppDir(deployName)))
+		}
+		hasEnvFile = true
+		output.Info("Production read-only replica wired in (network %s). This app sees patient data.", cfg.ProdRONetwork)
+	}
+
 	// Provision database if requested
-	if deployDB == "postgres" || deployDB == "prod-ro" {
-		var container, adminUser, access, dbNameToUse string
-
-		var connectHost string
-
-		if deployDB == "prod-ro" {
-			container = cfg.ProdDBPrimary
-			if container == "" {
-				output.Fail("deploy", output.NewError("DB_NOT_FOUND",
-					"No prod DB configured",
-					"Run: vd init --prod-db <primary> --prod-db-user <user>"))
-			}
-			connectHost = cfg.ProdDBReplica
-			if connectHost == "" {
-				connectHost = container // fall back to primary
-			}
-			adminUser = cfg.ProdDBUser
-			if adminUser == "" {
-				adminUser = "postgres"
-			}
-			access = "ro"
-			dbNameToUse = deployDBName
-			if dbNameToUse == "" {
-				output.Fail("deploy", output.NewError("MISSING_DB_NAME",
-					"--db-name is required for prod-ro",
-					"Example: vd deploy ./app --name myapp --db prod-ro --db-name reporting_platform"))
-			}
-		} else {
-			container = "vd-postgres"
-			connectHost = "vd-postgres"
-			adminUser = "vd_admin"
-			access = deployDBAccess
-			dbNameToUse = deployDBName
-			if dbNameToUse == "" {
-				dbNameToUse = deployName
-			}
+	if deployDB == "postgres" {
+		container := "vd-postgres"
+		connectHost := "vd-postgres"
+		adminUser := "vd_admin"
+		access := deployDBAccess
+		dbNameToUse := deployDBName
+		if dbNameToUse == "" {
+			dbNameToUse = deployName
 		}
 
 		output.Info("Provisioning database (%s)...", deployDB)
@@ -328,7 +320,7 @@ func runDeploy(srcPath string) {
 	}
 
 	// Generate docker-compose.vd.yml
-	needsDB := deployDB == "postgres" || deployDB == "prod-ro"
+	needsDB := deployDB == "postgres"
 	domain := buildDomain(deployName, cfg.Domain, deployRouting)
 
 	composeData := docker.ComposeData{
@@ -346,6 +338,9 @@ func runDeploy(srcPath string) {
 	if auth != nil {
 		composeData.Auth = true
 		composeData.IngressSecret = ingressSecret
+	}
+	if deployDB == "prod-ro" {
+		composeData.ProdRONetwork = cfg.ProdRONetwork
 	}
 	composeData.MCPOAuth = mcpRes != nil
 	if err := docker.GenerateComposeFile(templatesFS, composeData, state.AppComposePath(deployName)); err != nil {
@@ -632,6 +627,9 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	want := deployAuth || (prev != nil && prev.Auth) || protectedOnDisk
 	bearer, bearerErr := bearerFor(want, prev, deployAuthBearerSet, deployAuthBearer)
 	if !want {
+		if e := prodROGate(deployDB, false, ""); e != nil {
+			output.Fail("deploy", e)
+		}
 		if deployAuthTTL != "" {
 			output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
 				"--auth-ttl given without --auth", "Add --auth, or drop --auth-ttl"))
@@ -656,6 +654,9 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	if !authentik.ValidTTL(ttl) {
 		output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
 			"Invalid --auth-ttl: "+ttl, "Use Authentik's format, e.g. hours=1, minutes=30, days=1;hours=12"))
+	}
+	if e := prodROGate(deployDB, true, ttl); e != nil {
+		output.Fail("deploy", e)
 	}
 	if deployRouting != "subdomain" {
 		output.Fail("deploy", output.NewError("AUTH_REQUIRES_SUBDOMAIN",
@@ -732,6 +733,31 @@ func bearerFor(auth bool, prev *state.Manifest, set, val bool) (bool, error) {
 		return val, nil
 	}
 	return prev != nil && prev.AuthBearer, nil
+}
+
+// prodROMaxTTL caps the sign-in of an app that reads the production replica:
+// removing someone from the group must lock them out of patient data within
+// the hour.
+const prodROMaxTTL = 3600
+
+// prodROGate holds the rules for --db prod-ro, which exposes patient data
+// (studies, reports) to the app: platform login is mandatory, and its sign-in
+// lasts at most an hour. Checked before Authentik or the host is touched.
+func prodROGate(dbType string, auth bool, ttl string) *output.VDError {
+	if dbType != "prod-ro" {
+		return nil
+	}
+	if !auth {
+		return output.NewError("PROD_RO_REQUIRES_AUTH",
+			"--db prod-ro reads production data, patient records included; it is only deployed behind platform login",
+			"Add --auth (load the /auth skill first)")
+	}
+	if authentik.TTLSeconds(ttl) > prodROMaxTTL {
+		return output.NewError("INVALID_AUTH_TTL",
+			"--db prod-ro allows a sign-in of at most hours=1, got "+ttl,
+			"Use --auth-ttl hours=1 or shorter")
+	}
+	return nil
 }
 
 // fileContains reports whether path exists and contains s.

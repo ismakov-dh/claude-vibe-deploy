@@ -125,9 +125,11 @@ server.js           # queries prod DB via DATABASE_URL
 public/
   index.html        # frontend calls /api endpoints
 ```
-Deploy with `--db prod-ro --db-name <existing-database>`.
+Deploy with `--db prod-ro --auth` (the platform's DSN picks the database).
 
-**A `--db prod-ro` app reads production data and must not ship without login.** Load `/auth` and deploy it with `--auth` (a short `--auth-ttl`, e.g. `hours=1`) — membership in `vibe-<name>` is the access control, and "it's just an internal dashboard" is not one.
+**It sees patient data.** The read-only role reads every table, `studies` and `reports` included (unhashed patient id, report text, findings). Ask the user to confirm before building on it; show aggregates rather than rows; never copy patient fields into the app's own database, logs or error messages. `/deploy` has the full rule.
+
+**A `--db prod-ro` app reads production data and must not ship without login.** Load `/auth` and deploy it with `--auth` (sign-in at most `hours=1` — vd refuses longer) — membership in `vibe-<name>` is the access control, and "it's just an internal dashboard" is not one.
 
 ## Rules for Writing Code
 
