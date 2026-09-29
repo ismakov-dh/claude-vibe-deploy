@@ -313,6 +313,11 @@ group. A platform admin creates the service account and puts it in `vibe-<name>`
 - **Limiting it is your app's job.** The group admits the account to every route. Recognise it
   by `X-authentik-uid` (or email) and allow only what it needs, e.g. `GET` on the export
   endpoints; answer 403 to everything else.
+- **It also opens Basic to people.** The outpost accepts an Authentik *app password* as Basic,
+  and any member of the group can create one for themselves in their Authentik settings — then
+  reach the app with it, skipping the login page (and MFA, once there is MFA). Treat every
+  member as able to script the app. Turn the flag on only for apps where that is acceptable,
+  and tell the user.
 - Sticky: redeploys keep it; `--auth-bearer=false` turns it off. Needs `--auth`
   (`AUTH_BEARER_REQUIRES_AUTH` otherwise). The deploy JSON's `auth.bearer` and `vd status`
   report it.
