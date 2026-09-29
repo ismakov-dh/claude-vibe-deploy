@@ -47,6 +47,27 @@ services:
     labels:
       - "vd.role=traefik"
 
+  # agentgateway in front of apps' database MCPs deployed with --mcp-oauth.
+  # Its own instance, not the stacks gateway: routes change on every vd deploy,
+  # and a Swarm config (what stacks uses) cannot change in place. vd rewrites
+  # ./mcpgw/config.yaml and the gateway picks it up live. No port is published;
+  # vd-traefik reaches it on vd-net, and it reaches the MCP containers there.
+  mcpgw:
+    image: {{.MCPGWImage}}
+    container_name: vd-mcpgw
+    restart: unless-stopped
+    command: ["-f", "/etc/agentgateway/config.yaml"]
+    volumes:
+      # A directory, not the file: vd replaces config.yaml by rename, and a
+      # single-file bind mount would keep pointing at the old inode.
+      - ./mcpgw:/etc/agentgateway:ro
+    networks:
+      - vd-net
+    labels:
+      - "vd.role=mcpgw"
+      - "traefik.enable=true"
+      - "traefik.http.services.vd-mcpgw.loadbalancer.server.port=3000"
+
   postgres:
     image: postgres:15-alpine
     container_name: vd-postgres

@@ -70,6 +70,9 @@ var statusCmd = &cobra.Command{
 		}
 		if mcp != nil {
 			mcp["health"] = mcpHealth
+			if m.MCPOAuth {
+				mcp["oauth"] = mcpOAuthStatus(m, cfg)
+			}
 			data["mcp"] = mcp
 		}
 		if authInfo != nil {
@@ -152,6 +155,34 @@ func authStatus(m *state.Manifest, cfg *state.Config) map[string]any {
 	} else {
 		info["state"] = "broken"
 		info["hint"] = "redeploy the app to recreate its Authentik objects"
+	}
+	return info
+}
+
+// mcpOAuthStatus reads what exists in Authentik for the app's MCP resource.
+func mcpOAuthStatus(m *state.Manifest, cfg *state.Config) map[string]any {
+	info := map[string]any{"enabled": true, "group": "mcp-vibe-" + m.Name}
+	if cfg != nil {
+		info["url"] = "https://" + mcpHost(m.Name, cfg) + "/mcp"
+	}
+	token, err := state.LoadAuthentikToken()
+	if err != nil || cfg == nil || cfg.AuthentikURL == "" {
+		info["state"] = "unknown"
+		info["error"] = "Authentik is not configured on this server"
+		return info
+	}
+	h, err := authentik.New(cfg.AuthentikURL, token).CheckMCP(m.Name)
+	if err != nil {
+		info["state"] = "unknown"
+		info["error"] = err.Error()
+		return info
+	}
+	info["authentik"] = h
+	if h.OK() {
+		info["state"] = "ok"
+	} else {
+		info["state"] = "broken"
+		info["hint"] = "redeploy the app; Basic credentials keep working meanwhile"
 	}
 	return info
 }

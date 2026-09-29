@@ -43,6 +43,9 @@ func AuthentikDynamicPath() string { return filepath.Join(TraefikDynamicDir(), "
 // AuthentikTokenPath holds the Authentik admin API token. Mode 0600, and kept out
 // of config.json: config.json is read and printed in ordinary operation, a token
 // is not.
+// MCPGWDir holds vd-mcpgw's routes file, mounted into the gateway.
+func MCPGWDir() string { return filepath.Join(VDHome(), "mcpgw") }
+
 func AuthentikTokenPath() string { return filepath.Join(VDHome(), "authentik.token") }
 func InfraEnvPath() string       { return filepath.Join(VDHome(), ".env") }
 func PushDir(name string) string { return filepath.Join(VDHome(), "push", name) }

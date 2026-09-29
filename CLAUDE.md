@@ -172,6 +172,8 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--allow-external` | false | Silence warnings about unsupported external services (Supabase, Firebase, etc.) |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky; subdomain routing only. Needs `vd init --authentik-url … --authentik-internal …` on the server |
 | `--auth-ttl` | `hours=1` | Sign-in lifetime before Authentik is asked again; over a day warns |
+| `--mcp-oauth` | false | Database MCP also behind Authentik (vd-mcpgw, group `mcp-vibe-<name>`); Basic keeps working. Sticky |
+| `--mcp-owner` | none | Email added to `mcp-vibe-<name>` (with `--mcp-oauth`) |
 
 **Policy scan**: on every deploy, vd scans the source for hardcoded secrets and unsupported external services. Hardcoded credentials (AWS/OpenAI/Anthropic/GitHub/Google/Slack/Stripe keys, private keys, DB URLs with passwords) **block** the deploy with `POLICY_VIOLATION`. `.env` files are never scanned. Unsupported services (Supabase, Firebase, MongoDB, Redis, S3) produce warnings in the `warnings` field of the JSON response; `--allow-external` silences them. (A hardcoded JWT-shaped token in source also warns — it's there to catch pasted Supabase anon keys, not to flag the use of a JWT library.)
 
@@ -206,7 +208,7 @@ Stop container, remove app files.
 | `--yes` | false | Skip confirmation (always use in automation) |
 | `--drop-db` | false | Also drop the database, its user and the MCP read-only role (vd-managed only, never drops prod) |
 
-For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept.
+For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept. For `--mcp-oauth` apps, destroy removes the MCP application, provider and the group `mcp-vibe-<app>`.
 
 #### `vd db-create <app-name>`
 

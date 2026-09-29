@@ -42,6 +42,15 @@ type fake struct {
 
 	// failBindings makes creating or patching a policy binding fail.
 	failBindings bool
+	// failAppDelete makes deleting an application fail.
+	failAppDelete bool
+
+	// MCP resources.
+	oauth2     map[int]map[string]any
+	noMCPScope bool             // stacks' mcp-groups mapping absent
+	users      map[int]string   // pk -> email
+	addedUsers map[string][]int // group pk -> user pks added
+	dropOAuth2 string           // field the fake silently fails to store
 }
 
 func newFake() *fake {
@@ -53,9 +62,12 @@ func newFake() *fake {
 				"external_host": "https://api.test.example.com", "access_token_validity": "hours=1",
 				"authorization_flow": "f-authz", "invalidation_flow": "f-inval", "intercept_header_auth": false},
 		},
-		apps:    map[string]map[string]any{},
-		outpost: []int{2},
-		nextPK:  10,
+		apps:       map[string]map[string]any{},
+		oauth2:     map[int]map[string]any{},
+		users:      map[int]string{7: "owner@example.com", 8: "other@example.com"},
+		addedUsers: map[string][]int{},
+		outpost:    []int{2},
+		nextPK:     10,
 	}
 }
 
@@ -102,6 +114,14 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			res = append(res, map[string]any{"pk": pk, "name": name, "users": users})
 		}
 		out(200, page(res, 0))
+	case strings.HasPrefix(p, "/core/groups/") && r.Method == "DELETE":
+		pk := strings.Trim(strings.TrimPrefix(p, "/core/groups/"), "/")
+		for name, g := range f.groups {
+			if g == pk {
+				delete(f.groups, name)
+			}
+		}
+		out(204, nil)
 	case p == "/core/groups/" && r.Method == "POST":
 		name := body["name"].(string)
 		f.nextPK++
@@ -174,7 +194,19 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			out(200, cur)
 		case "DELETE":
+			if f.failAppDelete {
+				out(500, map[string]any{"detail": "fake: delete refused"})
+				return
+			}
 			delete(f.apps, slug)
+			// Authentik cascades: an application's bindings go with it.
+			kept := f.bindings[:0]
+			for _, b := range f.bindings {
+				if b["target"] != cur["pk"] {
+					kept = append(kept, b)
+				}
+			}
+			f.bindings = kept
 			out(204, nil)
 		}
 
@@ -243,6 +275,66 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		f.outpost = next
 		out(200, map[string]any{"pk": "o-emb", "providers": next})
+
+	case p == "/providers/oauth2/" && r.Method == "GET":
+		var res []any // filters ignored, as ever
+		for _, v := range f.oauth2 {
+			res = append(res, v)
+		}
+		out(200, page(res, 0))
+	case p == "/providers/oauth2/" && r.Method == "POST":
+		f.nextPK++
+		body["pk"] = f.nextPK
+		if f.dropOAuth2 != "" {
+			delete(body, f.dropOAuth2)
+		}
+		f.oauth2[f.nextPK] = body
+		out(201, body)
+	case strings.HasPrefix(p, "/providers/oauth2/"):
+		pk, _ := strconv.Atoi(strings.Trim(strings.TrimPrefix(p, "/providers/oauth2/"), "/"))
+		cur, ok := f.oauth2[pk]
+		if !ok {
+			out(404, map[string]any{"detail": "Not found."})
+			return
+		}
+		switch r.Method {
+		case "GET":
+			out(200, cur)
+		case "PATCH":
+			for k, v := range body {
+				cur[k] = v
+			}
+			out(200, cur)
+		case "DELETE":
+			delete(f.oauth2, pk)
+			out(204, nil)
+		}
+	case p == "/crypto/certificatekeypairs/":
+		out(200, page([]any{
+			map[string]any{"pk": "k-internal", "name": "authentik Internal JWT Certificate"},
+			map[string]any{"pk": "k-self", "name": mcpSigningKey},
+		}, 0))
+	case p == "/propertymappings/provider/scope/":
+		res := []any{
+			map[string]any{"pk": "m-openid", "name": "openid", "managed": "goauthentik.io/providers/oauth2/scope-openid", "scope_name": "openid"},
+			map[string]any{"pk": "m-offline", "name": "offline", "managed": "goauthentik.io/providers/oauth2/scope-offline_access", "scope_name": "offline_access"},
+			map[string]any{"pk": "m-decoy", "name": "mcp-groups", "managed": "", "scope_name": "not-mcp"},
+		}
+		if !f.noMCPScope {
+			res = append(res, map[string]any{"pk": "m-mcp", "name": mcpScopeMapping, "managed": "", "scope_name": mcpScopeName})
+		}
+		out(200, page(res, 0))
+	case p == "/core/users/":
+		// Filter ignored: the client must match the email itself.
+		var res []any
+		for pk, e := range f.users {
+			res = append(res, map[string]any{"pk": pk, "email": e, "name": "must not be kept"})
+		}
+		out(200, page(res, 0))
+	case strings.HasPrefix(p, "/core/groups/") && strings.HasSuffix(p, "/add_user/"):
+		g := strings.TrimSuffix(strings.TrimPrefix(p, "/core/groups/"), "/add_user/")
+		f.addedUsers[g] = append(f.addedUsers[g], int(toFloat(body["pk"])))
+		out(204, nil)
 
 	default:
 		out(500, map[string]any{"detail": "fake: unhandled " + r.Method + " " + p})

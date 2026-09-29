@@ -47,6 +47,13 @@ var rollbackCmd = &cobra.Command{
 			output.Fail("rollback", output.NewError("ROLLBACK_FAILED", err.Error(), "Check backup integrity with: vd backups "+name))
 		}
 
+		// The restored manifest decides whether the MCP has an OAuth route.
+		if cfg, _ := state.LoadConfig(); cfg != nil {
+			if err := syncMCPGateway(cfg); err != nil {
+				output.Warn("Could not rewrite vd-mcpgw routes: %v", err)
+			}
+		}
+
 		// Wait for health
 		containerName := "vd-" + name
 		if err := docker.WaitHealthy(containerName, 60*time.Second); err != nil {

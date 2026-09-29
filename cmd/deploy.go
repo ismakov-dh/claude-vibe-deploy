@@ -35,6 +35,8 @@ var (
 	deployAllowExternal bool
 	deployAuth          bool
 	deployAuthTTL       string
+	deployMCPOAuth      bool
+	deployMCPOwner      string
 )
 
 func init() {
@@ -47,6 +49,8 @@ func init() {
 	deployCmd.Flags().StringVar(&deployEnvFile, "env-file", "", "path to .env file")
 	deployCmd.Flags().BoolVar(&deployAllowExternal, "allow-external", false, "silence warnings about unsupported external services (Supabase, Firebase, etc.)")
 	deployCmd.Flags().BoolVar(&deployAuth, "auth", false, "put the app behind platform login (Authentik forward auth); sticky once set")
+	deployCmd.Flags().BoolVar(&deployMCPOAuth, "mcp-oauth", false, "also put the database MCP behind platform login (Authentik via vd-mcpgw); Basic keeps working. Sticky once set")
+	deployCmd.Flags().StringVar(&deployMCPOwner, "mcp-owner", "", "email of a person to add to the MCP's access group (with --mcp-oauth)")
 	deployCmd.Flags().StringVar(&deployAuthTTL, "auth-ttl", "", "how long a sign-in lasts before re-checking with Authentik, e.g. hours=1 or minutes=30 (default hours=1)")
 	rootCmd.AddCommand(deployCmd)
 }
@@ -200,7 +204,7 @@ func runDeploy(srcPath string) {
 	// MCP wiring, filled in during provisioning below.
 	needsMCP := false
 	mcpAuth := ""
-	mcpHost := ""
+	mcpHostName := ""
 	mcpPassword := ""
 
 	// Provision database if requested
@@ -269,12 +273,27 @@ func runDeploy(srcPath string) {
 						mcpAuth = ""
 					} else {
 						needsMCP = true
-						mcpHost = deployName + ".mcp." + cfg.Domain
-						output.Info("Read-only MCP will be available at https://%s/sse", mcpHost)
+						mcpHostName = deployName + ".mcp." + cfg.Domain
+						output.Info("Read-only MCP will be available at https://%s/sse", mcpHostName)
 					}
 				}
 			}
 		}
+	}
+
+	// MCP behind Authentik, sticky like --auth. Only meaningful with an MCP.
+	prevM, _ := state.LoadManifest(deployName)
+	wantMCPOAuth := deployMCPOAuth || (prevM != nil && prevM.MCPOAuth)
+	var mcpRes *authentik.MCPResult
+	if wantMCPOAuth && !needsMCP {
+		output.Warn("--mcp-oauth ignored: this app has no database MCP (deploy with --db postgres)")
+		wantMCPOAuth = false
+	}
+	if deployMCPOwner != "" && !wantMCPOAuth {
+		output.Warn("--mcp-owner ignored without --mcp-oauth")
+	}
+	if wantMCPOAuth {
+		mcpRes = ensureMCPOAuth(deployName, cfg, deployMCPOwner)
 	}
 
 	if auth != nil {
@@ -324,6 +343,7 @@ func runDeploy(srcPath string) {
 		composeData.Auth = true
 		composeData.IngressSecret = ingressSecret
 	}
+	composeData.MCPOAuth = mcpRes != nil
 	if err := docker.GenerateComposeFile(templatesFS, composeData, state.AppComposePath(deployName)); err != nil {
 		output.Fail("deploy", output.NewError("COMPOSE_FAILED",
 			"Failed to generate compose file: "+err.Error(), "This is a bug"))
@@ -388,6 +408,15 @@ func runDeploy(srcPath string) {
 		manifest.AuthTTL = auth.ttl
 		manifest.AuthGroup = auth.group
 	}
+	// Keep the intent even if Authentik failed this time, so the next deploy
+	// retries; the route follows only what actually exists (MCP && res != nil).
+	manifest.MCPOAuth = wantMCPOAuth
+	manifest.MCPOAuthLive = mcpRes != nil
+	if deployMCPOwner != "" {
+		manifest.MCPOwner = deployMCPOwner
+	} else if prevM != nil {
+		manifest.MCPOwner = prevM.MCPOwner
+	}
 	if err := state.SaveManifest(manifest); err != nil {
 		if auth != nil {
 			// The app is up and protected, but the record that keeps it protected
@@ -414,7 +443,16 @@ func runDeploy(srcPath string) {
 		"deployed_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	if needsMCP {
-		data["mcp"] = mcpInfo(deployName, mcpHost, mcpUser, mcpPassword)
+		info := mcpInfo(deployName, mcpHostName, mcpUser, mcpPassword)
+		if mcpRes != nil {
+			info["oauth"] = mcpOAuthInfo(deployName, cfg, deployMCPOwner, mcpRes)
+		}
+		data["mcp"] = info
+	}
+	if wantMCPOAuth || (prevM != nil && prevM.MCPOAuth) {
+		if err := syncMCPGateway(cfg); err != nil {
+			output.Warn("MCP OAuth route not published (%v) — Basic credentials still work", err)
+		}
 	}
 	if auth != nil {
 		data["auth"] = map[string]any{
