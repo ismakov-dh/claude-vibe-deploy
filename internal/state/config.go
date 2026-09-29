@@ -16,10 +16,11 @@ type Config struct {
 	// VD-managed postgres (for apps that need their own database)
 	VDPostgresPassword string `json:"vd_postgres_password,omitempty"`
 
-	// External prod DB (read-only attach for dashboards)
-	ProdDBPrimary string `json:"prod_db_primary,omitempty"` // primary — where users are created
-	ProdDBReplica string `json:"prod_db_replica,omitempty"` // replica — where apps connect to read
-	ProdDBUser    string `json:"prod_db_user,omitempty"`    // admin user for creating roles
+	// --db prod-ro: a stack-owned attachable overlay on which only the prod
+	// read-only replica resolves, and one shared role whose DSN is kept in
+	// ProdROURLPath (never in this file, which is 0644). Revoking an app is
+	// detaching its container from this network.
+	ProdRONetwork string `json:"prod_ro_network,omitempty"`
 
 	// Authentik — the identity provider behind `vd deploy --auth`.
 	// AuthentikInternal is an address on the overlay vd-traefik joins (see
@@ -68,6 +69,20 @@ func LoadAuthentikToken() (string, error) {
 		return "", fmt.Errorf("Authentik token at %s is empty", AuthentikTokenPath())
 	}
 	return t, nil
+}
+
+// LoadProdROURL returns the DSN apps deployed with --db prod-ro get as
+// DATABASE_URL. Never printed: it opens patient data.
+func LoadProdROURL() (string, error) {
+	b, err := os.ReadFile(ProdROURLPath())
+	if err != nil {
+		return "", fmt.Errorf("no prod read-only DSN stored (vd init --prod-ro-url-stdin): %w", err)
+	}
+	u := strings.TrimSpace(string(b))
+	if u == "" {
+		return "", fmt.Errorf("prod read-only DSN at %s is empty", ProdROURLPath())
+	}
+	return u, nil
 }
 
 func LoadConfig() (*Config, error) {

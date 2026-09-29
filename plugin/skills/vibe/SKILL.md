@@ -125,9 +125,11 @@ server.js           # queries prod DB via DATABASE_URL
 public/
   index.html        # frontend calls /api endpoints
 ```
-Deploy with `--db prod-ro --db-name <existing-database>`.
+Deploy with `--db prod-ro --auth` (the platform's DSN picks the database).
 
-**A `--db prod-ro` app reads production data and must not ship without login.** Load `/auth` and deploy it with `--auth` (a short `--auth-ttl`, e.g. `hours=1`) — membership in `vibe-<name>` is the access control, and "it's just an internal dashboard" is not one.
+**It sees patient data.** The read-only role reads every table, `studies` and `reports` included (unhashed patient id, report text, findings). Ask the user to confirm before building on it; show aggregates rather than rows; never copy patient fields into the app's own database, logs or error messages. `/deploy` has the full rule.
+
+**A `--db prod-ro` app reads production data and must not ship without login.** Load `/auth` and deploy it with `--auth` (sign-in at most `hours=1` — vd refuses longer) — membership in `vibe-<name>` is the access control, and "it's just an internal dashboard" is not one.
 
 ## Rules for Writing Code
 
@@ -140,7 +142,8 @@ Deploy with `--db prod-ro --db-name <existing-database>`.
 7. Use `.vd-type` file to override auto-detection if needed (contains type name, e.g. `node-server`)
 8. **Always use database migrations** — never raw `CREATE TABLE IF NOT EXISTS` (see below)
 9. **NEVER commit secrets or .env files to git.** No API keys, passwords, tokens, or DATABASE_URL values in source code or tracked files. Pass secrets via `--env-file` on deploy. `vd deploy` **blocks** when it finds hardcoded credentials in source (`POLICY_VIOLATION`) — keep them in `.env` only
-10. **Always create a `.gitignore` first**, before writing any code, containing at least:
+10. `.env` is **not in the image**: vd adds `.env` and `.env.local` to `.dockerignore`; their values arrive as environment variables at runtime, so build steps cannot read them. Build-time config (Vite/Next) goes in a committed `.env.production` or in source — non-secret values only, they end up in the browser bundle.
+11. **Always create a `.gitignore` first**, before writing any code, containing at least:
     ```gitignore
     .env
     .env.*

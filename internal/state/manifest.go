@@ -34,6 +34,10 @@ type Manifest struct {
 	Auth      bool   `json:"auth,omitempty"`
 	AuthTTL   string `json:"auth_ttl,omitempty"`
 	AuthGroup string `json:"auth_group,omitempty"`
+	// ProdRONetwork is set for --db prod-ro apps deployed against the replica
+	// overlay. A prod-ro manifest without it predates that design (a per-app
+	// user on the primary, no mandatory login) and is never restored.
+	ProdRONetwork string `json:"prod_ro_network,omitempty"`
 	// AuthBearer mirrors the provider's intercept_header_auth (--auth-bearer).
 	AuthBearer bool `json:"auth_bearer,omitempty"`
 

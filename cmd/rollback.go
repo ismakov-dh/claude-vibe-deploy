@@ -28,6 +28,40 @@ func keepAuthBearer(name string, bearer bool) error {
 	return state.SaveManifest(restored)
 }
 
+// rollbackProdROGate refuses a restore that would bring production access back
+// in a form deploy no longer allows. A backup's compose and .env are restored
+// verbatim, so prodROGate never sees them: a prod-ro backup comes back only
+// onto an app that is prod-ro now (so detaching or leaving prod-ro stays
+// done), only from the replica design, and only if it passes the same gate.
+func rollbackProdROGate(cur, b *state.Manifest) *output.VDError {
+	if b == nil {
+		// Nothing says what the backup restores — prod access included.
+		// ponytail: refuses all such rollbacks; none of the 52 backups on prod
+		// had a nil manifest when this was written.
+		return output.NewError("ROLLBACK_WOULD_UNPROTECT",
+			"The backup carries no manifest, so vd cannot tell what access it would restore",
+			"Redeploy a fixed version instead")
+	}
+	if b.DB != "prod-ro" {
+		return nil
+	}
+	refuse := func(why string) *output.VDError {
+		return output.NewError("ROLLBACK_WOULD_UNPROTECT",
+			"The previous version of "+b.Name+" read production data "+why+"; rolling back would restore that access",
+			"Redeploy a fixed version instead")
+	}
+	if cur == nil || cur.DB != "prod-ro" {
+		return refuse("and the current version does not")
+	}
+	if b.ProdRONetwork == "" {
+		return refuse("through the retired per-app prod user")
+	}
+	if e := prodROGate("prod-ro", b.Auth, b.AuthTTL); e != nil {
+		return refuse("without the login rules prod-ro now requires (" + e.Message + ")")
+	}
+	return nil
+}
+
 var rollbackCmd = &cobra.Command{
 	Use:   "rollback <app-name>",
 	Short: "Revert to the previous deployment",
@@ -47,6 +81,12 @@ var rollbackCmd = &cobra.Command{
 				output.Fail("rollback", output.NewError("ROLLBACK_WOULD_UNPROTECT",
 					"The previous version of "+name+" was deployed without platform login; rolling back would make it public",
 					"Redeploy a fixed version with --auth instead"))
+			}
+		}
+
+		if _, meta, err := backup.Latest(name); err == nil && meta != nil {
+			if e := rollbackProdROGate(cur, meta.Manifest); e != nil {
+				output.Fail("rollback", e)
 			}
 		}
 

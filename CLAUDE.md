@@ -29,7 +29,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **TLS/HTTPS** | Automatic | Host nginx has wildcard cert. All apps are HTTPS. No config needed. |
 | **Own PostgreSQL database** | `--db postgres` | Auto-provisioned on deploy. `DATABASE_URL` injected into `.env`. Fresh DB per app. |
 | **Read-only MCP for the app's own DB** | automatic with `--db postgres` | Per-app postgres-mcp at `<name>.mcp.<apps-domain>`, SELECT-only, behind basicauth. Credentials and a ready-made `claude mcp add` command come back in the `mcp` field. Not provisioned for `prod-ro`. |
-| **Prod DB read-only access** | `--db prod-ro --db-name <db>` | Read-only (SELECT only) access to existing production databases for dashboards. |
+| **Prod DB read-only access** | `--db prod-ro --auth` | Production read-only replica over a dedicated overlay, shared SELECT-only role. **Includes patient data** — agents ask the user first. `--auth` required, sign-in ≤ `hours=1`, no MCP. |
 | **Environment variables** | `--env-file` or auto-injected | Pass secrets, API keys, config. `DATABASE_URL` is auto-injected when using `--db`. |
 | **Cron jobs** | `vd cron-set` | Scheduled commands that run inside the app container. |
 | **Health checks** | Automatic | Traefik + Docker check `GET http://127.0.0.1:<port>/` every 30s. |
@@ -122,7 +122,7 @@ vd deploy /opt/vibe-deploy/push/my-app --name my-dashboard --json
 vd deploy /opt/vibe-deploy/push/my-app --name my-api --db postgres --json
 
 # Dashboard reading production data
-vd deploy /opt/vibe-deploy/push/my-app --name my-dash --db prod-ro --db-name reporting_platform --json
+vd deploy /opt/vibe-deploy/push/my-app --name my-dash --db prod-ro --auth --json   # patient data: ask the user first
 
 # With extra env vars (API keys, secrets)
 vd deploy /opt/vibe-deploy/push/my-app --name my-app --db postgres --env-file /opt/vibe-deploy/push/my-app/.env --json
@@ -167,7 +167,7 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--routing` | `subdomain` | `subdomain` or `path` |
 | `--db` | `none` | `postgres` (own DB), `prod-ro` (read-only prod), or `none` |
 | `--db-access` | `rw` | `rw` or `ro` (prod-ro always forces `ro`) |
-| `--db-name` | app name | Database name (required for `prod-ro`) |
+| `--db-name` | app name | Database name (`postgres` only; ignored for `prod-ro`) |
 | `--env-file` | none | Path to .env file to inject (merged with auto-generated DATABASE_URL) |
 | `--allow-external` | false | Silence warnings about unsupported external services (Supabase, Firebase, etc.) |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky; subdomain routing only. Needs `vd init --authentik-url … --authentik-internal …` on the server |
@@ -217,9 +217,9 @@ Provision a database user independently (usually not needed — `vd deploy --db`
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--type` | `postgres` | `postgres` (vd-managed) or `prod-ro` (existing prod DB) |
+| `--type` | `postgres` | `postgres` (vd-managed). `prod-ro` has nothing to create — deploy with `--db prod-ro --auth` |
 | `--access` | `rw` | `rw` or `ro` (prod-ro always forces `ro`) |
-| `--db-name` | app name | Database name (required for `prod-ro`) |
+| `--db-name` | app name | Database name |
 
 #### `vd cron-set <app-name>`
 
@@ -265,7 +265,7 @@ would print as `[vd warning]` in human mode. `ok: true` with a warning such as `
 failed … deploying without DB` means the app runs without that piece; agents must read and relay
 `warnings`, not just `ok`.
 
-Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`
+Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `PROD_RO_REQUIRES_AUTH`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`
 
 ### Troubleshooting
 
@@ -276,7 +276,7 @@ Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, 
 | `UNHEALTHY` | App must listen on `0.0.0.0` (not `127.0.0.1`). Check port matches `--port` |
 | App not reachable | Check `vd status`. Verify DNS `*.<apps-domain>` resolves |
 | DB connection refused | Ensure `--db postgres` or `--db prod-ro` was passed to deploy |
-| Prod DB access denied | Use `--db prod-ro --db-name <existing-db-name>` |
+| Prod DB access denied | Use `--db prod-ro --auth`; `DB_NOT_FOUND` means the admin has not run `vd init --prod-ro-network … --prod-ro-url-stdin` |
 | Stale data after destroy | Use `--drop-db` to also drop the database |
 
 ### Constraints Summary
@@ -308,8 +308,10 @@ make build-linux    # Linux amd64 binary for deployment
 source .env.deploy && AWS_ACCESS_KEY_ID=$AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
   ./scripts/deploy.sh root@server apps.example.com
 
-# Connect prod DB (primary for user creation, replica for app connections)
-ssh vd-server "vd init --prod-db <primary> --prod-db-replica <replica> --prod-db-user <admin-user>"
+# Connect the prod read-only replica for --db prod-ro: a stack-owned attachable overlay
+# on which only the replica resolves, and the shared role's DSN on stdin (never a flag)
+ssh vd-server "vd init --prod-ro-network new-reporting-platform-backend_vd-prod-ro"
+<print VD_PROD_RO_URL from the stacks SOPS file> | ssh vd-server "vd init --prod-ro-url-stdin"
 ```
 
 ### Project Structure

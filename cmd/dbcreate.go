@@ -31,7 +31,7 @@ var dbCreateCmd = &cobra.Command{
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
 
-		cfg, err := state.LoadConfig()
+		_, err := state.LoadConfig()
 		if err != nil {
 			output.Fail("db-create", output.NewError("NOT_INITIALIZED", "Run vd init first", ""))
 		}
@@ -40,26 +40,11 @@ var dbCreateCmd = &cobra.Command{
 
 		switch dbType {
 		case "prod-ro":
-			container = cfg.ProdDBPrimary
-			if container == "" {
-				output.Fail("db-create", output.NewError("DB_NOT_FOUND",
-					"No prod DB configured",
-					"Run: vd init --prod-db <primary> --prod-db-user <user>"))
-			}
-			connectHost = cfg.ProdDBReplica
-			if connectHost == "" {
-				connectHost = container
-			}
-			adminUser = cfg.ProdDBUser
-			if adminUser == "" {
-				adminUser = "postgres"
-			}
-			access = "ro"
-			if dbName == "" {
-				output.Fail("db-create", output.NewError("MISSING_DB_NAME",
-					"--db-name is required for prod-ro",
-					"Example: vd db-create my-app --type prod-ro --db-name reporting_platform"))
-			}
+			// No per-app user any more: prod-ro apps share the platform's
+			// read-only replica role, wired in by vd deploy --db prod-ro --auth.
+			output.Fail("db-create", output.NewError("INVALID_TYPE",
+				"prod-ro has nothing to create: apps use the platform's shared read-only role",
+				"Deploy with: vd deploy <dir> --name <app> --db prod-ro --auth"))
 
 		case "postgres":
 			container = "vd-postgres"

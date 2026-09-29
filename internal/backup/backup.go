@@ -210,18 +210,12 @@ func restorePasswords(appName string, m *state.Manifest) {
 		return
 	}
 
-	container, adminUser := "vd-postgres", "vd_admin"
+	// prod-ro apps share one platform-owned role: its password is not the
+	// app's to set, and re-ALTERing it would cut off every other reader.
 	if m.DB == "prod-ro" {
-		cfg, err := state.LoadConfig()
-		if err != nil || cfg.ProdDBPrimary == "" {
-			return
-		}
-		container = cfg.ProdDBPrimary
-		adminUser = cfg.ProdDBUser
-		if adminUser == "" {
-			adminUser = "postgres"
-		}
+		return
 	}
+	container, adminUser := "vd-postgres", "vd_admin"
 
 	for path, key := range map[string]string{
 		state.AppEnvPath(appName):    "DATABASE_URL",

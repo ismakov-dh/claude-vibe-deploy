@@ -42,6 +42,11 @@ type ComposeData struct {
 	// MCPOAuth puts the MCP behind vd-mcpgw and Authentik, keeping Basic working.
 	MCPOAuth bool
 
+	// ProdRONetwork is the overlay to the prod read-only replica, for --db
+	// prod-ro. Such an app sees patient data: it must be behind forward auth
+	// and must not get an MCP, and the app joins no other database network.
+	ProdRONetwork string
+
 	// Forward auth via the Authentik embedded outpost. IngressSecret is hex, so
 	// it carries no '$' for compose to interpolate.
 	Auth          bool
@@ -56,6 +61,11 @@ func GenerateComposeFile(tmplFS fs.FS, data ComposeData, destPath string) error 
 	// layer keeps a future caller from publishing an app it believes is protected.
 	if data.MCPOAuth && !data.NeedsMCP {
 		return fmt.Errorf("MCP OAuth needs an MCP to protect")
+	}
+	// Repeated from deploy on purpose, like the checks below: a later caller
+	// must not be able to render a public or MCP-exposed production reader.
+	if data.ProdRONetwork != "" && (!data.Auth || data.NeedsMCP || data.NeedsDB) {
+		return fmt.Errorf("prod-ro needs forward auth, no MCP and no vd-db")
 	}
 	if data.Auth && (data.Routing != "subdomain" || data.IngressSecret == "") {
 		return fmt.Errorf("forward auth needs subdomain routing and an ingress secret")

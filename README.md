@@ -66,8 +66,9 @@ source .env.deploy && \
   AWS_SECRET_ACCESS_KEY=$AWS_SECRET_ACCESS_KEY \
   ./scripts/deploy.sh root@server apps.example.com
 
-# Connect prod DB for dashboards (optional, supports primary/replica split)
-ssh vd-server "vd init --prod-db <primary> --prod-db-replica <replica> --prod-db-user <admin-user>"
+# Connect the prod read-only replica for --db prod-ro (optional; such apps see patient data)
+ssh vd-server "vd init --prod-ro-network <overlay>"          # only the prod replica resolves on it
+<print the read-only DSN> | ssh vd-server "vd init --prod-ro-url-stdin"   # stdin, never a flag
 ```
 
 Give users the SSH key and server IP (or SSH alias). They don't need server access — Claude handles everything through `vd push` + `vd deploy`.

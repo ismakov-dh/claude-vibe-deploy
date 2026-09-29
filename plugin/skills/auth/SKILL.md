@@ -296,7 +296,7 @@ ssh vd-server "vd deploy /opt/vibe-deploy/push/<name> --name <name> --auth --db 
 - `--auth` is **sticky**: later deploys keep it without the flag. The only way to make the app
   public again is `vd destroy`, then deploy without `--auth`.
 - `--auth-ttl hours=1` (or any `days=/hours=/minutes=`) shortens the sign-in. Use a short one
-  for apps deployed with `--db prod-ro` — they show production data.
+  for apps deployed with `--db prod-ro` — they show patient data, and vd refuses more than `hours=1`.
 - `vd status <name> --json` reports `auth.state`: `ok`, `broken` (redeploy fixes it),
   `drift` (header auth in Authentik differs from what vd deployed, see below) or `unknown`
   (Authentik unreachable from the server).

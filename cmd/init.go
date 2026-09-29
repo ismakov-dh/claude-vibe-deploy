@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"text/template"
 
@@ -19,26 +21,25 @@ import (
 )
 
 var (
-	initDomain      string
-	initProdPrimary string
-	initProdReplica string
-	initProdUser    string
+	initDomain string
 
 	initAuthentikURL      string
 	initAuthentikInternal string
 	initAuthentikNetwork  string
 	initAuthentikTokenIn  bool
+
+	initProdROURLIn   bool
+	initProdRONetwork string
 )
 
 func init() {
 	initCmd.Flags().StringVar(&initDomain, "domain", "", "base domain for apps (e.g. apps.example.com)")
-	initCmd.Flags().StringVar(&initProdPrimary, "prod-db", "", "prod postgres primary container (for creating users)")
-	initCmd.Flags().StringVar(&initProdReplica, "prod-db-replica", "", "prod postgres replica container (for app connections, defaults to primary)")
-	initCmd.Flags().StringVar(&initProdUser, "prod-db-user", "postgres", "admin user on the prod postgres")
 	initCmd.Flags().StringVar(&initAuthentikURL, "authentik-url", "", "public Authentik URL (e.g. https://auth.example.com)")
 	initCmd.Flags().StringVar(&initAuthentikInternal, "authentik-internal", "", "Authentik address on the overlay (e.g. http://authentik_server:9000)")
 	initCmd.Flags().StringVar(&initAuthentikNetwork, "authentik-network", "authentik-forward", "overlay vd-traefik joins to reach Authentik")
 	initCmd.Flags().BoolVar(&initAuthentikTokenIn, "authentik-token-stdin", false, "read the Authentik API token from stdin")
+	initCmd.Flags().BoolVar(&initProdROURLIn, "prod-ro-url-stdin", false, "read the DSN of the prod read-only replica role (for --db prod-ro) from stdin")
+	initCmd.Flags().StringVar(&initProdRONetwork, "prod-ro-network", "", "attachable overlay on which only the prod read-only replica resolves")
 	rootCmd.AddCommand(initCmd)
 }
 
@@ -94,27 +95,6 @@ func runInit() {
 	}
 
 	// Connect existing prod DB containers if specified
-	if initProdPrimary != "" {
-		cfg.ProdDBPrimary = initProdPrimary
-		// Connect primary to vd-db network
-		if err := docker.NetworkConnect("vd-db", initProdPrimary); err != nil {
-			output.Warn("Could not connect %s to vd-db: %v", initProdPrimary, err)
-		} else {
-			output.Info("Connected prod primary %s to vd-db", initProdPrimary)
-		}
-	}
-	if initProdReplica != "" {
-		cfg.ProdDBReplica = initProdReplica
-		if err := docker.NetworkConnect("vd-db", initProdReplica); err != nil {
-			output.Warn("Could not connect %s to vd-db: %v", initProdReplica, err)
-		} else {
-			output.Info("Connected prod replica %s to vd-db", initProdReplica)
-		}
-	}
-	if initProdUser != "postgres" || cfg.ProdDBUser == "" {
-		cfg.ProdDBUser = initProdUser
-	}
-
 	if initAuthentikURL != "" {
 		cfg.AuthentikURL = strings.TrimRight(initAuthentikURL, "/")
 	}
@@ -130,6 +110,34 @@ func runInit() {
 	// wrapper — `... | ssh vd-server "vd init --authentik-token-stdin"` — so
 	// installing or rotating the token needs no root and no file shuffling, the
 	// same way vd push takes its tar. Persisted 0600, then read from disk.
+	if initAuthentikTokenIn && initProdROURLIn {
+		output.Fail("init", output.NewError("INIT_FAILED",
+			"--authentik-token-stdin and --prod-ro-url-stdin both read stdin", "Run vd init once for each"))
+	}
+	if initProdRONetwork != "" {
+		if !networkNameRe.MatchString(initProdRONetwork) {
+			output.Fail("init", output.NewError("INIT_FAILED", "Invalid --prod-ro-network name", ""))
+		}
+		cfg.ProdRONetwork = initProdRONetwork
+	}
+	if initProdROURLIn {
+		// Same route as the Authentik token: stdin, never a flag (ps, the ssh
+		// wrapper's log line). The value is never echoed, not even in errors.
+		raw, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
+		dsn := strings.TrimSpace(string(raw))
+		if err != nil || !validProdROURL(dsn) {
+			output.Fail("init", output.NewError("INIT_FAILED",
+				"--prod-ro-url-stdin: stdin is not a postgres:// URL with user, password, host and database",
+				"Pipe the DSN in: ... | vd init --prod-ro-url-stdin"))
+		}
+		if err := os.WriteFile(state.ProdROURLPath(), []byte(dsn+"\n"), 0600); err != nil {
+			output.Fail("init", output.NewError("INIT_FAILED", "Failed to write prod-ro.url", "Check permissions"))
+		}
+		os.Chmod(state.ProdROURLPath(), 0600) // WriteFile's mode applies only on create
+		state.ChownLikeHome(state.ProdROURLPath())
+		output.Info("Stored the prod read-only DSN at %s — redeploy prod-ro apps to pick up a rotated one", state.ProdROURLPath())
+	}
+
 	if initAuthentikTokenIn {
 		raw, err := io.ReadAll(io.LimitReader(os.Stdin, 4096))
 		tok := strings.TrimSpace(string(raw))
@@ -241,9 +249,6 @@ func runInit() {
 	}
 
 	output.Info("vibe-deploy initialized at %s", state.VDHome())
-	if cfg.ProdDBPrimary == "" {
-		output.Info("To attach prod DB: vd init --prod-db <primary> [--prod-db-replica <replica>] --prod-db-user <user>")
-	}
 	if cfg.Domain == "" {
 		output.Warn("No domain set. Use: vd init --domain apps.example.com")
 	}
@@ -251,8 +256,7 @@ func runInit() {
 	output.Success("init", map[string]any{
 		"home":            state.VDHome(),
 		"domain":          cfg.Domain,
-		"prod_db_primary": cfg.ProdDBPrimary,
-		"prod_db_replica": cfg.ProdDBReplica,
+		"prod_ro_network": cfg.ProdRONetwork,
 		"vd_postgres":     "vd-postgres",
 		"networks":        []string{"vd-net", "vd-db"},
 	})
@@ -300,4 +304,20 @@ func writeTraefikDynamic(cfg *state.Config) {
 	state.ChownLikeHome(state.TraefikDynamicDir())
 	state.ChownLikeHome(state.AuthentikDynamicPath())
 	output.Info("Wrote Traefik dynamic config for %s", cfg.AuthentikInternal)
+}
+
+var networkNameRe = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,127}$`)
+
+// validProdROURL accepts a complete postgres DSN and nothing that could smuggle
+// YAML or shell into the .env it is written to.
+func validProdROURL(s string) bool {
+	if strings.ContainsAny(s, " \t\r\n\"'`$") {
+		return false
+	}
+	u, err := url.Parse(s)
+	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" || u.User == nil {
+		return false
+	}
+	pw, ok := u.User.Password()
+	return u.User.Username() != "" && ok && pw != "" && strings.Trim(u.Path, "/") != ""
 }

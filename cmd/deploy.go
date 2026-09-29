@@ -211,43 +211,46 @@ func runDeploy(srcPath string) {
 	mcpHostName := ""
 	mcpPassword := ""
 
+	// Leaving prod-ro — or an --env-file carrying its DSN — must not leave the
+	// DSN behind: detaching the network is not enough if the value survives in
+	// .env, backups and whatever the app does with it.
+	if deployDB != "prod-ro" {
+		// A fresh --env-file replaced .env already: only the value itself counts.
+		wasProdRO := prevDB(deployName) == "prod-ro" && deployEnvFile == ""
+		if dropProdRODSN(state.AppEnvPath(deployName), wasProdRO) {
+			output.Info("Removed the production read-only DATABASE_URL: this deploy is not --db prod-ro")
+		}
+	}
+
+	// Production replica: no provisioning, the platform owns the role. The DSN
+	// goes into the app's .env (0600) and nowhere else — not the JSON, not a log.
+	if deployDB == "prod-ro" {
+		dsn, err := state.LoadProdROURL()
+		if err != nil || cfg.ProdRONetwork == "" {
+			output.Fail("deploy", output.NewError("DB_NOT_FOUND",
+				"The production read-only replica is not set up on this server",
+				"A platform admin runs: vd init --prod-ro-network <overlay> and pipes the DSN into vd init --prod-ro-url-stdin"))
+		}
+		if deployDBName != "" {
+			output.Warn("--db-name ignored for prod-ro: the platform's DSN fixes the database")
+		}
+		if err := setEnvVar(state.AppEnvPath(deployName), "DATABASE_URL", dsn); err != nil {
+			output.Fail("deploy", output.NewError("DB_PROVISION_FAILED",
+				"Could not write DATABASE_URL: "+err.Error(), "Check permissions on "+state.AppDir(deployName)))
+		}
+		hasEnvFile = true
+		output.Info("Production read-only replica wired in (network %s). This app sees patient data.", cfg.ProdRONetwork)
+	}
+
 	// Provision database if requested
-	if deployDB == "postgres" || deployDB == "prod-ro" {
-		var container, adminUser, access, dbNameToUse string
-
-		var connectHost string
-
-		if deployDB == "prod-ro" {
-			container = cfg.ProdDBPrimary
-			if container == "" {
-				output.Fail("deploy", output.NewError("DB_NOT_FOUND",
-					"No prod DB configured",
-					"Run: vd init --prod-db <primary> --prod-db-user <user>"))
-			}
-			connectHost = cfg.ProdDBReplica
-			if connectHost == "" {
-				connectHost = container // fall back to primary
-			}
-			adminUser = cfg.ProdDBUser
-			if adminUser == "" {
-				adminUser = "postgres"
-			}
-			access = "ro"
-			dbNameToUse = deployDBName
-			if dbNameToUse == "" {
-				output.Fail("deploy", output.NewError("MISSING_DB_NAME",
-					"--db-name is required for prod-ro",
-					"Example: vd deploy ./app --name myapp --db prod-ro --db-name reporting_platform"))
-			}
-		} else {
-			container = "vd-postgres"
-			connectHost = "vd-postgres"
-			adminUser = "vd_admin"
-			access = deployDBAccess
-			dbNameToUse = deployDBName
-			if dbNameToUse == "" {
-				dbNameToUse = deployName
-			}
+	if deployDB == "postgres" {
+		container := "vd-postgres"
+		connectHost := "vd-postgres"
+		adminUser := "vd_admin"
+		access := deployDBAccess
+		dbNameToUse := deployDBName
+		if dbNameToUse == "" {
+			dbNameToUse = deployName
 		}
 
 		output.Info("Provisioning database (%s)...", deployDB)
@@ -327,8 +330,16 @@ func runDeploy(srcPath string) {
 		os.WriteFile(filepath.Join(appSrcDir, "Dockerfile.vd"), data, 0644)
 	}
 
+	// .env reaches the container through env_file, never through the image:
+	// every template does COPY . ., which would bake DATABASE_URL (the prod DSN
+	// for prod-ro) and the ingress secret into a layer.
+	if err := ensureDockerignore(appSrcDir); err != nil {
+		output.Fail("deploy", output.NewError("COPY_FAILED",
+			"Could not write .dockerignore: "+err.Error(), "Check permissions on "+appSrcDir))
+	}
+
 	// Generate docker-compose.vd.yml
-	needsDB := deployDB == "postgres" || deployDB == "prod-ro"
+	needsDB := deployDB == "postgres"
 	domain := buildDomain(deployName, cfg.Domain, deployRouting)
 
 	composeData := docker.ComposeData{
@@ -346,6 +357,9 @@ func runDeploy(srcPath string) {
 	if auth != nil {
 		composeData.Auth = true
 		composeData.IngressSecret = ingressSecret
+	}
+	if deployDB == "prod-ro" {
+		composeData.ProdRONetwork = cfg.ProdRONetwork
 	}
 	composeData.MCPOAuth = mcpRes != nil
 	if err := docker.GenerateComposeFile(templatesFS, composeData, state.AppComposePath(deployName)); err != nil {
@@ -406,6 +420,9 @@ func runDeploy(srcPath string) {
 		DeployCount:   deployCount,
 		HasEnvFile:    hasEnvFile,
 		MCP:           needsMCP,
+	}
+	if deployDB == "prod-ro" {
+		manifest.ProdRONetwork = cfg.ProdRONetwork
 	}
 	if auth != nil {
 		manifest.Auth = true
@@ -546,6 +563,24 @@ func writeMCPEnv(appName, dbURI, user, password string) error {
 // setEnvVar replaces a key in a .env file, or appends it. Appending blindly —
 // which is what this used to do — left one DATABASE_URL line per deploy, and
 // rollback has to be able to read the password back out of this file.
+// removeEnvVar drops key from the env file at path, keeping it 0600.
+func removeEnvVar(path, key string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return err
+	}
+	var kept []string
+	for _, line := range strings.Split(string(data), "\n") {
+		if line != "" && !strings.HasPrefix(line, key+"=") {
+			kept = append(kept, line)
+		}
+	}
+	if err := os.WriteFile(path, []byte(strings.Join(kept, "\n")+"\n"), 0600); err != nil {
+		return err
+	}
+	return os.Chmod(path, 0600)
+}
+
 func setEnvVar(path, key, value string) error {
 	var kept []string
 	if data, err := os.ReadFile(path); err == nil {
@@ -632,6 +667,9 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	want := deployAuth || (prev != nil && prev.Auth) || protectedOnDisk
 	bearer, bearerErr := bearerFor(want, prev, deployAuthBearerSet, deployAuthBearer)
 	if !want {
+		if e := prodROGate(deployDB, false, ""); e != nil {
+			output.Fail("deploy", e)
+		}
 		if deployAuthTTL != "" {
 			output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
 				"--auth-ttl given without --auth", "Add --auth, or drop --auth-ttl"))
@@ -656,6 +694,9 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	if !authentik.ValidTTL(ttl) {
 		output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
 			"Invalid --auth-ttl: "+ttl, "Use Authentik's format, e.g. hours=1, minutes=30, days=1;hours=12"))
+	}
+	if e := prodROGate(deployDB, true, ttl); e != nil {
+		output.Fail("deploy", e)
 	}
 	if deployRouting != "subdomain" {
 		output.Fail("deploy", output.NewError("AUTH_REQUIRES_SUBDOMAIN",
@@ -732,6 +773,83 @@ func bearerFor(auth bool, prev *state.Manifest, set, val bool) (bool, error) {
 		return val, nil
 	}
 	return prev != nil && prev.AuthBearer, nil
+}
+
+// prevDB is the database type of the running deploy, "" if none.
+func prevDB(app string) string {
+	if m, err := state.LoadManifest(app); err == nil {
+		return m.DB
+	}
+	return ""
+}
+
+// dropProdRODSN removes DATABASE_URL from envPath when it is the stored prod-ro
+// DSN, or unconditionally when the previous deploy was prod-ro (the stored DSN
+// may have been rotated since). Reports whether it removed anything.
+func dropProdRODSN(envPath string, wasProdRO bool) bool {
+	cur := envValue(envPath, "DATABASE_URL")
+	if cur == "" {
+		return false
+	}
+	dsn, _ := state.LoadProdROURL()
+	if !wasProdRO && (dsn == "" || cur != dsn) {
+		return false
+	}
+	return removeEnvVar(envPath, "DATABASE_URL") == nil
+}
+
+// dockerignoreLines keep the files vd and local tooling put secrets in out of
+// the build context. Not .env.*: a committed .env.production is build config
+// that Next and Vite read, and vd never writes there.
+var dockerignoreLines = []string{".env", ".env.local"}
+
+// ensureDockerignore adds dockerignoreLines to dir/.dockerignore, keeping
+// whatever the app already ignores.
+func ensureDockerignore(dir string) error {
+	path := filepath.Join(dir, ".dockerignore")
+	data, err := os.ReadFile(path)
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	have := map[string]bool{}
+	for _, l := range strings.Split(string(data), "\n") {
+		have[strings.TrimSpace(l)] = true
+	}
+	out := string(data)
+	if out != "" && !strings.HasSuffix(out, "\n") {
+		out += "\n"
+	}
+	for _, l := range dockerignoreLines {
+		if !have[l] {
+			out += l + "\n"
+		}
+	}
+	return os.WriteFile(path, []byte(out), 0644)
+}
+
+// prodROMaxTTL caps the sign-in of an app that reads the production replica:
+// removing someone from the group must lock them out of patient data within
+// the hour.
+const prodROMaxTTL = 3600
+
+// prodROGate holds the rules for --db prod-ro, which exposes patient data
+// (studies, reports) to the app: platform login is mandatory, and its sign-in
+// lasts at most an hour. Checked before Authentik or the host is touched.
+func prodROGate(dbType string, auth bool, ttl string) *output.VDError {
+	if dbType != "prod-ro" {
+		return nil
+	}
+	if !auth {
+		return output.NewError("PROD_RO_REQUIRES_AUTH",
+			"--db prod-ro reads production data, patient records included; it is only deployed behind platform login",
+			"Add --auth (load the /auth skill first)")
+	}
+	if authentik.TTLSeconds(ttl) > prodROMaxTTL {
+		return output.NewError("INVALID_AUTH_TTL",
+			"--db prod-ro allows a sign-in of at most hours=1, got "+ttl,
+			"Use --auth-ttl hours=1 or shorter")
+	}
+	return nil
 }
 
 // fileContains reports whether path exists and contains s.
