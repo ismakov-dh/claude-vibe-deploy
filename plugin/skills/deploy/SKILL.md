@@ -129,7 +129,7 @@ with, otherwise tell the user a platform admin adds people. The Basic `add` keep
 same host meanwhile. If `oauth` is missing and `warnings` says why, the MCP is on Basic only —
 still protected; redeploy to retry.
 
-`--mcp-owner` matches the email exactly and refuses if two accounts share it. That is safe only
+`--mcp-owner` matches the whole email, case-insensitively, and refuses if two accounts share it. That is safe only
 because users on this Authentik cannot change their own email (or username) — if the platform
 ever allows it, anyone could claim an owner's address. A failed owner lookup is a warning: the
 MCP is set up, nobody was added. `vd destroy` deletes the group `mcp-vibe-<app>` with its

@@ -106,7 +106,7 @@ func Render(routes []Route) (string, error) {
 // fetches every issuer's JWKS and must see the network the gateway sees.
 // Tests replace it.
 var Validate = func(stageDir string) error {
-	r, err := shell.Run(2*time.Minute, "docker", "run", "--rm", "--network", "vd-net",
+	r, err := shell.Run(30*time.Second, "docker", "run", "--rm", "--network", "vd-net",
 		"-v", stageDir+":/etc/agentgateway:ro",
 		Image, "-f", "/etc/agentgateway/config.yaml", "--validate-only")
 	if err != nil {
@@ -158,7 +158,7 @@ func Write(dir string, routes []Route) (dropped []string, err error) {
 				dropped = append(dropped, r.Name)
 			}
 		}
-		if len(keep) == 0 && len(routes) > 1 {
+		if len(keep) == 0 {
 			return nil, fmt.Errorf("gateway rejected every route, old file kept (Authentik unreachable?): %w", err)
 		}
 		if err := try(keep); err != nil {

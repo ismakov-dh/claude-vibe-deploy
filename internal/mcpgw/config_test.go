@@ -134,3 +134,20 @@ func TestWriteKeepsOldFileWhenEveryRouteIsRejected(t *testing.T) {
 		t.Fatalf("stage left behind: %v", entries)
 	}
 }
+
+// One OAuth app and Authentik down: the old file stays, not a fallback-only one.
+func TestWriteKeepsOldFileWhenItsOnlyRouteIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	noValidate(t)
+	if _, err := Write(dir, []Route{route("alpha")}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	rejecting(t, "mcp-vibe-alpha")
+	if _, err := Write(dir, []Route{route("alpha")}); err == nil {
+		t.Fatal("rejected single route accepted")
+	}
+	if after, _ := os.ReadFile(filepath.Join(dir, "config.yaml")); string(after) != string(before) {
+		t.Fatal("old file replaced")
+	}
+}

@@ -21,7 +21,7 @@ through Authentik instead of shared Basic credentials — without breaking anyon
   cascade) and touches provider and group only after that worked. The group is deleted too —
   EnsureMCP adopts a group by name, so a kept one would hand its members to the next app of that
   name. Revocation delay is the token lifetime (5 min).
-- **Owner:** `--mcp-owner <email>` adds one existing account to the group. Lookup by exact email,
+- **Owner:** `--mcp-owner <email>` adds one existing account to the group. Lookup by whole email (case-insensitive),
   only the pk is kept; ambiguous matches are refused. Without it the group starts empty. Safe
   because users cannot change their own email or username (`default_user_change_email=false`,
   `change_username=false` on prod, checked by the orchestrator). A failed lookup is a warning.
