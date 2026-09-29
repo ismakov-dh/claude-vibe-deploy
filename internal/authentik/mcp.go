@@ -118,7 +118,7 @@ func (c *Client) EnsureMCP(s MCPSpec) (*MCPResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	groupPK, _, err := c.ensureGroupNamed(name, mcpGroupRe)
+	groupPK, err := c.ensureMCPGroup(name)
 	if err != nil {
 		return nil, err
 	}
@@ -209,12 +209,19 @@ func (c *Client) ensureBareApplication(slug string) (*application, bool, error) 
 // goes first (its bindings go with it), and nothing else is touched unless that
 // worked — a provider-less application or one without its group is exactly the
 // open state EnsureMCP avoids. The group is deleted, not kept as --auth keeps
-// its own: EnsureMCP adopts a group by name, so a kept one would hand the old
-// members to the next app that takes the name.
+// its own: a kept one would hand the old members to the next app that takes
+// the name. A group vd did not create is refused before anything is deleted.
 func (c *Client) RemoveMCP(app string) error {
 	name, err := MCPName(app)
 	if err != nil {
 		return err
+	}
+	groupPK, managed, err := c.findMCPGroup(name)
+	if err != nil {
+		return err
+	}
+	if groupPK != "" && !managed {
+		return fmt.Errorf("group %s was not created by vd (no %s attribute); nothing removed — resolve in Authentik", name, vdManagedAttr)
 	}
 	var a application
 	switch code, err := c.do("GET", "/core/applications/"+name+"/", nil, &a); {
@@ -233,10 +240,8 @@ func (c *Client) RemoveMCP(app string) error {
 			errs = append(errs, fmt.Errorf("delete provider %s: %w", name, err))
 		}
 	}
-	if pk, _, err := c.findGroup(name); err != nil {
-		errs = append(errs, err)
-	} else if pk != "" {
-		if _, err := c.do("DELETE", "/core/groups/"+pk+"/", nil, nil); err != nil {
+	if groupPK != "" {
+		if _, err := c.do("DELETE", "/core/groups/"+groupPK+"/", nil, nil); err != nil {
 			errs = append(errs, fmt.Errorf("delete group %s: %w", name, err))
 		}
 	}
@@ -466,23 +471,51 @@ func (c *Client) userPKByEmail(email string) (int, error) {
 	}
 }
 
-// ensureGroupNamed is ensureGroup for a name family other than vibe-<app>.
-func (c *Client) ensureGroupNamed(name string, re *regexp.Regexp) (string, int, error) {
-	if !re.MatchString(name) {
-		return "", 0, fmt.Errorf("refusing group name %q", name)
+// vdManagedAttr marks groups vd created. MCP groups are only ever adopted or
+// deleted with it: a same-named group made by someone else would otherwise
+// lend its members to the app, or lose them on destroy.
+const vdManagedAttr = "vd_managed"
+
+// findMCPGroup reports the group's pk and whether vd created it.
+func (c *Client) findMCPGroup(name string) (pk string, managed bool, err error) {
+	err = c.each("/core/groups/", url.Values{"name": {name}}, func(raw json.RawMessage) {
+		var g struct {
+			PK         string         `json:"pk"`
+			Name       string         `json:"name"`
+			Attributes map[string]any `json:"attributes"`
+		}
+		if json.Unmarshal(raw, &g) == nil && g.Name == name {
+			pk, managed = g.PK, g.Attributes[vdManagedAttr] == true
+		}
+	})
+	return pk, managed, err
+}
+
+// ensureMCPGroup returns the pk of vd's group name, creating it marked.
+func (c *Client) ensureMCPGroup(name string) (string, error) {
+	if !mcpGroupRe.MatchString(name) {
+		return "", fmt.Errorf("refusing group name %q", name)
 	}
-	if pk, members, err := c.findGroup(name); err != nil || pk != "" {
-		return pk, members, err
+	pk, managed, err := c.findMCPGroup(name)
+	if err != nil {
+		return "", err
 	}
-	var g struct {
-		PK   string `json:"pk"`
-		Name string `json:"name"`
+	if pk != "" && !managed {
+		return "", fmt.Errorf("group %s exists but was not created by vd (no %s attribute); refusing to adopt its members — rename or remove it in Authentik", name, vdManagedAttr)
 	}
-	if _, err := c.do("POST", "/core/groups/", map[string]any{"name": name}, &g); err != nil {
-		return "", 0, fmt.Errorf("create group %s: %w", name, err)
+	if pk == "" {
+		body := map[string]any{"name": name, "attributes": map[string]any{vdManagedAttr: true}}
+		if _, err := c.do("POST", "/core/groups/", body, nil); err != nil {
+			return "", fmt.Errorf("create group %s: %w", name, err)
+		}
+		// Re-read: a serializer that dropped the attribute would make vd refuse
+		// its own group on the next deploy, and never delete it.
+		if pk, managed, err = c.findMCPGroup(name); err != nil {
+			return "", err
+		}
+		if pk == "" || !managed {
+			return "", fmt.Errorf("create group %s: not found with %s after write", name, vdManagedAttr)
+		}
 	}
-	if g.PK == "" || g.Name != name {
-		return "", 0, fmt.Errorf("create group %s: unexpected response", name)
-	}
-	return g.PK, 0, nil
+	return pk, nil
 }

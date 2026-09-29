@@ -34,6 +34,8 @@ type fake struct {
 
 	// groupUsers are member pks reported for a group, by name.
 	groupUsers map[string][]int
+	// groupAttrs are attributes stored on groups, by name.
+	groupAttrs map[string]map[string]any
 
 	// onOutpostGet runs on every read of the outpost list, to simulate a writer
 	// that is not vd changing it between vd's reads.
@@ -111,7 +113,7 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if users == nil {
 				users = []int{}
 			}
-			res = append(res, map[string]any{"pk": pk, "name": name, "users": users})
+			res = append(res, map[string]any{"pk": pk, "name": name, "users": users, "attributes": f.groupAttrs[name]})
 		}
 		out(200, page(res, 0))
 	case strings.HasPrefix(p, "/core/groups/") && r.Method == "DELETE":
@@ -127,6 +129,12 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		f.nextPK++
 		pk := "g-" + strconv.Itoa(f.nextPK)
 		f.groups[name] = pk
+		if a, ok := body["attributes"].(map[string]any); ok {
+			if f.groupAttrs == nil {
+				f.groupAttrs = map[string]map[string]any{}
+			}
+			f.groupAttrs[name] = a
+		}
 		out(201, map[string]any{"pk": pk, "name": name})
 
 	case p == "/providers/proxy/" && r.Method == "GET":
