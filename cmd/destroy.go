@@ -1,7 +1,9 @@
 package cmd
 
 import (
+	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 
 	"github.com/spf13/cobra"
@@ -29,9 +31,9 @@ var destroyCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
-		m, err := state.LoadManifest(name)
+		m, err := manifestForDestroy(name)
 		if err != nil {
-			output.Fail("destroy", output.NewError("NOT_FOUND", "App not found: "+name, "Check app name with: vd list"))
+			output.Fail("destroy", err)
 		}
 
 		if !destroyYes && !output.IsJSON() {
@@ -188,4 +190,37 @@ var destroyCmd = &cobra.Command{
 		}
 		output.Success("destroy", data)
 	},
+}
+
+// manifestForDestroy loads the app's manifest. A failed first deploy leaves an
+// app directory without one (its .env may hold a DSN), so that case gets a
+// stand-in read from the compose file vd wrote: enough to take the container
+// down, clean up Authentik and remove the files. Its database is unknown, so
+// --drop-db does nothing there.
+func manifestForDestroy(name string) (*state.Manifest, *output.VDError) {
+	if !nameRegex.MatchString(name) {
+		return nil, output.NewError("INVALID_NAME", "Invalid app name: "+name, "")
+	}
+	m, err := state.LoadManifest(name)
+	if err == nil {
+		return m, nil
+	}
+	if !errors.Is(err, fs.ErrNotExist) {
+		return nil, output.NewError("MANIFEST_UNREADABLE", "Cannot read the manifest of "+name+": "+err.Error(),
+			"Fix or restore "+state.AppManifestPath(name)+" — refusing to guess what to clean up")
+	}
+	if _, serr := os.Stat(state.AppDir(name)); serr != nil {
+		return nil, output.NewError("NOT_FOUND", "App not found: "+name, "Check app name with: vd list")
+	}
+	compose := state.AppComposePath(name)
+	output.Warn("%s has no manifest (a first deploy that failed) — removing what its files show", name)
+	m = &state.Manifest{
+		Name:     name,
+		Auth:     fileContains(compose, "authentik-fa@file"),
+		MCPOAuth: fileContains(compose, "vd-mcpgw@docker"),
+	}
+	if m.Auth {
+		m.AuthGroup = "vibe-" + name
+	}
+	return m, nil
 }

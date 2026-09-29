@@ -253,7 +253,7 @@ One-shot log dump. Default 100 lines. **Always use this, not `vd logs`** (which 
 Revert to previous deployment. Last 5 backups kept. Refused with `ROLLBACK_WOULD_UNPROTECT` when the app now has platform login and the previous version did not — it would come back public. If the app has a vd-managed database, **ask the user if they want to also restore the database** — if yes, add `--restore-db`. This restores the database to the state at the time of the previous deploy. Without this flag, only the container is rolled back.
 
 ### `vd destroy <app-name> --yes [--drop-db]`
-Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping. For `--auth` apps it also removes the app's Authentik application and provider; the access group `vibe-<app>` is kept, so redeploying under the same name restores access for the same people. For `--mcp-oauth` apps it removes the MCP's application, provider **and** group `mcp-vibe-<app>`.
+Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping. For `--auth` apps it also removes the app's Authentik application and provider; the access group `vibe-<app>` is kept, so redeploying under the same name restores access for the same people. For `--mcp-oauth` apps it removes the MCP's application, provider **and** group `mcp-vibe-<app>`. After a **failed first deploy** vd stops the container, but the app's files — its `.env`, with the prod DSN for `--db prod-ro` — stay for the next attempt: fix and deploy again, or run `vd destroy <app> --yes`, which works without a manifest too.
 
 ### `vd cron-set <app-name> --schedule "..." --command "..."`
 Add a scheduled task. Runs inside the container.
