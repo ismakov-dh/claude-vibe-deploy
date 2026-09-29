@@ -103,7 +103,7 @@ var destroyCmd = &cobra.Command{
 				}
 			}
 			if mcpRemoved != "removed" {
-				output.Warn("MCP OAuth cleanup %s — a platform admin should remove the provider and application mcp-vibe-%s by hand", mcpRemoved, name)
+				output.Warn("MCP OAuth cleanup %s — a platform admin should remove the application, provider and group mcp-vibe-%s by hand", mcpRemoved, name)
 			}
 		}
 
@@ -184,7 +184,7 @@ var destroyCmd = &cobra.Command{
 			data["auth"] = map[string]any{"cleanup": authRemoved, "group_kept": m.AuthGroup}
 		}
 		if m.MCPOAuth {
-			data["mcp_oauth"] = map[string]any{"cleanup": mcpRemoved, "group_kept": "mcp-vibe-" + name}
+			data["mcp_oauth"] = map[string]any{"cleanup": mcpRemoved, "group_deleted": "mcp-vibe-" + name}
 		}
 		output.Success("destroy", data)
 	},

@@ -42,6 +42,8 @@ type fake struct {
 
 	// failBindings makes creating or patching a policy binding fail.
 	failBindings bool
+	// failAppDelete makes deleting an application fail.
+	failAppDelete bool
 
 	// MCP resources.
 	oauth2     map[int]map[string]any
@@ -112,6 +114,14 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			res = append(res, map[string]any{"pk": pk, "name": name, "users": users})
 		}
 		out(200, page(res, 0))
+	case strings.HasPrefix(p, "/core/groups/") && r.Method == "DELETE":
+		pk := strings.Trim(strings.TrimPrefix(p, "/core/groups/"), "/")
+		for name, g := range f.groups {
+			if g == pk {
+				delete(f.groups, name)
+			}
+		}
+		out(204, nil)
 	case p == "/core/groups/" && r.Method == "POST":
 		name := body["name"].(string)
 		f.nextPK++
@@ -184,7 +194,19 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			}
 			out(200, cur)
 		case "DELETE":
+			if f.failAppDelete {
+				out(500, map[string]any{"detail": "fake: delete refused"})
+				return
+			}
 			delete(f.apps, slug)
+			// Authentik cascades: an application's bindings go with it.
+			kept := f.bindings[:0]
+			for _, b := range f.bindings {
+				if b["target"] != cur["pk"] {
+					kept = append(kept, b)
+				}
+			}
+			f.bindings = kept
 			out(204, nil)
 		}
 

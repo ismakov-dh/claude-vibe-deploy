@@ -101,35 +101,70 @@ func Render(routes []Route) (string, error) {
 	return b.String(), nil
 }
 
-// Write replaces dir/config.yaml atomically after the gateway image has
-// accepted the new content. validate is false only in tests.
-func Write(dir string, routes []Route, validate bool) error {
-	body, err := Render(routes)
+// Validate asks the gateway image whether the routes file in stageDir is
+// acceptable. It runs on vd-net, like the live gateway, because --validate-only
+// fetches every issuer's JWKS and must see the network the gateway sees.
+// Tests replace it.
+var Validate = func(stageDir string) error {
+	r, err := shell.Run(2*time.Minute, "docker", "run", "--rm", "--network", "vd-net",
+		"-v", stageDir+":/etc/agentgateway:ro",
+		Image, "-f", "/etc/agentgateway/config.yaml", "--validate-only")
 	if err != nil {
-		return err
+		return fmt.Errorf("%v: %s%s", err, r.Stdout, r.Stderr)
 	}
+	return nil
+}
+
+// Write replaces dir/config.yaml atomically with routes the gateway accepts.
+// A route the gateway rejects on its own — typically an issuer whose JWKS
+// cannot be fetched — is left out and returned in dropped, so one app's
+// broken issuer does not freeze every other app's routes, and a destroyed
+// app's route is removed regardless. If every route fails on its own the
+// cause is not the routes (Authentik is down, the image is missing): the old
+// file is kept and an error returned.
+func Write(dir string, routes []Route) (dropped []string, err error) {
 	if err := os.MkdirAll(dir, 0755); err != nil {
-		return err
+		return nil, err
 	}
 	stage, err := os.MkdirTemp(dir, ".stage-")
 	if err != nil {
-		return err
+		return nil, err
 	}
 	defer os.RemoveAll(stage)
 	if err := os.Chmod(stage, 0755); err != nil {
-		return err
+		return nil, err
 	}
 	staged := filepath.Join(stage, "config.yaml")
-	if err := os.WriteFile(staged, []byte(body), 0644); err != nil {
-		return err
-	}
-	if validate {
-		r, err := shell.Run(2*time.Minute, "docker", "run", "--rm", "-v", stage+":/etc/agentgateway:ro",
-			Image, "-f", "/etc/agentgateway/config.yaml", "--validate-only")
+	try := func(rs []Route) error {
+		body, err := Render(rs)
 		if err != nil {
-			return fmt.Errorf("gateway rejected the new routes file, old one kept: %s%s", r.Stdout, r.Stderr)
+			return err
+		}
+		if err := os.WriteFile(staged, []byte(body), 0644); err != nil {
+			return err
+		}
+		return Validate(stage)
+	}
+
+	if err := try(routes); err != nil {
+		if len(routes) == 0 {
+			return nil, fmt.Errorf("gateway rejected the routes file, old one kept: %w", err)
+		}
+		var keep []Route
+		for _, r := range routes {
+			if try([]Route{r}) == nil {
+				keep = append(keep, r)
+			} else {
+				dropped = append(dropped, r.Name)
+			}
+		}
+		if len(keep) == 0 && len(routes) > 1 {
+			return nil, fmt.Errorf("gateway rejected every route, old file kept (Authentik unreachable?): %w", err)
+		}
+		if err := try(keep); err != nil {
+			return nil, fmt.Errorf("gateway rejected the routes file, old one kept: %w", err)
 		}
 	}
 	// Same directory, so rename is atomic and the watcher sees one complete file.
-	return os.Rename(staged, filepath.Join(dir, "config.yaml"))
+	return dropped, os.Rename(staged, filepath.Join(dir, "config.yaml"))
 }

@@ -307,7 +307,7 @@ func TestComposeMCPOAuthKeepsBasicFirst(t *testing.T) {
 	if !(len(basic) > len(wk) && len(wk) > len(main)) {
 		t.Fatalf("priority by length broken: basic %d, wellknown %d, main %d", len(basic), len(wk), len(main))
 	}
-	if !strings.Contains(basic, "HeaderRegexp(`Authorization`, `^Basic `)") {
+	if !strings.Contains(basic, "HeaderRegexp(`Authorization`, `(?i)^Basic `)") {
 		t.Fatalf("basic rule %q", basic)
 	}
 	if !strings.Contains(line(body, "routers.vd-myapp-mcp-basic.middlewares="), "vd-myapp-mcp-auth") {

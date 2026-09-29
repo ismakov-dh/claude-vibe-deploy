@@ -17,6 +17,13 @@ func mcpHost(app string, cfg *state.Config) string { return app + ".mcp." + cfg.
 // add or remove one — deploy, destroy, rollback, init — so the file is always
 // derived, never edited.
 func syncMCPGateway(cfg *state.Config) error {
+	// Held across read and write: two runs must not each read the manifests and
+	// then write back a file missing the other's change.
+	unlock, err := state.LockAuthentik()
+	if err != nil {
+		return err
+	}
+	defer unlock()
 	apps, err := state.ListApps()
 	if err != nil {
 		return err
@@ -43,13 +50,12 @@ func syncMCPGateway(cfg *state.Config) error {
 			Backend:  "http://vd-" + app + "-mcp:8089/sse",
 		})
 	}
-	unlock, err := state.LockAuthentik() // one writer of the routes file at a time
+	dropped, err := mcpgw.Write(state.MCPGWDir(), routes)
 	if err != nil {
 		return err
 	}
-	defer unlock()
-	if err := mcpgw.Write(state.MCPGWDir(), routes, true); err != nil {
-		return err
+	for _, name := range dropped {
+		output.Warn("vd-mcpgw rejected the route for %s (issuer unreachable?) — left out, Basic still works; any vd deploy or vd init retries", name)
 	}
 	state.ChownLikeHome(state.MCPGWDir())
 	state.ChownLikeHome(state.MCPGWDir() + "/config.yaml")
@@ -74,6 +80,9 @@ func mcpOAuthInfo(app string, cfg *state.Config, owner string, res *authentik.MC
 	case res.OwnerMissing:
 		info["owner"] = owner
 		info["grant"] = owner + " has no platform account yet; a platform admin adds people to " + res.Name + "."
+	case res.OwnerError != "":
+		info["owner"] = owner
+		info["grant"] = owner + " was not added (see warnings); a platform admin adds people to " + res.Name + "."
 	}
 	return info
 }
@@ -96,6 +105,9 @@ func ensureMCPOAuth(app string, cfg *state.Config, owner string) *authentik.MCPR
 		App: app, Resource: "https://" + mcpHost(app, cfg) + "/mcp", Owner: owner,
 	})
 	unlock()
+	if err == nil && res.OwnerError != "" {
+		output.Warn("--mcp-owner not added: %s — the MCP OAuth is set up, the group just has no new member", res.OwnerError)
+	}
 	if err != nil {
 		output.Warn("MCP OAuth not set up in Authentik (%v) — the MCP stays on Basic credentials only; redeploy to retry", err)
 		return nil

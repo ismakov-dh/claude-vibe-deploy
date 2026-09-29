@@ -16,14 +16,20 @@ through Authentik instead of shared Basic credentials — without breaking anyon
   application and group binding, all named `mcp-vibe-<app>`; 5-minute tokens; `sub_mode=user_uuid`;
   loopback and claude.ai callbacks only; stacks' `mcp-groups` scope mapping referenced, not
   created. Same fail-closed rules as `--auth`: no filter trusted, every write re-read, an
-  unbindable application deleted. Revocation delay is the token lifetime (5 min).
+  unbindable application deleted. Order closes the open window: application created without a
+  provider → group binding → provider attached; destroy deletes the application first (bindings
+  cascade) and touches provider and group only after that worked. The group is deleted too —
+  EnsureMCP adopts a group by name, so a kept one would hand its members to the next app of that
+  name. Revocation delay is the token lifetime (5 min).
 - **Owner:** `--mcp-owner <email>` adds one existing account to the group. Lookup by exact email,
-  only the pk is kept; ambiguous matches are refused. Without it the group starts empty.
+  only the pk is kept; ambiguous matches are refused. Without it the group starts empty. Safe
+  because users cannot change their own email or username (`default_user_change_email=false`,
+  `change_username=false` on prod, checked by the orchestrator). A failed lookup is a warning.
 - **Routing on the MCP host:**
 
   | Router | Rule | Goes to |
   |---|---|---|
-  | `…-mcp-basic` | `Host && HeaderRegexp(Authorization, ^Basic )` | basicauth → MCP container, as before |
+  | `…-mcp-basic` | `Host && HeaderRegexp(Authorization, (?i)^Basic )` | basicauth → MCP container, as before |
   | `…-mcp-wellknown` | `Host && PathPrefix(/.well-known/)` | gateway (OAuth metadata) |
   | `…-mcp` | `Host` | gateway (`/mcp`, streamable HTTP) |
 
@@ -31,13 +37,17 @@ through Authentik instead of shared Basic credentials — without breaking anyon
   `/.well-known/` included. A Basic client therefore sees exactly the answers it saw before and is
   never shown OAuth metadata that could make it drop its credentials.
 - **Failure:** if Authentik cannot be set up, the deploy succeeds with the MCP on Basic only and a
-  warning; no route is written for a resource that does not exist.
+  warning; no route is written for a resource that does not exist (routes follow `mcp_oauth_live`).
+- **Routes file:** rebuilt from manifests under the Authentik lock (read and write), validated by
+  the image on `vd-net`. A route the gateway rejects alone (unreachable JWKS) is dropped with a
+  warning, so one app cannot freeze the others and a destroy always removes its route. If every
+  route is rejected the cause is not the routes; the old file stays.
 
 ## Token grants needed on `vd-platform` (requested from stacks)
 
 `oauth2provider` view/add/change/delete; `scopemapping` view; `certificatekeypair` view (not key
 download); `user` view (global directory read — the orchestrator's decision, with the leak
-exposure stated); `add_user_to_group`/`remove_user_from_group` only on groups vd creates.
+exposure stated); `add_user_to_group`/`remove_user_from_group`/`delete_group` only on groups vd creates.
 
 ## Not yet
 

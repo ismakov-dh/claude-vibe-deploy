@@ -9,7 +9,9 @@ func mcpSpec() MCPSpec {
 	return MCPSpec{App: "demo", Resource: "https://demo.mcp.apps.example.com/mcp"}
 }
 
-func TestEnsureMCPCreatesAPublicPKCEClientBoundToItsGroup(t *testing.T) {
+// Public client: no secret to hand out. PKCE itself is the client's doing —
+// Authentik does not enforce it.
+func TestEnsureMCPCreatesAPublicClientBoundToItsGroup(t *testing.T) {
 	f, c := setup(t)
 	res, err := c.EnsureMCP(mcpSpec())
 	if err != nil {
@@ -87,10 +89,42 @@ func TestEnsureMCPOwner(t *testing.T) {
 		t.Fatalf("unknown owner: %+v %v", res, err)
 	}
 
-	f.users[9] = "owner@example.com" // two accounts, one email
+	// Two accounts, one email: nobody is added, the resource still works.
+	f.users[9] = "owner@example.com"
+	delete(f.addedUsers, f.groups["mcp-vibe-demo"])
 	s.Owner = "owner@example.com"
-	if _, err := c.EnsureMCP(s); err == nil || !strings.Contains(err.Error(), "refusing to guess") {
-		t.Fatalf("ambiguous owner accepted: %v", err)
+	res, err = c.EnsureMCP(s)
+	if err != nil || res.OwnerAdded || !strings.Contains(res.OwnerError, "refusing to guess") {
+		t.Fatalf("ambiguous owner: %+v %v", res, err)
+	}
+	if got := f.addedUsers[f.groups["mcp-vibe-demo"]]; len(got) != 0 {
+		t.Fatalf("ambiguous owner added: %v", got)
+	}
+}
+
+// The application must never have a provider without its binding: that state
+// admits every signed-in account.
+func TestEnsureMCPBindsBeforeAttachingTheProvider(t *testing.T) {
+	f, c := setup(t)
+	if _, err := c.EnsureMCP(mcpSpec()); err != nil {
+		t.Fatal(err)
+	}
+	post, bind, attach := -1, -1, -1
+	for i, call := range f.calls {
+		switch {
+		case call == "POST /core/applications/":
+			post = i
+		case call == "POST /policies/bindings/":
+			bind = i
+		case call == "PATCH /core/applications/mcp-vibe-demo/":
+			attach = i
+		}
+	}
+	if !(post >= 0 && post < bind && bind < attach) {
+		t.Fatalf("order create=%d bind=%d attach=%d: %v", post, bind, attach, f.calls)
+	}
+	if p := f.apps["mcp-vibe-demo"]["provider"]; p == nil {
+		t.Fatal("provider never attached")
 	}
 }
 
@@ -134,8 +168,25 @@ func TestRemoveAndCheckMCP(t *testing.T) {
 	if _, ok := f.apps["mcp-vibe-demo"]; ok {
 		t.Fatal("application left")
 	}
-	if _, ok := f.groups["mcp-vibe-demo"]; !ok {
-		t.Fatal("group deleted — vd never deletes groups")
+	if _, ok := f.groups["mcp-vibe-demo"]; ok {
+		t.Fatal("group kept — the next app with this name would inherit its members")
+	}
+	if len(f.bindings) != 0 {
+		t.Fatalf("bindings left: %v", f.bindings)
+	}
+}
+
+func TestRemoveMCPTouchesNothingElseWhenTheApplicationStays(t *testing.T) {
+	f, c := setup(t)
+	if _, err := c.EnsureMCP(mcpSpec()); err != nil {
+		t.Fatal(err)
+	}
+	f.failAppDelete = true
+	if err := c.RemoveMCP("demo"); err == nil {
+		t.Fatal("failed application delete reported as success")
+	}
+	if h, _ := c.CheckMCP("demo"); !h.OK() {
+		t.Fatalf("partial removal left a half-open resource: %+v", h)
 	}
 }
 

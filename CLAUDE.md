@@ -208,7 +208,7 @@ Stop container, remove app files.
 | `--yes` | false | Skip confirmation (always use in automation) |
 | `--drop-db` | false | Also drop the database, its user and the MCP read-only role (vd-managed only, never drops prod) |
 
-For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept.
+For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept. For `--mcp-oauth` apps, destroy removes the MCP application, provider and the group `mcp-vibe-<app>`.
 
 #### `vd db-create <app-name>`
 

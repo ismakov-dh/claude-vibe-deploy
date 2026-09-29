@@ -1,6 +1,7 @@
 package mcpgw
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -66,7 +67,8 @@ func TestEmptyRoutesStillServeFallback(t *testing.T) {
 
 func TestWriteIsAtomicAndLeavesNoStage(t *testing.T) {
 	dir := t.TempDir()
-	if err := Write(dir, []Route{route("alpha")}, false); err != nil {
+	noValidate(t)
+	if _, err := Write(dir, []Route{route("alpha")}); err != nil {
 		t.Fatal(err)
 	}
 	b, err := os.ReadFile(filepath.Join(dir, "config.yaml"))
@@ -76,5 +78,59 @@ func TestWriteIsAtomicAndLeavesNoStage(t *testing.T) {
 	entries, _ := os.ReadDir(dir)
 	if len(entries) != 1 {
 		t.Fatalf("stage directory left behind: %v", entries)
+	}
+}
+
+func noValidate(t *testing.T) {
+	old := Validate
+	Validate = func(string) error { return nil }
+	t.Cleanup(func() { Validate = old })
+}
+
+// rejecting makes the fake gateway refuse any file that mentions one of names.
+func rejecting(t *testing.T, names ...string) {
+	old := Validate
+	Validate = func(stage string) error {
+		b, _ := os.ReadFile(filepath.Join(stage, "config.yaml"))
+		for _, n := range names {
+			if strings.Contains(string(b), n) {
+				return errors.New("jwks fetch failed for " + n)
+			}
+		}
+		return nil
+	}
+	t.Cleanup(func() { Validate = old })
+}
+
+func TestWriteDropsOnlyTheRouteTheGatewayRejects(t *testing.T) {
+	dir := t.TempDir()
+	rejecting(t, "mcp-vibe-beta")
+	dropped, err := Write(dir, []Route{route("alpha"), route("beta")})
+	if err != nil || len(dropped) != 1 || dropped[0] != "mcp-vibe-beta" {
+		t.Fatalf("dropped %v, err %v", dropped, err)
+	}
+	b, _ := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if !strings.Contains(string(b), "mcp-vibe-alpha") || strings.Contains(string(b), "mcp-vibe-beta") {
+		t.Fatalf("written:\n%s", b)
+	}
+}
+
+func TestWriteKeepsOldFileWhenEveryRouteIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	noValidate(t)
+	if _, err := Write(dir, []Route{route("alpha")}); err != nil {
+		t.Fatal(err)
+	}
+	before, _ := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	rejecting(t, "mcp-vibe-")
+	if _, err := Write(dir, []Route{route("alpha"), route("beta")}); err == nil {
+		t.Fatal("total rejection accepted")
+	}
+	after, _ := os.ReadFile(filepath.Join(dir, "config.yaml"))
+	if string(after) != string(before) {
+		t.Fatal("old file replaced after rejection")
+	}
+	if entries, _ := os.ReadDir(dir); len(entries) != 1 {
+		t.Fatalf("stage left behind: %v", entries)
 	}
 }

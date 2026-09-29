@@ -129,6 +129,12 @@ with, otherwise tell the user a platform admin adds people. The Basic `add` keep
 same host meanwhile. If `oauth` is missing and `warnings` says why, the MCP is on Basic only —
 still protected; redeploy to retry.
 
+`--mcp-owner` matches the email exactly and refuses if two accounts share it. That is safe only
+because users on this Authentik cannot change their own email (or username) — if the platform
+ever allows it, anyone could claim an owner's address. A failed owner lookup is a warning: the
+MCP is set up, nobody was added. `vd destroy` deletes the group `mcp-vibe-<app>` with its
+members, so a later app with the same name starts with nobody.
+
 Notes worth knowing:
 
 - **SELECT only.** The MCP connects as a separate read-only role and runs in
@@ -220,7 +226,7 @@ One-shot log dump. Default 100 lines. **Always use this, not `vd logs`** (which 
 Revert to previous deployment. Last 5 backups kept. Refused with `ROLLBACK_WOULD_UNPROTECT` when the app now has platform login and the previous version did not — it would come back public. If the app has a vd-managed database, **ask the user if they want to also restore the database** — if yes, add `--restore-db`. This restores the database to the state at the time of the previous deploy. Without this flag, only the container is rolled back.
 
 ### `vd destroy <app-name> --yes [--drop-db]`
-Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping. For `--auth` apps it also removes the app's Authentik application and provider; the access group `vibe-<app>` is kept, so redeploying under the same name restores access for the same people.
+Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping. For `--auth` apps it also removes the app's Authentik application and provider; the access group `vibe-<app>` is kept, so redeploying under the same name restores access for the same people. For `--mcp-oauth` apps it removes the MCP's application, provider **and** group `mcp-vibe-<app>`.
 
 ### `vd cron-set <app-name> --schedule "..." --command "..."`
 Add a scheduled task. Runs inside the container.

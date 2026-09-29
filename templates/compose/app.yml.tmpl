@@ -107,12 +107,13 @@ services:
       # Anything that is not Basic — no credentials, or a Bearer token — goes to
       # the gateway, which does the OAuth dance and checks the group.
       - "traefik.http.routers.vd-{{.Name}}-mcp.service=vd-mcpgw@docker"
-      # A request carrying Basic credentials goes exactly where it always went.
+      # A request carrying Basic credentials goes exactly where it always went
+      # (scheme matched case-insensitively, as net/http's BasicAuth does).
       # This rule is longer than both others, so it wins on every path —
       # including a client's probe of /.well-known/ — and a Basic client keeps
       # getting the same answers as before, never OAuth metadata that could make
       # it drop the credentials it holds.
-      - "traefik.http.routers.vd-{{.Name}}-mcp-basic.rule=Host(`{{.Name}}.mcp.{{.Domain}}`) && HeaderRegexp(`Authorization`, `^Basic `)"
+      - "traefik.http.routers.vd-{{.Name}}-mcp-basic.rule=Host(`{{.Name}}.mcp.{{.Domain}}`) && HeaderRegexp(`Authorization`, `(?i)^Basic `)"
       - "traefik.http.routers.vd-{{.Name}}-mcp-basic.entrypoints=web"
       - "traefik.http.routers.vd-{{.Name}}-mcp-basic.service=vd-{{.Name}}-mcp"
       - "traefik.http.routers.vd-{{.Name}}-mcp-basic.middlewares=vd-{{.Name}}-mcp-auth"

@@ -2,6 +2,7 @@ package authentik
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -50,6 +51,8 @@ type MCPResult struct {
 	OwnerAdded bool
 	// OwnerMissing is set when Owner has no account in this Authentik.
 	OwnerMissing bool
+	// OwnerError is why the owner could not be added; the resource still works.
+	OwnerError string
 }
 
 type oauth2Provider struct {
@@ -133,7 +136,10 @@ func (c *Client) EnsureMCP(s MCPSpec) (*MCPResult, error) {
 		return nil, err
 	}
 
-	app, created, err := c.ensureApplication(name, prov.PK, "")
+	// Application first without a provider, then the binding, then the
+	// provider: an application with a provider and no binding admits every
+	// signed-in account, and that state must not exist even between two calls.
+	app, created, err := c.ensureBareApplication(name)
 	if err != nil {
 		return nil, err
 	}
@@ -151,26 +157,60 @@ func (c *Client) EnsureMCP(s MCPSpec) (*MCPResult, error) {
 		}
 		return nil, fmt.Errorf("%s", strings.Join(notes, "; "))
 	}
+	if _, _, err := c.ensureApplication(name, prov.PK, ""); err != nil {
+		return nil, err
+	}
 
+	// The owner is a convenience, not part of the protection: a failed lookup
+	// leaves a working, empty-group resource and is reported, not fatal.
 	res := &MCPResult{Name: name, Issuer: c.Issuer(name)}
 	if s.Owner != "" {
-		pk, err := c.userPKByEmail(s.Owner)
-		if err != nil {
-			return nil, err
-		}
-		if pk == 0 {
+		switch pk, err := c.userPKByEmail(s.Owner); {
+		case err != nil:
+			res.OwnerError = err.Error()
+		case pk == 0:
 			res.OwnerMissing = true
-		} else {
+		default:
 			if _, err := c.do("POST", "/core/groups/"+groupPK+"/add_user/", map[string]any{"pk": pk}, nil); err != nil {
-				return nil, fmt.Errorf("add owner to %s: %w", name, err)
+				res.OwnerError = fmt.Sprintf("add owner to %s: %v", name, err)
+			} else {
+				res.OwnerAdded = true
 			}
-			res.OwnerAdded = true
 		}
 	}
 	return res, nil
 }
 
-// RemoveMCP undoes EnsureMCP except for the group, as Remove does.
+// ensureBareApplication returns the application, creating it with no provider
+// if it does not exist. With no provider it grants nothing.
+func (c *Client) ensureBareApplication(slug string) (*application, bool, error) {
+	var cur application
+	code, err := c.do("GET", "/core/applications/"+slug+"/", nil, &cur)
+	if err == nil {
+		return &cur, false, nil
+	}
+	if code != http.StatusNotFound {
+		return nil, false, err
+	}
+	var got application
+	if code, err := c.do("POST", "/core/applications/", application{Name: slug, Slug: slug}, &got); err != nil {
+		if code == http.StatusBadRequest {
+			return nil, false, fmt.Errorf("application slug %q exists but is not readable by vd — resolve in Authentik: %w", slug, err)
+		}
+		return nil, false, fmt.Errorf("create application %s: %w", slug, err)
+	}
+	if got.PK == "" {
+		return nil, false, fmt.Errorf("create application %s: no pk in the response", slug)
+	}
+	return &got, true, nil
+}
+
+// RemoveMCP undoes EnsureMCP, group included. Order matters: the application
+// goes first (its bindings go with it), and nothing else is touched unless that
+// worked — a provider-less application or one without its group is exactly the
+// open state EnsureMCP avoids. The group is deleted, not kept as --auth keeps
+// its own: EnsureMCP adopts a group by name, so a kept one would hand the old
+// members to the next app that takes the name.
 func (c *Client) RemoveMCP(app string) error {
 	name, err := MCPName(app)
 	if err != nil {
@@ -181,29 +221,26 @@ func (c *Client) RemoveMCP(app string) error {
 	case err != nil && code != http.StatusNotFound:
 		return err
 	case code == http.StatusOK:
-		bs, err := c.bindingsFor(a.PK)
-		if err != nil {
-			return err
-		}
-		for _, b := range bs {
-			if _, err := c.do("DELETE", "/policies/bindings/"+b.PK+"/", nil, nil); err != nil {
-				return err
-			}
-		}
 		if _, err := c.do("DELETE", "/core/applications/"+name+"/", nil, nil); err != nil {
-			return err
+			return fmt.Errorf("delete application %s (provider and group left alone): %w", name, err)
 		}
 	}
-	p, err := c.findOAuth2Provider(name)
-	if err != nil {
-		return err
-	}
-	if p != nil {
+	var errs []error
+	if p, err := c.findOAuth2Provider(name); err != nil {
+		errs = append(errs, err)
+	} else if p != nil {
 		if _, err := c.do("DELETE", "/providers/oauth2/"+strconv.Itoa(p.PK)+"/", nil, nil); err != nil {
-			return err
+			errs = append(errs, fmt.Errorf("delete provider %s: %w", name, err))
 		}
 	}
-	return nil
+	if pk, _, err := c.findGroup(name); err != nil {
+		errs = append(errs, err)
+	} else if pk != "" {
+		if _, err := c.do("DELETE", "/core/groups/"+pk+"/", nil, nil); err != nil {
+			errs = append(errs, fmt.Errorf("delete group %s: %w", name, err))
+		}
+	}
+	return errors.Join(errs...)
 }
 
 // MCPHealth describes an app's MCP resource, for vd status.
