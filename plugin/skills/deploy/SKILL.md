@@ -167,8 +167,9 @@ Notes worth knowing:
   restricted mode. You cannot use it to fix data, only to look.
 - **`--db prod-ro` apps get no MCP.** The production database stays reachable only
   through the deployed dashboard. Do not try to work around this.
-- The password is regenerated on every deploy, so re-run `add` (or
-  `claude mcp remove` first) after redeploying.
+- The Basic password stays the same across redeploys, so a registered `add` keeps working.
+  If it leaked, redeploy with `--mcp-rotate-password`: a new one is issued and every client on
+  the old one is cut off — re-run the new `add` (after `claude mcp remove`).
 - If `health` is not `healthy`, the endpoint will hang rather than answer. Check
   `vd logs-snapshot` and redeploy.
 
@@ -229,6 +230,7 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--allow-external` | false | Silence warnings about unsupported external services |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky. Subdomain routing only |
 | `--mcp-oauth` | false | Also put the database MCP behind platform login (browser sign-in, group `mcp-vibe-<app>`). Basic keeps working alongside. Needs `--db postgres`. Sticky |
+| `--mcp-rotate-password` | false | Issue a new MCP Basic password; every client on the old one is cut off. Without it the password survives redeploys |
 | `--mcp-owner` | none | Email of one person to add to `mcp-vibe-<app>` (with `--mcp-oauth`) |
 | `--auth-bearer` | false | With `--auth`: the outpost also accepts `Authorization: Bearer`/`Basic` from service accounts in the app's group. The app must restrict their routes itself — see `/auth`. Sticky; `--auth-bearer=false` turns it off |
 | `--auth-ttl` | `hours=1` | How long a sign-in lasts before Authentik is asked again (`hours=`, `minutes=`, `days=`). Longer than a day produces a warning: group removal then takes that long to bite |
