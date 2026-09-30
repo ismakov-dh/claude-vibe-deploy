@@ -28,6 +28,9 @@ func TestEnsureMCPCreatesAPublicClientBoundToItsGroup(t *testing.T) {
 			p["access_token_validity"] != "minutes=5" || p["signing_key"] != "k-self" {
 			t.Fatalf("provider settings: %v", p)
 		}
+		if g, _ := p["grant_types"].([]any); len(g) != 2 || g[0] != "authorization_code" || g[1] != "refresh_token" {
+			t.Fatalf("provider settings: %v", p)
+		}
 		maps := p["property_mappings"].([]any)
 		if len(maps) != 3 || maps[2] != "m-mcp" {
 			t.Fatalf("scope mappings %v — must be openid, offline_access and stacks' mcp-groups", maps)
@@ -129,10 +132,14 @@ func TestEnsureMCPBindsBeforeAttachingTheProvider(t *testing.T) {
 }
 
 func TestEnsureMCPRejectsDroppedProviderField(t *testing.T) {
-	f, c := setup(t)
-	f.dropOAuth2 = "sub_mode"
-	if _, err := c.EnsureMCP(mcpSpec()); err == nil || !strings.Contains(err.Error(), "sub_mode") {
-		t.Fatalf("want drift error on sub_mode, got %v", err)
+	// grant_types: an Authentik API that stores [] leaves a provider on which
+	// every authorize request is invalid_request (found on prod, 2026-09-30).
+	for _, field := range []string{"sub_mode", "grant_types"} {
+		f, c := setup(t)
+		f.dropOAuth2 = field
+		if _, err := c.EnsureMCP(mcpSpec()); err == nil || !strings.Contains(err.Error(), field) {
+			t.Fatalf("want drift error on %s, got %v", field, err)
+		}
 	}
 }
 
