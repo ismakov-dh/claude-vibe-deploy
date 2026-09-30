@@ -8,6 +8,7 @@ import (
 	"net/url"
 	"regexp"
 	"strconv"
+	"strings"
 )
 
 // Access groups vd manages membership of: an app's login group or its MCP's.
@@ -30,51 +31,76 @@ type Member struct {
 }
 
 // groupUsers finds the group by exact name and returns its pk and member pks.
+// MCP groups must carry vd's marker, as everywhere else vd touches them.
 func (c *Client) groupUsers(name string) (string, []int, error) {
 	if !accessGroupRe.MatchString(name) {
 		return "", nil, fmt.Errorf("refusing group name %q", name)
 	}
 	var pk string
 	var users []int
-	err := c.each("/core/groups/", url.Values{"name": {name}}, func(raw json.RawMessage) {
+	found, hasUsers, managed := false, false, false
+	// include_users=false drops the full user objects, not the pk list.
+	code, err := c.eachCode("/core/groups/", url.Values{"name": {name}, "include_users": {"false"}}, func(raw json.RawMessage) {
 		var g struct {
-			PK    string `json:"pk"`
-			Name  string `json:"name"`
-			Users []int  `json:"users"`
+			PK         string         `json:"pk"`
+			Name       string         `json:"name"`
+			Users      *[]int         `json:"users"`
+			Attributes map[string]any `json:"attributes"`
 		}
 		if json.Unmarshal(raw, &g) == nil && g.Name == name {
-			pk, users = g.PK, g.Users
+			found, pk = true, g.PK
+			managed = g.Attributes[vdManagedAttr] == true
+			if g.Users != nil {
+				hasUsers, users = true, *g.Users
+			}
 		}
 	})
+	if code == http.StatusForbidden {
+		return "", nil, ErrForbidden
+	}
 	if err != nil {
 		return "", nil, err
 	}
-	if pk == "" {
+	if !found {
 		return "", nil, ErrNoGroup
+	}
+	// Without the member list a remove would see "not a member" and report
+	// success while the person keeps access.
+	if !hasUsers {
+		return "", nil, fmt.Errorf("Authentik returned group %s without its member list", name)
+	}
+	if strings.HasPrefix(name, "mcp-") && !managed {
+		return "", nil, fmt.Errorf("group %s was not created by vd (no %s attribute); refusing", name, vdManagedAttr)
 	}
 	return pk, users, nil
 }
 
 // Members lists the group's accounts. Read one by one from the group's own
 // member list: a user-list filter Authentik ignored would list the directory.
-func (c *Client) Members(group string) ([]Member, error) {
+// unreadable counts members vd could not read (deleted meanwhile, hidden).
+func (c *Client) Members(group string) (members []Member, unreadable int, err error) {
 	_, pks, err := c.groupUsers(group)
 	if err != nil {
-		return nil, err
+		return nil, 0, err
 	}
-	out := []Member{}
+	members = []Member{}
 	for _, pk := range pks {
 		var u struct {
 			Email    string `json:"email"`
 			Name     string `json:"name"`
 			IsActive bool   `json:"is_active"`
 		}
-		if _, err := c.do("GET", "/core/users/"+strconv.Itoa(pk)+"/", nil, &u); err != nil {
-			return nil, err
+		code, err := c.do("GET", "/core/users/"+strconv.Itoa(pk)+"/", nil, &u)
+		if code == http.StatusNotFound || code == http.StatusForbidden {
+			unreadable++
+			continue
 		}
-		out = append(out, Member{Email: u.Email, Name: u.Name, Active: u.IsActive})
+		if err != nil {
+			return nil, 0, err
+		}
+		members = append(members, Member{Email: u.Email, Name: u.Name, Active: u.IsActive})
 	}
-	return out, nil
+	return members, unreadable, nil
 }
 
 // AddMember puts the account with this email into the group. changed is false
@@ -95,6 +121,9 @@ func (c *Client) setMember(group, email string, in bool) (bool, error) {
 	}
 	upk, err := c.userPKByEmail(email)
 	if err != nil {
+		if strings.Contains(err.Error(), "HTTP 403") {
+			return false, ErrForbidden
+		}
 		return false, err
 	}
 	if upk == 0 {

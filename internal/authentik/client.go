@@ -652,6 +652,12 @@ func (c *Client) removeFromOutpost(pk int) error {
 // each walks every page. Authentik paginates by page number and reports the next
 // one in pagination.next, 0 when there is none.
 func (c *Client) each(path string, q url.Values, fn func(json.RawMessage)) error {
+	_, err := c.eachCode(path, q, fn)
+	return err
+}
+
+// eachCode is each that also returns the HTTP status of a failed page.
+func (c *Client) eachCode(path string, q url.Values, fn func(json.RawMessage)) (int, error) {
 	if q == nil {
 		q = url.Values{}
 	}
@@ -663,8 +669,8 @@ func (c *Client) each(path string, q url.Values, fn func(json.RawMessage)) error
 			} `json:"pagination"`
 			Results []json.RawMessage `json:"results"`
 		}
-		if _, err := c.do("GET", path+"?"+q.Encode(), nil, &resp); err != nil {
-			return err
+		if code, err := c.do("GET", path+"?"+q.Encode(), nil, &resp); err != nil {
+			return code, err
 		}
 		for _, r := range resp.Results {
 			fn(r)
@@ -674,7 +680,7 @@ func (c *Client) each(path string, q url.Values, fn func(json.RawMessage)) error
 		}
 		page = resp.Pagination.Next
 	}
-	return nil
+	return 0, nil
 }
 
 // do returns the status code alongside any error, so callers can tell 404 apart.

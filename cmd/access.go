@@ -36,7 +36,7 @@ var accessCmd = &cobra.Command{
 				"Usage: vd access <app> list | add <email> | remove <email> [--mcp]", ""))
 		}
 
-		group, ttl := accessGroup(name, accessMCP)
+		group, ttl, ttlSeconds := accessGroup(name, accessMCP)
 		cfg, cerr := state.LoadConfig()
 		if cerr != nil {
 			output.Fail("access", output.NewError("NOT_INITIALIZED", "Run vd init first", ""))
@@ -44,15 +44,22 @@ var accessCmd = &cobra.Command{
 		if err := cfg.AuthentikReady(); err != nil {
 			output.Fail("access", output.NewError("AUTH_NOT_CONFIGURED", "Platform login is not set up on this server: "+err.Error(), ""))
 		}
-		token, _ := state.LoadAuthentikToken()
+		token, terr := state.LoadAuthentikToken()
+		if terr != nil {
+			output.Fail("access", output.NewError("AUTH_NOT_CONFIGURED", "vd's Authentik token is not readable: "+terr.Error(),
+				"A platform admin installs it: vd init --authentik-token-stdin"))
+		}
 		c := authentik.New(cfg.AuthentikURL, token)
 
 		data := map[string]any{"app": name, "group": group}
 		switch action {
 		case "list":
-			ms, err := c.Members(group)
+			ms, unreadable, err := c.Members(group)
 			if err != nil {
 				failAccess(group, err)
+			}
+			if unreadable > 0 {
+				output.Warn("%d member(s) of %s could not be read (deleted or hidden from vd)", unreadable, group)
 			}
 			for _, m := range ms {
 				st := "active"
@@ -92,8 +99,9 @@ var accessCmd = &cobra.Command{
 			default:
 				output.Info("%s was not in %s", email, group)
 			}
-			if action == "remove" {
+			if action == "remove" && changed {
 				data["takes_effect"] = ttl
+				data["takes_effect_max_seconds"] = ttlSeconds
 				output.Info("Access ends %s", ttl)
 			}
 		}
@@ -102,7 +110,7 @@ var accessCmd = &cobra.Command{
 }
 
 // accessGroup checks the app and returns its group and when a removal bites.
-func accessGroup(name string, mcp bool) (group, takesEffect string) {
+func accessGroup(name string, mcp bool) (group, takesEffect string, maxSeconds int) {
 	if !nameRegex.MatchString(name) {
 		output.Fail("access", output.NewError("INVALID_NAME", "Invalid app name: "+name, ""))
 	}
@@ -116,8 +124,11 @@ func accessGroup(name string, mcp bool) (group, takesEffect string) {
 				name+"'s database MCP is not behind platform login", "Turn it on first: vd mcp-oauth "+name))
 		}
 		g, _ := authentik.MCPName(name)
-		// Tokens live 5 minutes and every refresh re-reads the groups.
-		return g, "within 5 minutes, when their MCP token expires"
+		// The gateway admits a token only if the group is in its groups claim.
+		// Access tokens live 5 minutes, and a refreshed one is issued with the
+		// claims as they are then — so the 12-hour refresh token cannot carry
+		// a removed membership past the next 5-minute token.
+		return g, "within 5 minutes, when their MCP token expires", 300
 	}
 	if !m.Auth {
 		output.Fail("access", output.NewError("ACCESS_NOT_ENABLED",
@@ -128,7 +139,7 @@ func accessGroup(name string, mcp bool) (group, takesEffect string) {
 	if ttl == "" {
 		ttl = authentik.DefaultTTL
 	}
-	return g, "when their current sign-in expires (at most " + ttl + ")"
+	return g, "when their current sign-in expires (at most " + ttl + ")", authentik.TTLSeconds(ttl)
 }
 
 func failAccess(group string, err error) {
@@ -138,7 +149,8 @@ func failAccess(group string, err error) {
 			"No platform account with that email", "The person must accept a platform invitation first; a platform admin sends it"))
 	case errors.Is(err, authentik.ErrNoGroup):
 		output.Fail("access", output.NewError("NOT_FOUND",
-			"Group "+group+" does not exist in Authentik", "Redeploy the app (or run vd mcp-oauth) to recreate it"))
+			"Group "+group+" not found in Authentik (missing, or not visible to vd)",
+			"Redeploy the app (or run vd mcp-oauth) to recreate it; if it exists, a platform admin grants vd view on it"))
 	case errors.Is(err, authentik.ErrForbidden):
 		output.Fail("access", output.NewError("ACCESS_FORBIDDEN",
 			fmt.Sprintf("Authentik does not let vd change %s", group), "A platform admin grants vd rights on this group"))
