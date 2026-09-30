@@ -31,7 +31,25 @@ func ChownLikeHome(path string) {
 // ponytail: one global lock; per-app locking is pointless here since every run
 // touches the same outpost object.
 func LockAuthentik() (unlock func(), err error) {
-	path := filepath.Join(VDHome(), "authentik.lock")
+	return lockFile(filepath.Join(VDHome(), "authentik.lock"))
+}
+
+// LockApp serialises everything that rewrites one app's compose file and
+// containers — vd deploy and vd mcp-oauth. Without it a deploy that adds
+// forward-auth labels and an mcp-oauth that re-renders the file from the older
+// manifest could interleave, and the next full `compose up` would publish the
+// app without its login. Separate from the Authentik lock, which both take
+// inside: flock on a second open of the same file would block its own process.
+func LockApp(app string) (unlock func(), err error) {
+	dir := filepath.Join(VDHome(), "locks")
+	if err := os.MkdirAll(dir, 0755); err != nil {
+		return nil, err
+	}
+	ChownLikeHome(dir)
+	return lockFile(filepath.Join(dir, app+".lock"))
+}
+
+func lockFile(path string) (unlock func(), err error) {
 	// Read-only is enough for flock, and it keeps working when the file was
 	// created by a root-run vd and is not writable by vd-user.
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDONLY, 0644)

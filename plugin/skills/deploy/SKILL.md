@@ -260,7 +260,8 @@ Puts a running app's database MCP behind platform login as well, without a redep
 the gateway route and the MCP container only — the app is not rebuilt or restarted, Basic keeps
 the same password. `--check` changes nothing and reports whether the rebuild is faithful. The
 JSON carries the same `oauth` block as `vd deploy --mcp-oauth`. Errors: `NO_MCP` (no `--db
-postgres` MCP), `MCP_OAUTH_FAILED` (reverted, still on Basic).
+postgres` MCP), `COMPOSE_DRIFT` (the app's compose file is not what vd would render — redeploy
+once, then retry; nothing changed), `MCP_OAUTH_FAILED` (reverted, still on Basic).
 
 ### `vd destroy <app-name> --yes [--drop-db]`
 Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping. For `--auth` apps it also removes the app's Authentik application and provider; the access group `vibe-<app>` is kept, so redeploying under the same name restores access for the same people. For `--mcp-oauth` apps it removes the MCP's application, provider **and** group `mcp-vibe-<app>`. After a **failed first deploy** vd stops the container, but the app's files — its `.env`, with the prod DSN for `--db prod-ro` — stay for the next attempt: fix and deploy again, or run `vd destroy <app> --yes`, which works without a manifest too.

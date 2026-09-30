@@ -34,3 +34,34 @@ func TestLockAuthentikExcludes(t *testing.T) {
 		t.Fatal("second lock never acquired after release")
 	}
 }
+
+func TestLockAppIsPerAppAndIndependentOfAuthentik(t *testing.T) {
+	t.Setenv("VD_HOME", t.TempDir())
+	a, err := LockApp("a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer a()
+	// Other app and the Authentik lock stay free while "a" is held.
+	b, err := LockApp("b")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b()
+	au, err := LockAuthentik()
+	if err != nil {
+		t.Fatal(err)
+	}
+	au()
+	got := make(chan struct{})
+	go func() {
+		u, _ := LockApp("a")
+		u()
+		close(got)
+	}()
+	select {
+	case <-got:
+		t.Fatal("second holder of app a's lock did not wait")
+	case <-time.After(200 * time.Millisecond):
+	}
+}

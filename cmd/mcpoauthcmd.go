@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"fmt"
 	"os"
 	"strings"
 	"time"
@@ -14,11 +15,14 @@ import (
 var (
 	mcpOAuthOwner string
 	mcpOAuthCheck bool
+
+	// Replaced in tests: the only docker call on the revert path.
+	composeUpService = docker.ComposeUpService
 )
 
 func init() {
 	mcpOAuthCmd.Flags().StringVar(&mcpOAuthOwner, "owner", "", "email of a person to add to the MCP's access group")
-	mcpOAuthCmd.Flags().BoolVar(&mcpOAuthCheck, "check", false, "change nothing: verify vd can rebuild this app's compose file faithfully")
+	mcpOAuthCmd.Flags().BoolVar(&mcpOAuthCheck, "check", false, "change nothing: report whether vd can re-render this app's compose file faithfully")
 	rootCmd.AddCommand(mcpOAuthCmd)
 }
 
@@ -32,18 +36,34 @@ var mcpOAuthCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
+		if !nameRegex.MatchString(name) {
+			output.Fail("mcp-oauth", output.NewError("INVALID_NAME", "Invalid app name: "+name, ""))
+		}
+		// From reading the manifest to the last compose up: a deploy in between
+		// could add labels (forward auth) this run would then overwrite.
+		unlock, err := state.LockApp(name)
+		if err != nil {
+			output.Fail("mcp-oauth", output.NewError("MCP_OAUTH_FAILED", "Could not take the app lock: "+err.Error(), ""))
+		}
+		defer unlock()
+
 		m, cfg, basic, ingress := mcpOAuthPreflight(name)
+		drift, err := composeDrift(m, cfg, basic, ingress)
+		if err != nil {
+			output.Fail("mcp-oauth", output.NewError("COMPOSE_FAILED", err.Error(), ""))
+		}
 		if mcpOAuthCheck {
-			differ, err := composeDrift(m, cfg, basic, ingress)
-			if err != nil {
-				output.Fail("mcp-oauth", output.NewError("COMPOSE_FAILED", err.Error(), ""))
-			}
 			output.Success("mcp-oauth", map[string]any{"name": name, "check": true,
-				"faithful": differ == 0, "differing_lines": differ})
+				"faithful": drift.other == 0, "mcp_lines_differ": drift.mcp, "other_lines_differ": drift.other})
 			return
 		}
-		if m.MCPOAuth && m.MCPOAuthLive {
-			output.Info("%s already has MCP OAuth — reconciling Authentik and the route", name)
+		// Only MCP lines may change: they are all this run recreates. Anything
+		// else means the file on disk is not what vd would render from the
+		// manifest, and rewriting it would change the app behind its back.
+		if drift.other > 0 {
+			output.Fail("mcp-oauth", output.NewError("COMPOSE_DRIFT",
+				fmt.Sprintf("%d non-MCP line(s) of %s's compose file differ from what vd renders from its manifest — nothing changed", drift.other, name),
+				"Redeploy the app once (vd deploy), then retry"))
 		}
 
 		// Authentik first, the route second, the labels last: traffic reaches the
@@ -69,26 +89,23 @@ var mcpOAuthCmd = &cobra.Command{
 		if err := state.WriteManifest(m); err != nil {
 			output.Fail("mcp-oauth", output.NewError("MANIFEST_WRITE_FAILED", err.Error(), "Nothing on the MCP changed"))
 		}
-
-		undo := func(why string) {
-			os.WriteFile(composePath, oldCompose, 0644)
-			state.WriteManifest(&oldManifest)
-			docker.ComposeUpService(state.AppDir(name), "docker-compose.vd.yml", name+"-mcp")
-			syncMCPGateway(cfg)
+		fail := func(why string) {
+			for _, e := range revertMCPOAuth(name, oldCompose, &oldManifest, cfg) {
+				output.Warn("revert: %v", e)
+			}
 			output.Fail("mcp-oauth", output.NewError("MCP_OAUTH_FAILED",
-				why+" — reverted, the MCP is on Basic as before",
+				why+" — reverted, the MCP is on Basic as before (see warnings if a revert step failed)",
 				"The Authentik resource stays; retrying is safe"))
 		}
 		if err := syncMCPGateway(cfg); err != nil {
-			undo("gateway route not written: " + err.Error())
+			fail("gateway route not written: " + err.Error())
 		}
-		data := mcpComposeData(m, cfg, basic, ingress)
-		if err := docker.GenerateComposeFile(templatesFS, data, composePath); err != nil {
-			undo("compose file: " + err.Error())
+		if err := docker.GenerateComposeFile(templatesFS, composeDataFor(m, cfg, basic, ingress), composePath); err != nil {
+			fail("compose file: " + err.Error())
 		}
 		output.Info("Recreating the MCP container of %s (the app keeps running)...", name)
-		if err := docker.ComposeUpService(state.AppDir(name), "docker-compose.vd.yml", name+"-mcp"); err != nil {
-			undo(err.Error())
+		if err := composeUpService(state.AppDir(name), "docker-compose.vd.yml", name+"-mcp"); err != nil {
+			fail(err.Error())
 		}
 		if err := docker.WaitHealthy("vd-"+name+"-mcp", 60*time.Second); err != nil {
 			output.Warn("MCP container not healthy yet: %v", err)
@@ -102,11 +119,31 @@ var mcpOAuthCmd = &cobra.Command{
 	},
 }
 
+// revertMCPOAuth puts the compose file (0600: it holds the ingress secret and
+// the Basic hash) and the manifest back, recreates the MCP as it was and
+// rewrites the routes. Returns every step that failed.
+func revertMCPOAuth(name string, oldCompose []byte, oldManifest *state.Manifest, cfg *state.Config) []error {
+	var errs []error
+	path := state.AppComposePath(name)
+	os.Remove(path) // a root-run vd may have left it; the directory is ours
+	if err := os.WriteFile(path, oldCompose, 0600); err != nil {
+		errs = append(errs, fmt.Errorf("restore compose file: %w", err))
+	}
+	state.ChownLikeHome(path)
+	if err := state.WriteManifest(oldManifest); err != nil {
+		errs = append(errs, fmt.Errorf("restore manifest: %w", err))
+	}
+	if err := composeUpService(state.AppDir(name), "docker-compose.vd.yml", name+"-mcp"); err != nil {
+		errs = append(errs, fmt.Errorf("recreate MCP container: %w", err))
+	}
+	if err := syncMCPGateway(cfg); err != nil {
+		errs = append(errs, fmt.Errorf("rewrite gateway routes: %w", err))
+	}
+	return errs
+}
+
 // mcpOAuthPreflight checks everything that can be checked before any change.
 func mcpOAuthPreflight(name string) (*state.Manifest, *state.Config, string, string) {
-	if !nameRegex.MatchString(name) {
-		output.Fail("mcp-oauth", output.NewError("INVALID_NAME", "Invalid app name: "+name, ""))
-	}
 	m, err := state.LoadManifest(name)
 	if err != nil {
 		output.Fail("mcp-oauth", output.NewError("NOT_FOUND", "App not found: "+name, "Check app name with: vd list"))
@@ -133,77 +170,72 @@ func mcpOAuthPreflight(name string) (*state.Manifest, *state.Config, string, str
 	return m, cfg, htpasswdSHA(mcpUser, pw), ingress
 }
 
-// mcpComposeData rebuilds what vd deploy rendered, from the manifest and the
-// app's own files, with the MCP behind the gateway. Only the MCP service is
-// recreated from it.
-func mcpComposeData(m *state.Manifest, cfg *state.Config, basic, ingress string) docker.ComposeData {
-	return docker.ComposeData{
-		Name:          m.Name,
-		AppType:       m.AppType,
-		Port:          m.Port,
-		Routing:       m.Routing,
-		Domain:        cfg.Domain,
-		HasEnvFile:    m.HasEnvFile,
-		NeedsDB:       true,
-		NeedsMCP:      true,
-		MCPImage:      docker.MCPImage,
-		MCPBasicAuth:  basic,
-		MCPOAuth:      true,
-		Auth:          m.Auth,
-		IngressSecret: ingress,
-	}
-}
+type composeDiff struct{ mcp, other int }
 
-// composeDrift renders the app's compose file as vd deploy last did (OAuth
-// off) and counts lines that differ from the file on disk, the generated-at
-// header aside. Zero means the rebuild from the manifest is faithful. Counts
-// only: the file holds the ingress secret and the Basic hash.
-func composeDrift(m *state.Manifest, cfg *state.Config, basic, ingress string) (int, error) {
-	data := mcpComposeData(m, cfg, basic, ingress)
-	data.MCPOAuth = m.MCPOAuth && m.MCPOAuthLive
-	tmp, err := os.CreateTemp("", "vd-compose-check-*.yml")
+// composeDrift renders the compose file from the manifest as it stands and
+// compares it with the file on disk: lines of the <app>-mcp service are
+// counted apart from the rest. Counts only — the file holds the ingress secret and the Basic hash.
+func composeDrift(m *state.Manifest, cfg *state.Config, basic, ingress string) (composeDiff, error) {
+	tmp, err := os.CreateTemp(state.VDHome(), ".compose-check-*.yml") // not /tmp: secrets
 	if err != nil {
-		return 0, err
+		return composeDiff{}, err
 	}
 	tmp.Close()
 	defer os.Remove(tmp.Name())
-	if err := docker.GenerateComposeFile(templatesFS, data, tmp.Name()); err != nil {
-		return 0, err
+	if err := docker.GenerateComposeFile(templatesFS, composeDataFor(m, cfg, basic, ingress), tmp.Name()); err != nil {
+		return composeDiff{}, err
 	}
 	a, err := os.ReadFile(state.AppComposePath(m.Name))
 	if err != nil {
-		return 0, err
+		return composeDiff{}, err
 	}
 	b, err := os.ReadFile(tmp.Name())
 	if err != nil {
-		return 0, err
+		return composeDiff{}, err
 	}
-	return lineDiff(string(a), string(b)), nil
+	return lineDiff(string(a), string(b), m.Name), nil
 }
 
-// lineDiff counts lines present in one text and not the other, ignoring the
-// "# App: … Generated: …" header.
-func lineDiff(a, b string) int {
-	count := func(s string) map[string]int {
-		c := map[string]int{}
+// lineDiff counts lines present in one text and not the other, split by where
+// they sit: inside the "<app>-mcp:" service block (what vd mcp-oauth
+// recreates) or anywhere else. Comments and blank lines are ignored.
+func lineDiff(a, b, app string) composeDiff {
+	type key struct {
+		mcp  bool
+		line string
+	}
+	count := func(s string) map[key]int {
+		c := map[key]int{}
+		inMCP := false
 		for _, l := range strings.Split(s, "\n") {
-			if !strings.HasPrefix(l, "# App: ") {
-				c[l]++
+			t := strings.TrimSpace(l)
+			if t == "" || strings.HasPrefix(t, "#") {
+				continue
 			}
+			// A service header is indented two spaces; a top-level key ends the block.
+			if strings.HasPrefix(l, "  ") && !strings.HasPrefix(l, "   ") && strings.HasSuffix(t, ":") {
+				inMCP = t == app+"-mcp:"
+			} else if !strings.HasPrefix(l, " ") {
+				inMCP = false
+			}
+			c[key{inMCP, l}]++
 		}
 		return c
 	}
 	ca, cb := count(a), count(b)
-	n := 0
-	for l, k := range ca {
-		if d := k - cb[l]; d > 0 {
-			n += d
+	var d composeDiff
+	tally := func(x, y map[key]int) {
+		for k, n := range x {
+			if n -= y[k]; n > 0 {
+				if k.mcp {
+					d.mcp += n
+				} else {
+					d.other += n
+				}
+			}
 		}
 	}
-	for l, k := range cb {
-		if d := k - ca[l]; d > 0 {
-			n += d
-		}
-	}
-	return n
+	tally(ca, cb)
+	tally(cb, ca)
+	return d
 }
