@@ -48,7 +48,7 @@ through Authentik instead of shared Basic credentials — without breaking anyon
 
 `oauth2provider` view/add/change/delete; `scopemapping` view; `certificatekeypair` view (not key
 download); `user` view (global directory read — the orchestrator's decision, with the leak
-exposure stated); `add_user_to_group`/`remove_user_from_group`/`delete_group` only on groups vd creates.
+exposure stated); `add_user_to_group`/`remove_user_from_group`/`delete_group` only on groups vd creates (InitialPermissions, on the role `vd-platform`); `view_role` and `unassign_role_permissions` — never `assign_role_permissions` — on that role, so destroy can remove the rows on a group it deleted.
 
 ## Not yet
 

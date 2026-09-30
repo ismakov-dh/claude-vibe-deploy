@@ -108,8 +108,12 @@ var destroyCmd = &cobra.Command{
 				if unlock, lerr := state.LockAuthentik(); lerr != nil {
 					mcpRemoved = "failed: " + lerr.Error()
 				} else {
-					if err := authentik.New(cfg.AuthentikURL, token).RemoveMCP(name); err != nil {
+					permsLeft, err := authentik.New(cfg.AuthentikURL, token).RemoveMCP(name)
+					if err != nil {
 						mcpRemoved = "failed: " + err.Error()
+					} else if permsLeft != nil {
+						// Everything that grants access is gone; only inert rows remain.
+						output.Warn("MCP OAuth removed; its permission rows on the deleted group were not (%v) — harmless, a platform admin can sweep them", permsLeft)
 					}
 					unlock()
 				}

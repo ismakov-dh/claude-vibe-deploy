@@ -63,6 +63,9 @@ type fake struct {
 	omitGroupUsers bool
 	// dropMembershipWrites answers add/remove with 204 and changes nothing.
 	dropMembershipWrites bool
+	// unassigned records PATCH unassign bodies by role uuid; failUnassign 403s.
+	unassigned   map[string][]map[string]any
+	failUnassign bool
 }
 
 func newFake() *fake {
@@ -405,6 +408,24 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			f.addedUsers[g] = append(f.addedUsers[g], u)
 		}
 		f.groupUsers[name] = kept
+		out(204, nil)
+
+	case p == "/rbac/roles/" && r.Method == "GET":
+		// Filter ignored; a decoy whose name contains vd's.
+		out(200, page([]any{
+			map[string]any{"pk": "r-decoy", "name": "vd-platform-old"},
+			map[string]any{"pk": "r-vd", "name": "vd-platform"},
+		}, 0))
+	case strings.HasPrefix(p, "/rbac/permissions/assigned_by_roles/") && strings.HasSuffix(p, "/unassign/") && r.Method == "PATCH":
+		if f.failUnassign {
+			out(403, map[string]any{"detail": "You do not have permission to perform this action."})
+			return
+		}
+		role := strings.TrimSuffix(strings.TrimPrefix(p, "/rbac/permissions/assigned_by_roles/"), "/unassign/")
+		if f.unassigned == nil {
+			f.unassigned = map[string][]map[string]any{}
+		}
+		f.unassigned[role] = append(f.unassigned[role], body)
 		out(204, nil)
 
 	default:
