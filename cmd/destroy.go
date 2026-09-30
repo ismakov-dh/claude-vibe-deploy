@@ -31,6 +31,16 @@ var destroyCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
+		if !nameRegex.MatchString(name) {
+			output.Fail("destroy", output.NewError("INVALID_NAME", "Invalid app name: "+name, ""))
+		}
+		// Against vd mcp-oauth and deploy: a destroy in the middle of either
+		// would leave a container (the MCP holds DB credentials) nothing tracks.
+		unlock, lerr := state.LockApp(name)
+		if lerr != nil {
+			output.Fail("destroy", output.NewError("DESTROY_FAILED", "Could not take the app lock: "+lerr.Error(), ""))
+		}
+		defer unlock()
 		m, err := manifestForDestroy(name)
 		if err != nil {
 			output.Fail("destroy", err)

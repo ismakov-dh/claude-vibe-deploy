@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 )
 
@@ -49,6 +50,15 @@ func LockApp(app string) (unlock func(), err error) {
 	return lockFile(filepath.Join(dir, app+".lock"))
 }
 
+// held keeps every locked file reachable until its unlock. The flock lives as
+// long as the descriptor, and an *os.File nobody references is closed by its
+// finalizer — a caller that dropped unlock would lose the lock at the next GC,
+// say halfway through a docker build.
+var (
+	heldMu sync.Mutex
+	held   = map[*os.File]struct{}{}
+)
+
 func lockFile(path string) (unlock func(), err error) {
 	// Read-only is enough for flock, and it keeps working when the file was
 	// created by a root-run vd and is not writable by vd-user.
@@ -61,8 +71,14 @@ func lockFile(path string) (unlock func(), err error) {
 		return nil, fmt.Errorf("lock %s: %w", path, err)
 	}
 	ChownLikeHome(path)
+	heldMu.Lock()
+	held[f] = struct{}{}
+	heldMu.Unlock()
 	return func() {
 		syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
 		f.Close()
+		heldMu.Lock()
+		delete(held, f)
+		heldMu.Unlock()
 	}, nil
 }

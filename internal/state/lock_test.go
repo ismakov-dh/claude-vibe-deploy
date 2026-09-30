@@ -1,6 +1,7 @@
 package state
 
 import (
+	"runtime"
 	"testing"
 	"time"
 )
@@ -32,6 +33,31 @@ func TestLockAuthentikExcludes(t *testing.T) {
 	case <-got:
 	case <-time.After(2 * time.Second):
 		t.Fatal("second lock never acquired after release")
+	}
+}
+
+// A caller that drops unlock must still hold the lock after a GC.
+func TestLockSurvivesGCWithoutUnlockReference(t *testing.T) {
+	t.Setenv("VD_HOME", t.TempDir())
+	func() {
+		if _, err := LockApp("gc"); err != nil {
+			t.Fatal(err)
+		}
+	}()
+	for i := 0; i < 5; i++ {
+		runtime.GC()
+		time.Sleep(10 * time.Millisecond)
+	}
+	got := make(chan struct{})
+	go func() {
+		u, _ := LockApp("gc")
+		u()
+		close(got)
+	}()
+	select {
+	case <-got:
+		t.Fatal("the lock was released by the garbage collector")
+	case <-time.After(300 * time.Millisecond):
 	}
 }
 

@@ -96,9 +96,11 @@ func runDeploy(srcPath string) {
 	}
 	// Held for the whole run (released by exit): vd mcp-oauth re-renders this
 	// app's compose file and must not interleave with a deploy.
-	if _, err := state.LockApp(deployName); err != nil {
+	unlockApp, err := state.LockApp(deployName)
+	if err != nil {
 		output.Fail("deploy", output.NewError("DEPLOY_FAILED", "Could not take the app lock: "+err.Error(), ""))
 	}
+	defer unlockApp()
 
 	// Load global config
 	cfg, err := state.LoadConfig()
