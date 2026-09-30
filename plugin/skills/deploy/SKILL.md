@@ -108,7 +108,7 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing
 
 Platform login requires the default **subdomain** routing, never `--routing path`.
 
-**`--auth` is sticky.** Once an app is deployed with it, later deploys keep it on without the flag. After an `--auth` deploy, relay the `auth.group` from the JSON to the user: people get access by being added to that group in Authentik — that is the only human step.
+**`--auth` is sticky.** Once an app is deployed with it, later deploys keep it on without the flag. After an `--auth` deploy, relay the `auth.group` from the JSON to the user: people get access when the user tells you who, and you run `vd access <app> add <email>` (see `/auth`).
 
 ### 3. Verify
 
@@ -151,7 +151,7 @@ Then use it to read the app's tables.
 
 Prefer this `add`: no password to hand around; the client opens a browser for sign-in. Access is
 membership in `mcp-vibe-<app-name>` — pass `--mcp-owner <email>` for the person you are working
-with, otherwise tell the user a platform admin adds people. The Basic `add` keeps working on the
+with; anyone else later with `vd access <app-name> add <email> --mcp`. The Basic `add` keeps working on the
 same host meanwhile. If `oauth` is missing and `warnings` says why, the MCP is on Basic only —
 still protected; redeploy to retry.
 
@@ -254,6 +254,16 @@ One-shot log dump. Default 100 lines. **Always use this, not `vd logs`** (which 
 ### `vd rollback <app-name> [--restore-db]`
 Revert to previous deployment. Last 5 backups kept. Refused with `ROLLBACK_WOULD_UNPROTECT` when the app now has platform login and the previous version did not — it would come back public. If the app has a vd-managed database, **ask the user if they want to also restore the database** — if yes, add `--restore-db`. This restores the database to the state at the time of the previous deploy. Without this flag, only the container is rolled back.
 
+### `vd access <app-name> list | add <email> | remove <email> [--mcp]`
+
+Who may use an `--auth` app (group `vibe-<app>`), or with `--mcp` its database MCP after
+`--mcp-oauth` (group `mcp-vibe-<app>`). The group comes from the app name only. `add` and
+`remove` are safe to repeat (`changed: false`); `remove` returns `takes_effect` — the app's
+sign-in lifetime, or 5 minutes for the MCP. Only for emails the user gave you. Errors:
+`ACCESS_NOT_ENABLED` (no `--auth` / no MCP OAuth), `NO_ACCOUNT` (no platform account — an admin
+invites first), `ACCESS_FORBIDDEN` (vd has no rights on that group — older apps; an admin
+grants them), `INVALID_ARGS`, `ACCESS_FAILED`.
+
 ### `vd mcp-oauth <app-name> [--owner <email>] [--check]`
 
 Puts a running app's database MCP behind platform login as well, without a redeploy: Authentik,
@@ -328,6 +338,8 @@ report the deploy as fully done while one of them describes a missing piece.
 | `PROD_RO_REQUIRES_AUTH` | `--db prod-ro` only behind `--auth` — and only after the user confirmed patient-data access |
 | `INVALID_AUTH_TTL` | Use `hours=1`, `minutes=30`, …; `--auth-ttl` needs `--auth` |
 | `AUTH_BEARER_REQUIRES_AUTH` | `--auth-bearer` needs `--auth` |
+| `NO_ACCOUNT` | `vd access add`: the person needs a platform account first (admin invites) |
+| `ACCESS_FORBIDDEN` | `vd access`: vd has no rights on that group — a platform admin grants them |
 | `ROLLBACK_WOULD_UNPROTECT` | Previous version was public — fix forward and redeploy instead |
 | `MANIFEST_UNREADABLE` | The app's manifest exists but cannot be read — vd will not guess whether it is protected. Ask the platform admin |
 | `MANIFEST_WRITE_FAILED` | An `--auth` app deployed but its manifest was not saved — ask the platform admin to fix permissions, then redeploy with `--auth` |

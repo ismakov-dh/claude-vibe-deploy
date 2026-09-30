@@ -44,15 +44,30 @@ live at `https://auth-demo.apps.platform.acuradai.com`. Copy from it when in dou
 | Step | Who |
 |---|---|
 | Everything: code, `vd deploy --auth`, verification | **You, the agent** |
-| Add the people who may use the app to the group **`vibe-<name>`** in Authentik | **The human — the only step** |
+| Decide who may use the app; grant and revoke with `vd access` | **The app's owner** (you run it on their word) |
 
 `vd deploy --auth` creates that group, the Authentik application and everything else itself,
 and prints the group name in its output (`auth.group`). Tell the user, in their language:
 
-> The app is behind platform login. To let someone in, add them to the group
-> **`vibe-<name>`** in Authentik (`https://auth.platform.acuradai.com`). Nobody else can
-> open it. Removing someone from the group revokes access within `auth.ttl` (an hour by
-> default); to lock someone out immediately, deactivate their account.
+> The app is behind platform login. Nobody can open it until you give them access — tell me
+> who, by their platform email, and I run `vd access <name> add <email>`. Removing someone
+> (`vd access <name> remove <email>`) ends their access when their sign-in expires, within
+> `auth.ttl` (an hour by default); to lock someone out immediately, a platform admin
+> deactivates their account.
+
+Access is granted and revoked by the app's owner with `vd access` — no platform admin needed:
+
+```bash
+ssh vd-server "vd access <name> list --json"
+ssh vd-server "vd access <name> add person@example.com --json"
+ssh vd-server "vd access <name> remove person@example.com --json"
+# the app's database MCP (after vd mcp-oauth / --mcp-oauth): add --mcp; removal bites within 5 minutes
+ssh vd-server "vd access <name> add person@example.com --mcp --json"
+```
+
+Only ever for an address the user gave you. `NO_ACCOUNT` means the person has no platform
+account yet — a platform admin invites them first. `ACCESS_FORBIDDEN` means vd has no rights on
+that group (older apps) — a platform admin grants them.
 
 Until someone is in the group, the app shows "access denied" to everyone — that is correct.
 

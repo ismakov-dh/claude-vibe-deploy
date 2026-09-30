@@ -456,7 +456,10 @@ func (c *Client) mcpScopeMappings() ([]string, error) {
 func (c *Client) userPKByEmail(email string) (int, error) {
 	email = strings.TrimSpace(email)
 	var pks []int
-	err := c.each("/core/users/", url.Values{"email": {email}}, func(raw json.RawMessage) {
+	// search, not email=: that filter is case-sensitive, so Owner@X found no
+	// owner@x. search matches substrings of email/name/username; the exact,
+	// case-insensitive comparison below is what decides.
+	err := c.each("/core/users/", url.Values{"search": {email}}, func(raw json.RawMessage) {
 		var u struct {
 			PK    int    `json:"pk"`
 			Email string `json:"email"`
@@ -466,7 +469,7 @@ func (c *Client) userPKByEmail(email string) (int, error) {
 		}
 	})
 	if err != nil {
-		return 0, fmt.Errorf("look up owner: %w", err)
+		return 0, fmt.Errorf("look up account: %w", err)
 	}
 	switch len(pks) {
 	case 0:
@@ -474,7 +477,7 @@ func (c *Client) userPKByEmail(email string) (int, error) {
 	case 1:
 		return pks[0], nil
 	default:
-		return 0, fmt.Errorf("owner email matches %d accounts — refusing to guess; ask a platform admin", len(pks))
+		return 0, fmt.Errorf("email matches %d accounts — refusing to guess; ask a platform admin", len(pks))
 	}
 }
 

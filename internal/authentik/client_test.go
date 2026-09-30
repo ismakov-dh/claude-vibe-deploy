@@ -53,6 +53,16 @@ type fake struct {
 	users      map[int]string   // pk -> email
 	addedUsers map[string][]int // group pk -> user pks added
 	dropOAuth2 string           // field the fake silently fails to store
+	// forbidGroups answers 403 to membership changes, as Authentik does on
+	// groups vd holds no object permission for.
+	forbidGroups map[string]bool
+	// ignoreGroupFilter answers the group list with every group, as Authentik
+	// does with a filter it does not know.
+	ignoreGroupFilter bool
+	// omitGroupUsers leaves the member list out of group payloads.
+	omitGroupUsers bool
+	// dropMembershipWrites answers add/remove with 204 and changes nothing.
+	dropMembershipWrites bool
 }
 
 func newFake() *fake {
@@ -108,12 +118,19 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case p == "/core/groups/" && r.Method == "GET":
 		name := r.URL.Query().Get("name")
 		var res []any
-		if pk, ok := f.groups[name]; ok {
-			users := f.groupUsers[name]
+		for n, pk := range f.groups {
+			if n != name && !f.ignoreGroupFilter {
+				continue
+			}
+			users := f.groupUsers[n]
 			if users == nil {
 				users = []int{}
 			}
-			res = append(res, map[string]any{"pk": pk, "name": name, "users": users, "attributes": f.groupAttrs[name]})
+			g := map[string]any{"pk": pk, "name": n, "users": users, "attributes": f.groupAttrs[n]}
+			if f.omitGroupUsers {
+				delete(g, "users")
+			}
+			res = append(res, g)
 		}
 		out(200, page(res, 0))
 	case strings.HasPrefix(p, "/core/groups/") && r.Method == "DELETE":
@@ -333,15 +350,61 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		}
 		out(200, page(res, 0))
 	case p == "/core/users/":
-		// Filter ignored: the client must match the email itself.
+		// As Authentik: email= is exact and case-sensitive, search= a
+		// case-insensitive substring over email and name. The client must still
+		// match the email itself: "search" also hits longer addresses.
+		q := r.URL.Query()
 		var res []any
 		for pk, e := range f.users {
+			if v := q.Get("email"); v != "" && v != e {
+				continue
+			}
+			if v := q.Get("search"); v != "" && !strings.Contains(strings.ToLower(e), strings.ToLower(v)) {
+				continue
+			}
 			res = append(res, map[string]any{"pk": pk, "email": e, "name": "must not be kept"})
 		}
 		out(200, page(res, 0))
-	case strings.HasPrefix(p, "/core/groups/") && strings.HasSuffix(p, "/add_user/"):
-		g := strings.TrimSuffix(strings.TrimPrefix(p, "/core/groups/"), "/add_user/")
-		f.addedUsers[g] = append(f.addedUsers[g], int(toFloat(body["pk"])))
+	case strings.HasPrefix(p, "/core/users/") && r.Method == "GET":
+		pk, _ := strconv.Atoi(strings.Trim(strings.TrimPrefix(p, "/core/users/"), "/"))
+		e, ok := f.users[pk]
+		if !ok {
+			out(404, map[string]any{"detail": "Not found."})
+			return
+		}
+		out(200, map[string]any{"pk": pk, "email": e, "name": "Name " + strconv.Itoa(pk), "is_active": pk != 8, "password": "must never be read"})
+	case strings.HasPrefix(p, "/core/groups/") && (strings.HasSuffix(p, "/add_user/") || strings.HasSuffix(p, "/remove_user/")):
+		add := strings.HasSuffix(p, "/add_user/")
+		g := strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(p, "/core/groups/"), "/add_user/"), "/remove_user/")
+		name := ""
+		for n, pk := range f.groups {
+			if pk == g {
+				name = n
+			}
+		}
+		if f.forbidGroups[name] {
+			out(403, map[string]any{"detail": "You do not have permission to perform this action."})
+			return
+		}
+		u := int(toFloat(body["pk"]))
+		if f.dropMembershipWrites {
+			out(204, nil)
+			return
+		}
+		if f.groupUsers == nil {
+			f.groupUsers = map[string][]int{}
+		}
+		var kept []int
+		for _, m := range f.groupUsers[name] {
+			if m != u {
+				kept = append(kept, m)
+			}
+		}
+		if add {
+			kept = append(kept, u)
+			f.addedUsers[g] = append(f.addedUsers[g], u)
+		}
+		f.groupUsers[name] = kept
 		out(204, nil)
 
 	default:

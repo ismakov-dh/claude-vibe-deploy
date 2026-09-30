@@ -480,7 +480,7 @@ func runDeploy(srcPath string) {
 			"ttl":       auth.ttl,
 			"bearer":    auth.bearer,
 			"authentik": cfg.AuthentikURL,
-			"grant":     "Add people to the group " + auth.group + " in Authentik — nothing else is needed.",
+			"grant":     "The owner grants access: vd access " + deployName + " add <email> (group " + auth.group + ").",
 		}
 	}
 	if len(policyWarnings) > 0 {
