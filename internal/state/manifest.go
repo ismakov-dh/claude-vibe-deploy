@@ -65,6 +65,11 @@ func LoadManifest(appName string) (*Manifest, error) {
 
 func SaveManifest(m *Manifest) error {
 	m.DeployedAt = time.Now().UTC().Format(time.RFC3339)
+	return WriteManifest(m)
+}
+
+// WriteManifest saves m as is — for changes that are not a deploy.
+func WriteManifest(m *Manifest) error {
 	data, err := json.MarshalIndent(m, "", "  ")
 	if err != nil {
 		return err

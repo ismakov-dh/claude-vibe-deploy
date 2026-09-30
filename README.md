@@ -105,6 +105,7 @@ vd status <name>
 vd list
 vd logs-snapshot <name> [--lines N]
 vd rollback <name>
+vd mcp-oauth <name> [--owner <email>] [--check]   # MCP behind login, no redeploy
 vd destroy <name> --yes [--drop-db]
 vd cron-set <name> --schedule "..." --command "..."
 vd cron-rm <name>
