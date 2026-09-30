@@ -1,6 +1,7 @@
 package authentik
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -166,7 +167,7 @@ func TestRemoveAndCheckMCP(t *testing.T) {
 	if h, _ := c.CheckMCP("demo"); h.Binding || h.OK() {
 		t.Fatalf("unbound MCP reported OK: %+v", h)
 	}
-	if err := c.RemoveMCP("demo"); err != nil {
+	if permsLeft, err := c.RemoveMCP("demo"); err != nil || permsLeft != nil {
 		t.Fatal(err)
 	}
 	if len(f.oauth2) != 0 {
@@ -189,7 +190,7 @@ func TestRemoveMCPTouchesNothingElseWhenTheApplicationStays(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.failAppDelete = true
-	if err := c.RemoveMCP("demo"); err == nil {
+	if _, err := c.RemoveMCP("demo"); err == nil {
 		t.Fatal("failed application delete reported as success")
 	}
 	if h, _ := c.CheckMCP("demo"); !h.OK() {
@@ -222,7 +223,7 @@ func TestMCPGroupNotCreatedByVdIsNeitherAdoptedNorDeleted(t *testing.T) {
 		t.Fatal(err)
 	}
 	f.groupAttrs["mcp-vibe-demo"] = nil
-	if err := c.RemoveMCP("demo"); err == nil {
+	if _, err := c.RemoveMCP("demo"); err == nil {
 		t.Fatal("foreign group removal reported as success")
 	}
 	if _, ok := f.apps["mcp-vibe-demo"]; !ok || len(f.oauth2) != 1 {
@@ -230,5 +231,63 @@ func TestMCPGroupNotCreatedByVdIsNeitherAdoptedNorDeleted(t *testing.T) {
 	}
 	if _, ok := f.groups["mcp-vibe-demo"]; !ok {
 		t.Fatal("foreign group deleted")
+	}
+}
+
+// destroy leaves no permission rows behind: the five InitialPermissions grants
+// on the group, from vd's own role and no other, after the group is gone.
+func TestRemoveMCPUnassignsVdRolePermsOnTheGroup(t *testing.T) {
+	f, c := setup(t)
+	if _, err := c.EnsureMCP(mcpSpec()); err != nil {
+		t.Fatal(err)
+	}
+	gpk := f.groups["mcp-vibe-demo"]
+	if permsLeft, err := c.RemoveMCP("demo"); err != nil || permsLeft != nil {
+		t.Fatalf("remove: %v %v", permsLeft, err)
+	}
+	if len(f.unassigned["r-decoy"]) != 0 {
+		t.Fatal("unassigned from a role that only contains vd's name")
+	}
+	got := f.unassigned["r-vd"]
+	if len(got) != 1 || got[0]["object_pk"] != gpk || got[0]["model"] != "authentik_core.group" {
+		t.Fatalf("unassign bodies: %v", got)
+	}
+	perms := got[0]["permissions"].([]any)
+	if len(perms) != 5 {
+		t.Fatalf("permissions: %v", perms)
+	}
+	for _, p := range perms {
+		if !strings.HasPrefix(p.(string), "authentik_core.") || strings.Contains(p.(string), "assign") {
+			t.Fatalf("unexpected permission %v", p)
+		}
+	}
+	// Only after the group is gone (Authentik removes orphaned rows by pk).
+	del, patch := -1, -1
+	for i, call := range f.calls {
+		switch {
+		case strings.HasPrefix(call, "DELETE /core/groups/"):
+			del = i
+		case strings.HasPrefix(call, "PATCH /rbac/"):
+			patch = i
+		}
+	}
+	if !(del >= 0 && del < patch) {
+		t.Fatalf("order delete=%d unassign=%d", del, patch)
+	}
+}
+
+// A refused unassign is litter, not a failed cleanup: the group is deleted.
+func TestRemoveMCPReportsLeftPermsSeparately(t *testing.T) {
+	f, c := setup(t)
+	if _, err := c.EnsureMCP(mcpSpec()); err != nil {
+		t.Fatal(err)
+	}
+	f.failUnassign = true
+	permsLeft, err := c.RemoveMCP("demo")
+	if err != nil || !errors.Is(permsLeft, ErrPermsLeft) {
+		t.Fatalf("want only permsLeft, got %v / %v", permsLeft, err)
+	}
+	if _, ok := f.groups["mcp-vibe-demo"]; ok {
+		t.Fatal("group kept")
 	}
 }

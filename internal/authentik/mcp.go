@@ -215,25 +215,28 @@ func (c *Client) ensureBareApplication(slug string) (*application, bool, error) 
 // open state EnsureMCP avoids. The group is deleted, not kept as --auth keeps
 // its own: a kept one would hand the old members to the next app that takes
 // the name. A group vd did not create is refused before anything is deleted.
-func (c *Client) RemoveMCP(app string) error {
+//
+// permsLeft is set, alone, when everything was removed but the permission
+// rows on the deleted group: harmless litter, not a failed cleanup.
+func (c *Client) RemoveMCP(app string) (permsLeft, err error) {
 	name, err := MCPName(app)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	groupPK, managed, err := c.findMCPGroup(name)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	if groupPK != "" && !managed {
-		return fmt.Errorf("group %s was not created by vd (no %s attribute); nothing removed — resolve in Authentik", name, vdManagedAttr)
+		return nil, fmt.Errorf("group %s was not created by vd (no %s attribute); nothing removed — resolve in Authentik", name, vdManagedAttr)
 	}
 	var a application
 	switch code, err := c.do("GET", "/core/applications/"+name+"/", nil, &a); {
 	case err != nil && code != http.StatusNotFound:
-		return err
+		return nil, err
 	case code == http.StatusOK:
 		if _, err := c.do("DELETE", "/core/applications/"+name+"/", nil, nil); err != nil {
-			return fmt.Errorf("delete application %s (provider and group left alone): %w", name, err)
+			return nil, fmt.Errorf("delete application %s (provider and group left alone): %w", name, err)
 		}
 	}
 	var errs []error
@@ -247,9 +250,11 @@ func (c *Client) RemoveMCP(app string) error {
 	if groupPK != "" {
 		if _, err := c.do("DELETE", "/core/groups/"+groupPK+"/", nil, nil); err != nil {
 			errs = append(errs, fmt.Errorf("delete group %s: %w", name, err))
+		} else if perr := c.unassignGroupPerms(groupPK); perr != nil {
+			permsLeft = fmt.Errorf("%w: %v", ErrPermsLeft, perr)
 		}
 	}
-	return errors.Join(errs...)
+	return permsLeft, errors.Join(errs...)
 }
 
 // MCPHealth describes an app's MCP resource, for vd status.
@@ -528,4 +533,50 @@ func (c *Client) ensureMCPGroup(name string) (string, error) {
 		}
 	}
 	return pk, nil
+}
+
+// vdRole is the Authentik role InitialPermissions attaches vd's rights on the
+// groups it creates to.
+const vdRole = "vd-platform"
+
+// groupPerms are exactly what InitialPermissions grants vdRole on each group
+// vd creates.
+var groupPerms = []string{
+	"authentik_core.view_group",
+	"authentik_core.add_user_to_group",
+	"authentik_core.remove_user_from_group",
+	"authentik_core.change_group",
+	"authentik_core.delete_group",
+}
+
+// ErrPermsLeft means the group is gone but vd could not remove its permission
+// rows on it. They grant nothing — the object no longer exists — but pile up.
+var ErrPermsLeft = errors.New("group deleted, its permission rows were not removed")
+
+// unassignGroupPerms removes vdRole's object permissions on a group. Works
+// after the group is deleted: Authentik then removes the rows by object_pk.
+// vd holds only unassign on its role, never assign.
+func (c *Client) unassignGroupPerms(groupPK string) error {
+	var uuid string
+	err := c.each("/rbac/roles/", url.Values{"search": {vdRole}}, func(raw json.RawMessage) {
+		var r struct {
+			PK   string `json:"pk"`
+			Name string `json:"name"`
+		}
+		if json.Unmarshal(raw, &r) == nil && r.Name == vdRole {
+			uuid = r.PK
+		}
+	})
+	if err != nil {
+		return fmt.Errorf("find role %s: %w", vdRole, err)
+	}
+	if uuid == "" {
+		return fmt.Errorf("role %s not visible to vd", vdRole)
+	}
+	body := map[string]any{"permissions": groupPerms, "model": "authentik_core.group", "object_pk": groupPK}
+	// PATCH: assign is POST, unassign is PATCH.
+	if _, err := c.do("PATCH", "/rbac/permissions/assigned_by_roles/"+uuid+"/unassign/", body, nil); err != nil {
+		return err
+	}
+	return nil
 }
