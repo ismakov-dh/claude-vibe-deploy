@@ -175,6 +175,7 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--auth-bearer` | false | With `--auth`: outpost also accepts Bearer (this provider's client_credentials tokens) and Basic from group members; the app restricts service accounts' routes. Sticky; `=false` turns off |
 | `--mcp-oauth` | false | Database MCP also behind Authentik (vd-mcpgw, group `mcp-vibe-<name>`); Basic keeps working. Sticky |
 | `--mcp-owner` | none | Email added to `mcp-vibe-<name>` (with `--mcp-oauth`) |
+| `--mcp-rotate-password` | false | New MCP Basic password (revokes the old one). Otherwise it survives redeploys |
 
 **Policy scan**: on every deploy, vd scans the source for hardcoded secrets and unsupported external services. Hardcoded credentials (AWS/OpenAI/Anthropic/GitHub/Google/Slack/Stripe keys, private keys, DB URLs with passwords) **block** the deploy with `POLICY_VIOLATION`. `.env` files are never scanned. Unsupported services (Supabase, Firebase, MongoDB, Redis, S3) produce warnings in the `warnings` field of the JSON response; `--allow-external` silences them. (A hardcoded JWT-shaped token in source also warns — it's there to catch pasted Supabase anon keys, not to flag the use of a JWT library.)
 

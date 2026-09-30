@@ -39,6 +39,7 @@ var (
 	deployAuthBearerSet bool // --auth-bearer given explicitly, true or false
 	deployMCPOAuth      bool
 	deployMCPOwner      string
+	deployMCPRotate     bool
 )
 
 func init() {
@@ -52,6 +53,7 @@ func init() {
 	deployCmd.Flags().BoolVar(&deployAllowExternal, "allow-external", false, "silence warnings about unsupported external services (Supabase, Firebase, etc.)")
 	deployCmd.Flags().BoolVar(&deployAuth, "auth", false, "put the app behind platform login (Authentik forward auth); sticky once set")
 	deployCmd.Flags().BoolVar(&deployMCPOAuth, "mcp-oauth", false, "also put the database MCP behind platform login (Authentik via vd-mcpgw); Basic keeps working. Sticky once set")
+	deployCmd.Flags().BoolVar(&deployMCPRotate, "mcp-rotate-password", false, "issue a new Basic password for the database MCP (cuts off every client using the old one)")
 	deployCmd.Flags().StringVar(&deployMCPOwner, "mcp-owner", "", "email of a person to add to the MCP's access group (with --mcp-oauth)")
 	deployCmd.Flags().BoolVar(&deployAuthBearer, "auth-bearer", false, "with --auth: also accept Authorization: Bearer/Basic from service accounts in the app's group (intercept_header_auth). Sticky; --auth-bearer=false turns it off")
 	deployCmd.Flags().StringVar(&deployAuthTTL, "auth-ttl", "", "how long a sign-in lasts before re-checking with Authentik, e.g. hours=1 or minutes=30 (default hours=1)")
@@ -273,7 +275,7 @@ func runDeploy(srcPath string) {
 				if err != nil {
 					output.Warn("MCP database role failed: %v — deploying without MCP", err)
 				} else {
-					mcpPassword = generateRandomPassword(32)
+					mcpPassword = mcpPasswordFor(deployName, deployMCPRotate)
 					mcpAuth = htpasswdSHA(mcpUser, mcpPassword)
 					if err := writeMCPEnv(deployName, ro.URL, mcpUser, mcpPassword); err != nil {
 						output.Warn("Could not write mcp.env: %v — deploying without MCP", err)
@@ -539,6 +541,17 @@ func mcpInfo(appName, host, user, password string) map[string]any {
 // symptoms are two, both silent: `vd status` omits the mcp block for an MCP that
 // is up and serving, and the next deploy as vd-user cannot overwrite the file, so
 // it drops the MCP entirely with a warning nobody reads.
+// mcpPasswordFor keeps the MCP's Basic password across redeploys: clients hold
+// it in `claude mcp add --header`, and a new one on every deploy silently cut
+// them all off. A new password when the app has none yet, or when asked to
+// rotate — that is how a leaked one is revoked.
+func mcpPasswordFor(app string, rotate bool) string {
+	if pw := envValue(state.AppMCPEnvPath(app), "VD_MCP_PASSWORD"); pw != "" && !rotate {
+		return pw
+	}
+	return generateRandomPassword(32)
+}
+
 func writeMCPEnv(appName, dbURI, user, password string) error {
 	path := state.AppMCPEnvPath(appName)
 
