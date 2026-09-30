@@ -37,7 +37,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Manual rollback** | `vd rollback` | Revert to any of the last 5 deployments. |
 | **Logs** | `vd logs-snapshot` | Get container logs for debugging. |
 | **File upload** | `vd push` | Send files via tar stream through SSH. No scp needed. |
-| **Platform login** | `--auth` | Authentik forward auth in front of the app. The app writes no login code: it reads `X-authentik-uid/-email/-name` and checks `X-Vibe-Ingress` against `VIBE_INGRESS_SECRET`. Access = membership in `vibe-<name>`. Sticky; subdomain routing only. Agents load the `/auth` skill (it also has a server-side OIDC fallback for servers without `--auth`). |
+| **Platform login** | `--auth` | Authentik forward auth in front of the app. The app writes no login code: it reads `X-authentik-uid/-email/-name` and checks `X-Vibe-Ingress` against `VIBE_INGRESS_SECRET`. Access = membership in `vibe-<name>`, granted by the owner with `vd access`. Sticky; subdomain routing only. Agents load the `/auth` skill (it also has a server-side OIDC fallback for servers without `--auth`). |
 
 ### What You DON'T Have
 
@@ -212,6 +212,14 @@ Stop container, remove app files.
 
 For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept. For `--mcp-oauth` apps, destroy removes the MCP application, provider and the group `mcp-vibe-<app>`. It also works on the leftovers of a failed first deploy (no manifest): container, Authentik objects and files, including a `.env` with the prod DSN.
 
+#### `vd access <app-name> list|add|remove [email]`
+
+The app's owner grants and revokes access without a platform admin: membership of `vibe-<app>` (an `--auth` app) or, with `--mcp`, `mcp-vibe-<app>` (after `--mcp-oauth`). The group is derived from the app name — no free group names. `add`/`remove` are idempotent (`changed`); `remove` reports `takes_effect` (the app's `auth_ttl`, or 5 minutes for the MCP). `add` for an email without a platform account fails with `NO_ACCOUNT`; a group vd has no rights on fails with `ACCESS_FORBIDDEN`.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--mcp` | false | The MCP's group instead of the app's |
+
 #### `vd mcp-oauth <app-name>`
 
 Turn on `--mcp-oauth` for a running `--db postgres` app **without redeploying it**: sets up Authentik, writes the gateway route and recreates only the MCP container with its new labels. The app container is not rebuilt or restarted; Basic keeps working with the same password.
@@ -277,7 +285,7 @@ would print as `[vd warning]` in human mode. `ok: true` with a warning such as `
 failed … deploying without DB` means the app runs without that piece; agents must read and relay
 `warnings`, not just `ok`.
 
-Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `PROD_RO_REQUIRES_AUTH`, `NO_MCP`, `MCP_OAUTH_FAILED`, `COMPOSE_DRIFT`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`
+Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `PROD_RO_REQUIRES_AUTH`, `NO_MCP`, `MCP_OAUTH_FAILED`, `COMPOSE_DRIFT`, `INVALID_ARGS`, `ACCESS_NOT_ENABLED`, `NO_ACCOUNT`, `ACCESS_FORBIDDEN`, `ACCESS_FAILED`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`
 
 ### Troubleshooting
 

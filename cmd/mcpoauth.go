@@ -74,15 +74,15 @@ func mcpOAuthInfo(app string, cfg *state.Config, owner string, res *authentik.MC
 	switch {
 	case owner == "":
 		info["owner"] = nil
-		info["grant"] = "No --mcp-owner this time: nobody was added. Access is membership in " + res.Name + ", managed by platform admins."
+		info["grant"] = "No --mcp-owner this time: nobody was added. Grant access with: vd access " + app + " add <email> --mcp"
 	case res.OwnerAdded:
 		info["owner"] = owner // the email the caller gave, never directory data
 	case res.OwnerMissing:
 		info["owner"] = owner
-		info["grant"] = owner + " has no platform account yet; a platform admin adds people to " + res.Name + "."
+		info["grant"] = owner + " has no platform account yet; once invited: vd access " + app + " add " + owner + " --mcp"
 	case res.OwnerError != "":
 		info["owner"] = owner
-		info["grant"] = owner + " was not added (see warnings); a platform admin adds people to " + res.Name + "."
+		info["grant"] = owner + " was not added (see warnings); retry with: vd access " + app + " add " + owner + " --mcp"
 	}
 	return info
 }
