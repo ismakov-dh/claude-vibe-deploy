@@ -94,6 +94,13 @@ func runDeploy(srcPath string) {
 			"Invalid app name: "+deployName,
 			"Must be lowercase, start with a letter, 2-63 chars, only a-z/0-9/hyphens"))
 	}
+	// Held for the whole run (released by exit): vd mcp-oauth re-renders this
+	// app's compose file and must not interleave with a deploy.
+	unlockApp, err := state.LockApp(deployName)
+	if err != nil {
+		output.Fail("deploy", output.NewError("DEPLOY_FAILED", "Could not take the app lock: "+err.Error(), ""))
+	}
+	defer unlockApp()
 
 	// Load global config
 	cfg, err := state.LoadConfig()
@@ -341,29 +348,17 @@ func runDeploy(srcPath string) {
 	}
 
 	// Generate docker-compose.vd.yml
-	needsDB := deployDB == "postgres"
 	domain := buildDomain(deployName, cfg.Domain, deployRouting)
 
-	composeData := docker.ComposeData{
-		Name:         deployName,
-		AppType:      string(appType),
-		Port:         deployPort,
-		Routing:      deployRouting,
-		Domain:       cfg.Domain,
-		HasEnvFile:   hasEnvFile,
-		NeedsDB:      needsDB,
-		NeedsMCP:     needsMCP,
-		MCPImage:     docker.MCPImage,
-		MCPBasicAuth: mcpAuth,
-	}
-	if auth != nil {
-		composeData.Auth = true
-		composeData.IngressSecret = ingressSecret
-	}
+	prodRONet := ""
 	if deployDB == "prod-ro" {
-		composeData.ProdRONetwork = cfg.ProdRONetwork
+		prodRONet = cfg.ProdRONetwork
 	}
-	composeData.MCPOAuth = mcpRes != nil
+	composeData := composeDataFor(&state.Manifest{
+		Name: deployName, AppType: string(appType), Port: deployPort, Routing: deployRouting,
+		HasEnvFile: hasEnvFile, DB: deployDB, MCP: needsMCP, Auth: auth != nil,
+		MCPOAuthLive: mcpRes != nil, ProdRONetwork: prodRONet,
+	}, cfg, mcpAuth, ingressSecret)
 	if err := docker.GenerateComposeFile(templatesFS, composeData, state.AppComposePath(deployName)); err != nil {
 		output.Fail("deploy", output.NewError("COMPOSE_FAILED",
 			"Failed to generate compose file: "+err.Error(), "This is a bug"))
@@ -425,9 +420,7 @@ func runDeploy(srcPath string) {
 		HasEnvFile:    hasEnvFile,
 		MCP:           needsMCP,
 	}
-	if deployDB == "prod-ro" {
-		manifest.ProdRONetwork = cfg.ProdRONetwork
-	}
+	manifest.ProdRONetwork = prodRONet
 	if auth != nil {
 		manifest.Auth = true
 		manifest.AuthTTL = auth.ttl
@@ -798,6 +791,33 @@ func stopFailedFirstDeploy(appDir string, isRedeploy bool) {
 	if !isRedeploy {
 		docker.ComposeDown(appDir, "docker-compose.vd.yml")
 	}
+}
+
+// composeDataFor is the one place that turns an app's settings into compose
+// data. vd deploy calls it with what it is deploying, vd mcp-oauth with the
+// manifest on disk — so a re-render outside a deploy cannot drift from what
+// the deploy wrote. basic is the MCP's htpasswd entry, ingress the forward-auth
+// secret; both live in the app's own files, not in the manifest.
+func composeDataFor(m *state.Manifest, cfg *state.Config, basic, ingress string) docker.ComposeData {
+	d := docker.ComposeData{
+		Name:          m.Name,
+		AppType:       m.AppType,
+		Port:          m.Port,
+		Routing:       m.Routing,
+		Domain:        cfg.Domain,
+		HasEnvFile:    m.HasEnvFile,
+		NeedsDB:       m.DB == "postgres",
+		NeedsMCP:      m.MCP,
+		MCPImage:      docker.MCPImage,
+		MCPBasicAuth:  basic,
+		MCPOAuth:      m.MCP && m.MCPOAuthLive,
+		ProdRONetwork: m.ProdRONetwork,
+	}
+	if m.Auth {
+		d.Auth = true
+		d.IngressSecret = ingress
+	}
+	return d
 }
 
 // prevDB is the database type of the running deploy, "" if none.

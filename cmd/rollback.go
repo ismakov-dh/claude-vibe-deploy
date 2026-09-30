@@ -68,6 +68,14 @@ var rollbackCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
+		if !nameRegex.MatchString(name) {
+			output.Fail("rollback", output.NewError("INVALID_NAME", "Invalid app name: "+name, ""))
+		}
+		unlock, lerr := state.LockApp(name)
+		if lerr != nil {
+			output.Fail("rollback", output.NewError("ROLLBACK_FAILED", "Could not take the app lock: "+lerr.Error(), ""))
+		}
+		defer unlock()
 		cur, err := state.LoadManifest(name)
 		if err != nil {
 			output.Fail("rollback", output.NewError("NOT_FOUND", "App not found: "+name, ""))

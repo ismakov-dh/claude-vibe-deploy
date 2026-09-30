@@ -212,6 +212,17 @@ Stop container, remove app files.
 
 For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept. For `--mcp-oauth` apps, destroy removes the MCP application, provider and the group `mcp-vibe-<app>`. It also works on the leftovers of a failed first deploy (no manifest): container, Authentik objects and files, including a `.env` with the prod DSN.
 
+#### `vd mcp-oauth <app-name>`
+
+Turn on `--mcp-oauth` for a running `--db postgres` app **without redeploying it**: sets up Authentik, writes the gateway route and recreates only the MCP container with its new labels. The app container is not rebuilt or restarted; Basic keeps working with the same password.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--owner` | none | Email added to `mcp-vibe-<app>` |
+| `--check` | false | Change nothing: report whether vd can re-render the app's compose file faithfully (`faithful`, `mcp_lines_differ`, `other_lines_differ`) |
+
+Refuses with `COMPOSE_DRIFT` before any change if lines outside the MCP service differ from what vd renders from the manifest (redeploy once, then retry). Holds the app lock, which `vd deploy` takes too.
+
 #### `vd db-create <app-name>`
 
 Provision a database user independently (usually not needed — `vd deploy --db` does this automatically).
@@ -266,7 +277,7 @@ would print as `[vd warning]` in human mode. `ok: true` with a warning such as `
 failed … deploying without DB` means the app runs without that piece; agents must read and relay
 `warnings`, not just `ok`.
 
-Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `PROD_RO_REQUIRES_AUTH`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`
+Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `PROD_RO_REQUIRES_AUTH`, `NO_MCP`, `MCP_OAUTH_FAILED`, `COMPOSE_DRIFT`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`
 
 ### Troubleshooting
 

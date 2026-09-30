@@ -116,6 +116,18 @@ func ComposeApply(dir, composefile string) error {
 }
 
 // ComposeDown runs docker compose down.
+// ComposeUpService recreates one service of a compose project and leaves the
+// others — the app container above all — exactly as they run: no build, no
+// dependencies started.
+func ComposeUpService(dir, composefile, service string) error {
+	r, err := shell.Run(defaultTimeout, "docker", "compose", "-f", dir+"/"+composefile,
+		"up", "-d", "--no-deps", "--no-build", "--force-recreate", service)
+	if err != nil {
+		return fmt.Errorf("docker compose up %s failed: %s", service, r.Stderr)
+	}
+	return nil
+}
+
 func ComposeDown(dir, composefile string) error {
 	r, err := shell.Run(2*time.Minute, "docker", "compose", "-f", dir+"/"+composefile, "down", "--remove-orphans")
 	if err != nil {
