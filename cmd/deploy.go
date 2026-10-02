@@ -55,7 +55,7 @@ func init() {
 	deployCmd.Flags().BoolVar(&deployMCPOAuth, "mcp-oauth", false, "also put the database MCP behind platform login (Authentik via vd-mcpgw); Basic keeps working. Sticky once set")
 	deployCmd.Flags().BoolVar(&deployMCPRotate, "mcp-rotate-password", false, "issue a new Basic password for the database MCP (cuts off every client using the old one)")
 	deployCmd.Flags().StringVar(&deployMCPOwner, "mcp-owner", "", "email of a person to add to the MCP's access group (with --mcp-oauth)")
-	deployCmd.Flags().BoolVar(&deployAuthBearer, "auth-bearer", false, "with --auth: also accept Authorization: Bearer/Basic from service accounts in the app's group (intercept_header_auth). Sticky; --auth-bearer=false turns it off")
+	deployCmd.Flags().BoolVar(&deployAuthBearer, "auth-bearer", false, "with --auth: also accept Authorization: Bearer (service accounts) and Basic with an app password (any group member) — intercept_header_auth. Sticky; --auth-bearer=false turns it off")
 	deployCmd.Flags().StringVar(&deployAuthTTL, "auth-ttl", "", "how long a sign-in lasts before re-checking with Authentik, e.g. hours=1 or minutes=30 (default hours=1)")
 	rootCmd.AddCommand(deployCmd)
 }

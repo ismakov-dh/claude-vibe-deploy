@@ -28,13 +28,14 @@ live at `https://auth-demo.apps.platform.acuradai.com`. Copy from it when in dou
 ## 0. Hard rules — do not negotiate
 
 1. **No login screen, no signup screen, no password form, no password reset.** The platform
-   handles all of it. If the user asks for "register", explain that people are added by the
-   platform team (§1).
+   handles all of it. If the user asks for "register", explain that the app's owner gives people
+   access — you run `vd access` on their word (§1).
 2. **Subdomain routing only.** `vd deploy --auth` refuses `--routing path`.
 3. **Trust the identity headers only together with the ingress secret** (§3). Every app on the
    platform shares one network and can reach yours directly, skipping the login — the secret is
    what proves a request came through it.
-4. **Key your data on `X-authentik-uid`**, never on email. Do not store email or name.
+4. **Key your data on `X-authentik-uid`**, never on email. Email and name are never a key or a
+   permission; at most a display cache refreshed on every request (§7b).
 5. **One container** serves UI and API, as for every vibe-deploy app.
 
 ---
@@ -284,8 +285,17 @@ function check(r) {
 
 ## 7. Per-user data
 
-Key rows on `X-authentik-uid` with a reversible migration (Prisma / Alembic / Django), created
-lazily after the guard passes:
+Key rows on `X-authentik-uid` with a reversible migration (Prisma / Alembic / Django). The user
+table — `uid` **is** the primary key, other tables reference it:
+
+```sql
+-- up
+CREATE TABLE app_users (uid text PRIMARY KEY, created_at timestamptz NOT NULL DEFAULT now());
+-- down
+DROP TABLE app_users;
+```
+
+Rows are created lazily after the guard passes:
 
 ```python
 await db.execute(
@@ -308,6 +318,11 @@ says nothing about your app. If an example or prompt implies platform roles, bui
 
 The pattern: a table of roles keyed on `uid`, the first admins from an env var, a guard, and an
 `/admin` page where admins grant roles to people who have opened the app at least once.
+
+Needs the app's **own** database (`--db postgres`): it writes on every request. A `--db prod-ro`
+app has only a read-only connection — there, use the `APP_ADMINS` check alone (an `is_admin`
+from the env var, no tables), or give the dashboard no roles. Everyone with the app's database
+MCP (`mcp-vibe-<name>`) can read `app_users`, display cache included.
 
 **Migration** (reversible; Alembic `upgrade`/`downgrade`, a Prisma migration, or Django — same SQL):
 
@@ -342,7 +357,7 @@ check. Keep the list of roles in code; reject any other name.
 # roles.py — on top of current_user from auth.py
 import os
 import psycopg
-from fastapi import Depends, HTTPException, Request
+from fastapi import Depends, HTTPException
 from auth import current_user
 
 ROLES = {"admin", "tasks-admin"}          # every role the app knows
@@ -351,7 +366,8 @@ DB = os.environ["DATABASE_URL"]
 
 
 def q(sql: str, args: tuple = ()) -> list:
-    # ponytail: a connection per call; use a pool once traffic matters.
+    # `with connect()` commits on exit. ponytail: a connection per call; use
+    # psycopg_pool once traffic matters.
     with psycopg.connect(DB) as c:
         cur = c.execute(sql, args)
         return cur.fetchall() if cur.description else []
@@ -366,24 +382,26 @@ def user(u: dict = Depends(current_user)) -> dict:
     return u
 
 
-def is_admin(u: dict) -> bool:
+def has_role(u: dict, role: str) -> bool:
+    """Admins (APP_ADMINS or the admin role) pass every check."""
     return u["email"].lower() in ADMINS or bool(
-        q("SELECT 1 FROM app_roles WHERE uid = %s AND role = 'admin'", (u["uid"],)))
+        q("SELECT 1 FROM app_roles WHERE uid = %s AND role IN ('admin', %s)", (u["uid"], role)))
 
 
 def require_role(role: str):
     assert role in ROLES, role
     def guard(u: dict = Depends(user)) -> dict:
-        if is_admin(u) or q("SELECT 1 FROM app_roles WHERE uid = %s AND role = %s", (u["uid"], role)):
-            return u
-        raise HTTPException(403, "forbidden")
+        if not has_role(u, role):
+            raise HTTPException(403, "forbidden")
+        return u
     return guard
 ```
 
 ```python
 # main.py — the admin API; the /admin page calls it through the api() helper (§6)
-from fastapi import Depends, HTTPException, Request
-from roles import ROLES, q, require_role, user
+from fastapi import Depends, HTTPException
+from pydantic import BaseModel
+from roles import ROLES, q, require_role
 
 
 @app.get("/api/admin/users")
@@ -395,20 +413,23 @@ def admin_users(admin: dict = Depends(require_role("admin"))):
     return [{"uid": r[0], "email": r[1], "name": r[2], "last_seen": r[3], "roles": r[4]} for r in rows]
 
 
+class RoleChange(BaseModel):
+    uid: str
+    role: str
+    grant: bool
+
+
+# A Pydantic body is parsed only from application/json, which a cross-site form
+# cannot send without a preflight — so no CSRF token is needed. Anything else: 422.
 @app.post("/api/admin/roles")
-async def admin_roles(request: Request, admin: dict = Depends(require_role("admin"))):
-    # JSON only: a cross-site form cannot send it without a preflight, so no CSRF token needed.
-    if request.headers.get("content-type", "").split(";")[0] != "application/json":
-        raise HTTPException(415, "json only")
-    body = await request.json()
-    uid, role, grant = body.get("uid"), body.get("role"), body.get("grant")
-    if role not in ROLES or not isinstance(grant, bool) or not q("SELECT 1 FROM app_users WHERE uid = %s", (uid,)):
+def admin_roles(change: RoleChange, admin: dict = Depends(require_role("admin"))):
+    if change.role not in ROLES or not q("SELECT 1 FROM app_users WHERE uid = %s", (change.uid,)):
         raise HTTPException(400, "unknown user or role")
-    if grant:
+    if change.grant:
         q("INSERT INTO app_roles (uid, role, granted_by) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-          (uid, role, admin["uid"]))
+          (change.uid, change.role, admin["uid"]))
     else:
-        q("DELETE FROM app_roles WHERE uid = %s AND role = %s", (uid, role))
+        q("DELETE FROM app_roles WHERE uid = %s AND role = %s", (change.uid, change.role))
     return {"ok": True}
 
 
@@ -431,8 +452,8 @@ export const ROLES = new Set(['admin', 'tasks-admin'])   // every role the app k
 const ADMINS = new Set((process.env.APP_ADMINS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
 export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
 
-// Errors reach Express's error handler instead of hanging the request.
-const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
+// Express 4 does not catch errors of async handlers: wrap every one.
+export const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
 
 // requireUser plus a row in app_users, so admins can find the person.
 export const user = [requireUser, wrap(async (req, res, next) => {
@@ -443,18 +464,17 @@ export const user = [requireUser, wrap(async (req, res, next) => {
   next()
 })]
 
-export async function isAdmin(u) {
+// Admins (APP_ADMINS or the admin role) pass every check.
+export async function hasRole(u, role) {
   if (ADMINS.has(u.email.toLowerCase())) return true
-  const r = await pool.query(`SELECT 1 FROM app_roles WHERE uid = $1 AND role = 'admin'`, [u.uid])
+  const r = await pool.query(`SELECT 1 FROM app_roles WHERE uid = $1 AND role IN ('admin', $2)`, [u.uid, role])
   return r.rowCount > 0
 }
 
 export function requireRole(role) {
   if (!ROLES.has(role)) throw new Error('unknown role ' + role)
   return [...user, wrap(async (req, res, next) => {
-    if (await isAdmin(req.user)) return next()
-    const r = await pool.query('SELECT 1 FROM app_roles WHERE uid = $1 AND role = $2', [req.user.uid, role])
-    if (r.rowCount === 0) return res.status(403).json({ error: 'forbidden' })
+    if (!(await hasRole(req.user, role))) return res.status(403).json({ error: 'forbidden' })
     next()
   })]
 }
@@ -462,22 +482,22 @@ export function requireRole(role) {
 
 ```js
 // server.js — the admin API; the /admin page calls it through the api() helper (§6)
-import { ROLES, pool, requireRole, user } from './roles.js'
+import { ROLES, pool, requireRole, wrap } from './roles.js'
 
 app.use(express.json())   // only parses application/json — a cross-site form cannot send it
 
-app.get('/api/admin/users', requireRole('admin'), async (req, res) => {
+app.get('/api/admin/users', requireRole('admin'), wrap(async (req, res) => {
   const r = await pool.query(
     `SELECT u.uid, u.last_email AS email, u.last_name AS name, u.last_seen,
             coalesce(array_agg(r.role) FILTER (WHERE r.role IS NOT NULL), '{}') AS roles
      FROM app_users u LEFT JOIN app_roles r USING (uid)
      GROUP BY u.uid ORDER BY u.last_seen DESC NULLS LAST`)
   res.json(r.rows)
-})
+}))
 
-app.post('/api/admin/roles', requireRole('admin'), async (req, res) => {
+app.post('/api/admin/roles', requireRole('admin'), wrap(async (req, res) => {
   const { uid, role, grant } = req.body || {}
-  if (!req.is('application/json') || !ROLES.has(role) || typeof grant !== 'boolean') {
+  if (!req.is('application/json') || typeof uid !== 'string' || !ROLES.has(role) || typeof grant !== 'boolean') {
     return res.status(400).json({ error: 'bad_request' })
   }
   const known = await pool.query('SELECT 1 FROM app_users WHERE uid = $1', [uid])
@@ -489,13 +509,13 @@ app.post('/api/admin/roles', requireRole('admin'), async (req, res) => {
     await pool.query('DELETE FROM app_roles WHERE uid = $1 AND role = $2', [uid, role])
   }
   res.json({ ok: true })
-})
+}))
 
 app.get('/api/tasks/admin', requireRole('tasks-admin'), (req, res) => { /* … */ })
 ```
 
 Use `...user` on the app's ordinary routes too, so everyone who opens the app appears in the
-admin list. (Express 4: these routes are async — keep the `wrap()`; Express 5 handles it itself.)
+admin list. (Express 4: wrap every async handler with `wrap()`; Express 5 catches them itself.)
 
 The `/admin` page itself: a table from `GET /api/admin/users`, a checkbox per role, each change a
 `POST /api/admin/roles` with `{uid, role, grant}` via `api()`. Someone who has never opened the
@@ -606,7 +626,7 @@ refresh tokens, no token storage, no `offline_access`**, and **secrets in `.env`
 
 | Step | Who |
 |---|---|
-| Create the OIDC provider, application and access group in Authentik; hand over `client_id` + `client_secret` | **The platform admin — the only human step** |
+| Create the OIDC provider, application and access group in Authentik; hand over `client_id` + `client_secret`; later add and remove people in that group | **The platform admin** |
 | Everything else: app name, `.env`, login/callback/logout routes, group check, session cookie, `sub`-keyed data, deploy, verification | **You, the agent** |
 
 Pick the app name **first** (lowercase, starts with a letter, 2–63 chars, `a-z 0-9 -`). It fixes

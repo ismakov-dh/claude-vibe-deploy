@@ -249,7 +249,7 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--mcp-oauth` | false | Also put the database MCP behind platform login (browser sign-in, group `mcp-vibe-<app>`). Basic keeps working alongside. Needs `--db postgres`. Sticky |
 | `--mcp-rotate-password` | false | Issue a new MCP Basic password; every client on the old one is cut off. Without it the password survives redeploys |
 | `--mcp-owner` | none | Email of one person to add to `mcp-vibe-<app>` (with `--mcp-oauth`) |
-| `--auth-bearer` | false | With `--auth`: the outpost also accepts `Authorization: Bearer`/`Basic` from service accounts in the app's group. The app must restrict their routes itself — see `/auth`. Sticky; `--auth-bearer=false` turns it off |
+| `--auth-bearer` | false | With `--auth`: the outpost also accepts `Authorization: Bearer` (service accounts' client_credentials tokens) and `Basic` with an app password from **any** group member. The app must restrict service accounts' routes itself — see `/auth`. Sticky; `--auth-bearer=false` turns it off |
 | `--auth-ttl` | `hours=1` | How long a sign-in lasts before Authentik is asked again (`hours=`, `minutes=`, `days=`). Longer than a day produces a warning: group removal then takes that long to bite |
 
 `--db postgres` additionally provisions a read-only MCP for the app's database and
