@@ -126,6 +126,7 @@ debugging instead of guessing. `vd deploy --json` and `vd status --json` return 
 
 ```json
 "mcp": {
+  "available": true,
   "url": "https://<app-name>.mcp.<apps-domain>/mcp",
   "group": "mcp-vibe-<app-name>",
   "add": "claude mcp add --transport http <app-name>-db https://<app-name>.mcp.<apps-domain>/mcp",
@@ -138,8 +139,8 @@ there is no password. Access is membership in `mcp-vibe-<app-name>`: pass `--mcp
 on deploy for the person you are working with, and grant anyone else later with
 `vd access <app-name> add <email> --mcp` — only for emails the user gave you.
 
-If there is no `mcp` block, or `vd status` says `"available": false`, the MCP is not reachable
-for agents on this server (`warnings` or `hint` says why). Do not look for another way in;
+If the block says `"available": false`, the MCP is not reachable for agents right now — `hint`
+(and on deploy, `warnings`) says why. Do not look for another way in;
 tell the user.
 
 **Who sees what through the MCP** — say this to the user before granting MCP access:

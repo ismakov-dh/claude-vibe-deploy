@@ -56,7 +56,7 @@ func init() {
 	deployCmd.Flags().MarkHidden("mcp-oauth")
 	deployCmd.Flags().BoolVar(&deployMCPRotate, "mcp-rotate-password", false, "platform admin: issue a new server-side Basic password for the database MCP (cuts off clients still using the old one)")
 	deployCmd.Flags().MarkHidden("mcp-rotate-password")
-	deployCmd.Flags().StringVar(&deployMCPOwner, "mcp-owner", "", "email of a person to add to the MCP's access group (with --mcp-oauth)")
+	deployCmd.Flags().StringVar(&deployMCPOwner, "mcp-owner", "", "email of a person to add to the database MCP's access group (apps with --db postgres)")
 	deployCmd.Flags().BoolVar(&deployAuthBearer, "auth-bearer", false, "with --auth: also accept Authorization: Bearer (service accounts) and Basic with an app password (any group member) — intercept_header_auth. Sticky; --auth-bearer=false turns it off")
 	deployCmd.Flags().StringVar(&deployAuthTTL, "auth-ttl", "", "how long a sign-in lasts before re-checking with Authentik, e.g. hours=1 or minutes=30 (default hours=1)")
 	rootCmd.AddCommand(deployCmd)
@@ -292,14 +292,13 @@ func runDeploy(srcPath string) {
 					} else {
 						needsMCP = true
 						mcpHostName = deployName + ".mcp." + cfg.Domain
-						output.Info("Read-only MCP for this database: https://%s/mcp (platform sign-in)", mcpHostName)
+						output.Info("Read-only MCP container prepared for %s", mcpHostName)
 					}
 				}
 			}
 		}
 	}
 
-	// MCP behind Authentik, sticky like --auth. Only meaningful with an MCP.
 	prevM, _ := state.LoadManifest(deployName)
 	// Every database MCP is behind platform login; agents are never given the
 	// Basic credentials (they stay on the server for clients that already hold
@@ -308,7 +307,7 @@ func runDeploy(srcPath string) {
 	wantMCPOAuth := mcpOAuthFor(needsMCP)
 	var mcpRes *authentik.MCPResult
 	if deployMCPOwner != "" && !wantMCPOAuth {
-		output.Warn("--mcp-owner ignored without --mcp-oauth")
+		output.Warn("--mcp-owner ignored: the app has no database MCP (deploy with --db postgres)")
 	}
 	if wantMCPOAuth {
 		mcpRes = ensureMCPOAuth(deployName, cfg, deployMCPOwner)
@@ -463,10 +462,12 @@ func runDeploy(srcPath string) {
 		"db":          deployDB,
 		"deployed_at": time.Now().UTC().Format(time.RFC3339),
 	}
-	if needsMCP && mcpRes != nil {
-		data["mcp"] = mcpOAuthInfo(deployName, cfg, deployMCPOwner, mcpRes)
+	if needsMCP {
+		data["mcp"] = deployMCPBlock(deployName, cfg, deployMCPOwner, mcpRes)
 	}
-	if wantMCPOAuth || (prevM != nil && prevM.MCPOAuth) {
+	// Only when a route exists or existed: on a server without platform login
+	// there is nothing to publish, and the setup warning already said so.
+	if mcpRes != nil || (prevM != nil && prevM.MCPOAuthLive) {
 		if err := syncMCPGateway(cfg); err != nil {
 			output.Warn("The database MCP is not reachable yet: its sign-in route was not published (%v). Redeploy to retry", err)
 		}
@@ -505,7 +506,7 @@ func htpasswdSHA(user, password string) string {
 }
 
 // writeMCPEnv writes the MCP container's environment. The basicauth pair is
-// stored alongside DATABASE_URI so vd status can report it; it is also visible
+// stored alongside DATABASE_URI (server-side only — never shown to agents); it is also visible
 // inside the MCP container, which costs nothing — anything that can read that
 // container's environment already holds its database URI.
 //
@@ -801,6 +802,16 @@ func composeDataFor(m *state.Manifest, cfg *state.Config, basic, ingress string)
 		d.IngressSecret = ingress
 	}
 	return d
+}
+
+// deployMCPBlock is vd deploy's mcp block for agents: the sign-in entry point
+// when it was set up, otherwise available:false with the reason — never the
+// Basic credentials.
+func deployMCPBlock(app string, cfg *state.Config, owner string, res *authentik.MCPResult) map[string]any {
+	if res == nil {
+		return map[string]any{"available": false, "hint": "see warnings — the MCP could not be put behind platform sign-in"}
+	}
+	return mcpOAuthInfo(app, cfg, owner, res)
 }
 
 // mcpOAuthFor: an app's database MCP, when it has one, is always behind

@@ -98,10 +98,14 @@ func mcpStatus(m *state.Manifest, cfg *state.Config) (map[string]any, string) {
 
 func mcpStatusBlock(m *state.Manifest, cfg *state.Config) map[string]any {
 	if !m.MCPOAuthLive {
-		return map[string]any{
-			"available": false,
-			"hint":      "not behind platform login yet — a platform admin runs: vd mcp-oauth " + m.Name,
+		hint := "deployed before sign-in was the default — a platform admin runs: vd mcp-oauth " + m.Name
+		switch {
+		case cfg.AuthentikURL == "":
+			hint = "platform login is not set up on this server"
+		case m.MCPOAuth:
+			hint = "sign-in setup failed on the last deploy — redeploy to retry"
 		}
+		return map[string]any{"available": false, "hint": hint}
 	}
 	url := "https://" + mcpHost(m.Name, cfg) + "/mcp"
 	return map[string]any{

@@ -260,7 +260,7 @@ Success:
 
 With `--db postgres` the `data` object also carries an `mcp` block — `url`, `group` and an
 `add` field holding a complete `claude mcp add --transport http …` command; the client signs in
-through the browser. No block (and a warning) means the MCP is not available on this server.
+through the browser. `"available": false` with a `hint` (and a warning) means the MCP is not reachable for agents right now.
 
 Error:
 ```json

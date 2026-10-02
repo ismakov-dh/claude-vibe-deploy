@@ -119,9 +119,9 @@ func accessGroup(name string, mcp bool) (group, takesEffect string, maxSeconds i
 		output.Fail("access", output.NewError("NOT_FOUND", "App not found: "+name, "Check app name with: vd list"))
 	}
 	if mcp {
-		if !m.MCPOAuth {
+		if !m.MCPOAuthLive {
 			output.Fail("access", output.NewError("ACCESS_NOT_ENABLED",
-				name+"'s database MCP is not behind platform login", "Turn it on first: vd mcp-oauth "+name))
+				name+"'s database MCP is not behind platform sign-in (yet)", "Redeploy the app; if it persists, a platform admin checks vd status "+name))
 		}
 		g, _ := authentik.MCPName(name)
 		// The gateway admits a token only if the group is in its groups claim.

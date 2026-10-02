@@ -26,10 +26,17 @@ func TestMCPBlocksCarryNoBasic(t *testing.T) {
 	cfg := &state.Config{Domain: "apps.example.com"}
 	res := &authentik.MCPResult{Name: "mcp-vibe-demo", OwnerAdded: true}
 
-	dep := mcpOAuthInfo("demo", cfg, "a@example.com", res)
+	// What vd deploy --json puts under "mcp", both ways.
+	dep := deployMCPBlock("demo", cfg, "a@example.com", res)
 	assertNoBasic(t, "deploy mcp block", dep)
-	if dep["add"] != "claude mcp add --transport http demo-db https://demo.mcp.apps.example.com/mcp" || dep["group"] != "mcp-vibe-demo" {
+	if dep["available"] != true || dep["group"] != "mcp-vibe-demo" ||
+		dep["add"] != "claude mcp add --transport http demo-db https://demo.mcp.apps.example.com/mcp" {
 		t.Fatalf("deploy block: %v", dep)
+	}
+	down := deployMCPBlock("demo", cfg, "", nil)
+	assertNoBasic(t, "deploy mcp block (sign-in failed)", down)
+	if down["available"] != false || down["add"] != nil {
+		t.Fatalf("deploy block without sign-in: %v", down)
 	}
 
 	live := mcpStatusBlock(&state.Manifest{Name: "demo", MCP: true, MCPOAuth: true, MCPOAuthLive: true}, cfg)
@@ -38,11 +45,23 @@ func TestMCPBlocksCarryNoBasic(t *testing.T) {
 		t.Fatalf("status block: %v", live)
 	}
 
-	// An app still on Basic only is reported unavailable — not with its password.
-	old := mcpStatusBlock(&state.Manifest{Name: "demo", MCP: true}, cfg)
-	assertNoBasic(t, "status block (Basic-only app)", old)
-	if old["available"] != false || !strings.Contains(old["hint"].(string), "vd mcp-oauth demo") {
-		t.Fatalf("Basic-only app: %v", old)
+	// Not live: unavailable with the reason that applies, never the password.
+	withAK := &state.Config{Domain: "apps.example.com", AuthentikURL: "https://auth.example.com"}
+	for _, c := range []struct {
+		name string
+		cfg  *state.Config
+		m    *state.Manifest
+		hint string
+	}{
+		{"deployed before the default", withAK, &state.Manifest{Name: "demo", MCP: true}, "vd mcp-oauth demo"},
+		{"setup failed last deploy", withAK, &state.Manifest{Name: "demo", MCP: true, MCPOAuth: true}, "redeploy"},
+		{"no platform login here", cfg, &state.Manifest{Name: "demo", MCP: true, MCPOAuth: true}, "not set up on this server"},
+	} {
+		b := mcpStatusBlock(c.m, c.cfg)
+		assertNoBasic(t, "status block ("+c.name+")", b)
+		if b["available"] != false || !strings.Contains(b["hint"].(string), c.hint) {
+			t.Errorf("%s: %v", c.name, b)
+		}
 	}
 }
 
