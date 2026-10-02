@@ -153,7 +153,24 @@ Prefer this `add`: no password to hand around; the client opens a browser for si
 membership in `mcp-vibe-<app-name>` — pass `--mcp-owner <email>` for the person you are working
 with; anyone else later with `vd access <app-name> add <email> --mcp`. The Basic `add` keeps working on the
 same host meanwhile. If `oauth` is missing and `warnings` says why, the MCP is on Basic only —
-still protected; redeploy to retry.
+still protected; redeploy to retry. For an app already running without it, `vd mcp-oauth
+<app-name>` turns it on without redeploying the app.
+
+**Who sees what through the MCP** — say this to the user before granting MCP access:
+
+- **Everything in the app's database, read-only.** No per-user, per-table or per-row rights:
+  anyone in `mcp-vibe-<app>` reads every row of every table. Do not grant the MCP to people who
+  should only see their own data in the app — give them the app, not the MCP.
+- **Signing in:** `claude mcp add --transport http <app>-db https://<app>.mcp.<apps-domain>/mcp`,
+  then the client opens a browser once. Access tokens last 5 minutes and are renewed silently;
+  the renewal token lasts 12 hours — after 12 hours without use the client opens the browser
+  again, normally without a password while the platform session is alive.
+- **Revoking:** `vd access <app> remove <email> --mcp` — effective within 5 minutes (the next
+  token is issued without the group).
+- **The Basic password is one shared secret for the whole app** and ignores the group: whoever
+  holds it has full read access, and removing someone from `mcp-vibe-<app>` does not stop it.
+  Prefer OAuth; if the password may have leaked, redeploy with `--mcp-rotate-password`. Switching
+  Basic off per app is **not available yet** — it stays on alongside OAuth.
 
 `--mcp-owner` matches the whole email, case-insensitively, and refuses if two accounts share it. That is safe only
 because users on this Authentik cannot change their own email (or username) — if the platform
@@ -163,8 +180,8 @@ members, so a later app with the same name starts with nobody.
 
 Notes worth knowing:
 
-- **SELECT only.** The MCP connects as a separate read-only role and runs in
-  restricted mode. You cannot use it to fix data, only to look.
+- **SELECT only, whole database.** The MCP connects as a separate read-only role and runs in
+  restricted mode. You cannot use it to fix data, only to look — and it looks at all of it.
 - **`--db prod-ro` apps get no MCP.** The production database stays reachable only
   through the deployed dashboard. Do not try to work around this.
 - The Basic password stays the same across redeploys, so a registered `add` keeps working.
@@ -232,7 +249,7 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--mcp-oauth` | false | Also put the database MCP behind platform login (browser sign-in, group `mcp-vibe-<app>`). Basic keeps working alongside. Needs `--db postgres`. Sticky |
 | `--mcp-rotate-password` | false | Issue a new MCP Basic password; every client on the old one is cut off. Without it the password survives redeploys |
 | `--mcp-owner` | none | Email of one person to add to `mcp-vibe-<app>` (with `--mcp-oauth`) |
-| `--auth-bearer` | false | With `--auth`: the outpost also accepts `Authorization: Bearer`/`Basic` from service accounts in the app's group. The app must restrict their routes itself — see `/auth`. Sticky; `--auth-bearer=false` turns it off |
+| `--auth-bearer` | false | With `--auth`: the outpost also accepts `Authorization: Bearer` (service accounts' client_credentials tokens) and `Basic` with an app password from **any** group member. The app must restrict service accounts' routes itself — see `/auth`. Sticky; `--auth-bearer=false` turns it off |
 | `--auth-ttl` | `hours=1` | How long a sign-in lasts before Authentik is asked again (`hours=`, `minutes=`, `days=`). Longer than a day produces a warning: group removal then takes that long to bite |
 
 `--db postgres` additionally provisions a read-only MCP for the app's database and

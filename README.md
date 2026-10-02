@@ -16,7 +16,7 @@ A platform for non-programmers who build apps with AI (vibecoding) and need to d
 This adds three skills:
 - **`/vibe`** — Load platform constraints before building an app. If there's existing code, audits it for compatibility and proposes fixes. Claude will only use supported infrastructure.
 - **`/deploy`** — Push files and deploy the app to the server via SSH. Shows human-readable results (URL, health, DB status).
-- **`/auth`** — Add "sign in with the platform account" to an app. `vd deploy --auth` puts it behind the platform IdP (Authentik); the app writes no login code and reads the person from request headers. Access is membership in the group `vibe-<app>`. Load it when the app needs login / accounts / per-user data.
+- **`/auth`** — Add "sign in with the platform account" to an app. `vd deploy --auth` puts it behind the platform IdP (Authentik); the app writes no login code and reads the person from request headers. Access is membership in the group `vibe-<app>`, granted and revoked by the app's owner with `vd access`; roles inside the app are the app's own (no platform roles). Load it when the app needs login / accounts / per-user data.
 
 ## What you get
 

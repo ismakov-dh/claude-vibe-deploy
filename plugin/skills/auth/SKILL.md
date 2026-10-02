@@ -28,13 +28,14 @@ live at `https://auth-demo.apps.platform.acuradai.com`. Copy from it when in dou
 ## 0. Hard rules — do not negotiate
 
 1. **No login screen, no signup screen, no password form, no password reset.** The platform
-   handles all of it. If the user asks for "register", explain that people are added by the
-   platform team (§1).
+   handles all of it. If the user asks for "register", explain that the app's owner gives people
+   access — you run `vd access` on their word (§1).
 2. **Subdomain routing only.** `vd deploy --auth` refuses `--routing path`.
 3. **Trust the identity headers only together with the ingress secret** (§3). Every app on the
    platform shares one network and can reach yours directly, skipping the login — the secret is
    what proves a request came through it.
-4. **Key your data on `X-authentik-uid`**, never on email. Do not store email or name.
+4. **Key your data on `X-authentik-uid`**, never on email. Email and name are never a key or a
+   permission; at most a display cache refreshed on every request (§7b).
 5. **One container** serves UI and API, as for every vibe-deploy app.
 
 ---
@@ -94,10 +95,10 @@ is alive: a page load just goes round and comes back, and an SPA's API calls ren
 |---|---|---|
 | `X-Vibe-Ingress` | secret set by the platform on every request that passed login | **must equal `VIBE_INGRESS_SECRET`**, else answer `401` |
 | `X-authentik-uid` | stable user id (64 hex chars) | your tables' user key |
-| `X-authentik-email` | email | display only — do not store |
-| `X-authentik-name` | full name | display only — do not store |
+| `X-authentik-email` | email | display, and `APP_ADMINS` (§7b) — never a key |
+| `X-authentik-name` | full name | display only — never a key |
 | `X-authentik-username` | username | display only |
-| `X-authentik-groups` | `\|`-separated group names | not needed — access was already decided |
+| `X-authentik-groups` | `\|`-separated group names | **do not use** — not your app's roles (§7b) |
 
 Read them through the `header()` helper in §4/§5, never raw: the values are UTF-8 but arrive
 decoded as latin-1, so any non-ASCII name — Cyrillic included — turns into mojibake otherwise.
@@ -284,8 +285,17 @@ function check(r) {
 
 ## 7. Per-user data
 
-Key rows on `X-authentik-uid` with a reversible migration (Prisma / Alembic / Django), created
-lazily after the guard passes:
+Key rows on `X-authentik-uid` with a reversible migration (Prisma / Alembic / Django). The user
+table — `uid` **is** the primary key, other tables reference it:
+
+```sql
+-- up
+CREATE TABLE app_users (uid text PRIMARY KEY, created_at timestamptz NOT NULL DEFAULT now());
+-- down
+DROP TABLE app_users;
+```
+
+Rows are created lazily after the guard passes:
 
 ```python
 await db.execute(
@@ -293,8 +303,225 @@ await db.execute(
 )
 ```
 
-Anything finer than "may use the app" — ownership, teams, per-record rights — you model
-yourself on that key. Authentik only decides who gets in.
+Anything finer than "may use the app" — ownership, teams, per-record rights, roles — you model
+yourself on that key. Authentik only decides who gets in. Roles: §7b.
+
+---
+
+## 7b. Roles inside the app
+
+"Only `tasks-admin` may open `/admin`" is **your app's** job. The platform has no roles for your
+app and will not get any: Authentik holds exactly **one** group per app, `vibe-<name>`, which
+decides who gets in at all, and `vd access` manages only that group. Do not ask the user or a
+platform admin for extra groups or roles, and do not read `X-authentik-groups` for roles — it
+says nothing about your app. If an example or prompt implies platform roles, build them here.
+
+The pattern: a table of roles keyed on `uid`, the first admins from an env var, a guard, and an
+`/admin` page where admins grant roles to people who have opened the app at least once.
+
+Needs the app's **own** database (`--db postgres`): it writes on every request. A `--db prod-ro`
+app has only a read-only connection — there, use the `APP_ADMINS` check alone (an `is_admin`
+from the env var, no tables), or give the dashboard no roles. Everyone with the app's database
+MCP (`mcp-vibe-<name>`) can read `app_users`, display cache included.
+
+**Migration** (reversible; Alembic `upgrade`/`downgrade`, a Prisma migration, or Django — same SQL):
+
+```sql
+-- up
+ALTER TABLE app_users
+  ADD COLUMN last_email text,          -- display cache, refreshed on every request
+  ADD COLUMN last_name  text,          -- never a key, never used to authorize
+  ADD COLUMN last_seen  timestamptz;
+CREATE TABLE app_roles (
+  uid        text NOT NULL REFERENCES app_users(uid) ON DELETE CASCADE,
+  role       text NOT NULL,
+  granted_by text NOT NULL,            -- uid of the admin
+  granted_at timestamptz NOT NULL DEFAULT now(),
+  PRIMARY KEY (uid, role)
+);
+-- down
+DROP TABLE app_roles;
+ALTER TABLE app_users DROP COLUMN last_email, DROP COLUMN last_name, DROP COLUMN last_seen;
+```
+
+**The first admins** come from `APP_ADMINS` in the app's `.env` — comma-separated platform
+emails, e.g. `APP_ADMINS=anna@example.com,boris@example.com`, passed with `--env-file`. They are
+compared case-insensitively against `X-authentik-email` on each request; nothing about them is
+stored. That is safe as config because people cannot change their own email on this platform.
+`APP_ADMINS` are always admins, so the app cannot lock itself out. An admin passes every role
+check. Keep the list of roles in code; reject any other name.
+
+**Python (FastAPI, psycopg):**
+
+```python
+# roles.py — on top of current_user from auth.py
+import os
+import psycopg
+from fastapi import Depends, HTTPException
+from auth import current_user
+
+ROLES = {"admin", "tasks-admin"}          # every role the app knows
+ADMINS = {e.strip().lower() for e in os.environ.get("APP_ADMINS", "").split(",") if e.strip()}
+DB = os.environ["DATABASE_URL"]
+
+
+def q(sql: str, args: tuple = ()) -> list:
+    # `with connect()` commits on exit. ponytail: a connection per call; use
+    # psycopg_pool once traffic matters.
+    with psycopg.connect(DB) as c:
+        cur = c.execute(sql, args)
+        return cur.fetchall() if cur.description else []
+
+
+def user(u: dict = Depends(current_user)) -> dict:
+    """current_user plus a row in app_users, so admins can find the person."""
+    q("""INSERT INTO app_users (uid, last_email, last_name, last_seen) VALUES (%s, %s, %s, now())
+         ON CONFLICT (uid) DO UPDATE SET last_email = EXCLUDED.last_email,
+           last_name = EXCLUDED.last_name, last_seen = now()""",
+      (u["uid"], u["email"], u["name"]))
+    return u
+
+
+def has_role(u: dict, role: str) -> bool:
+    """Admins (APP_ADMINS or the admin role) pass every check."""
+    return u["email"].lower() in ADMINS or bool(
+        q("SELECT 1 FROM app_roles WHERE uid = %s AND role IN ('admin', %s)", (u["uid"], role)))
+
+
+def require_role(role: str):
+    assert role in ROLES, role
+    def guard(u: dict = Depends(user)) -> dict:
+        if not has_role(u, role):
+            raise HTTPException(403, "forbidden")
+        return u
+    return guard
+```
+
+```python
+# main.py — the admin API; the /admin page calls it through the api() helper (§6)
+from fastapi import Depends, HTTPException
+from pydantic import BaseModel
+from roles import ROLES, q, require_role
+
+
+@app.get("/api/admin/users")
+def admin_users(admin: dict = Depends(require_role("admin"))):
+    rows = q("""SELECT u.uid, u.last_email, u.last_name, u.last_seen,
+                       coalesce(array_agg(r.role) FILTER (WHERE r.role IS NOT NULL), '{}')
+                FROM app_users u LEFT JOIN app_roles r USING (uid)
+                GROUP BY u.uid ORDER BY u.last_seen DESC NULLS LAST""")
+    return [{"uid": r[0], "email": r[1], "name": r[2], "last_seen": r[3], "roles": r[4]} for r in rows]
+
+
+class RoleChange(BaseModel):
+    uid: str
+    role: str
+    grant: bool
+
+
+# A Pydantic body is parsed only from application/json, which a cross-site form
+# cannot send without a preflight — so no CSRF token is needed. Anything else: 422.
+@app.post("/api/admin/roles")
+def admin_roles(change: RoleChange, admin: dict = Depends(require_role("admin"))):
+    if change.role not in ROLES or not q("SELECT 1 FROM app_users WHERE uid = %s", (change.uid,)):
+        raise HTTPException(400, "unknown user or role")
+    if change.grant:
+        q("INSERT INTO app_roles (uid, role, granted_by) VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+          (change.uid, change.role, admin["uid"]))
+    else:
+        q("DELETE FROM app_roles WHERE uid = %s AND role = %s", (change.uid, change.role))
+    return {"ok": True}
+
+
+@app.get("/api/tasks/admin")
+def tasks_admin(u: dict = Depends(require_role("tasks-admin"))):
+    ...
+```
+
+Use `Depends(user)` (not `current_user`) on the app's ordinary routes too, so everyone who opens
+the app appears in the admin list.
+
+**Node (Express, pg):**
+
+```js
+// roles.js — on top of requireUser from auth.js
+import pg from 'pg'
+import { requireUser } from './auth.js'
+
+export const ROLES = new Set(['admin', 'tasks-admin'])   // every role the app knows
+const ADMINS = new Set((process.env.APP_ADMINS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
+export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
+
+// Express 4 does not catch errors of async handlers: wrap every one.
+export const wrap = fn => (req, res, next) => Promise.resolve(fn(req, res, next)).catch(next)
+
+// requireUser plus a row in app_users, so admins can find the person.
+export const user = [requireUser, wrap(async (req, res, next) => {
+  await pool.query(
+    `INSERT INTO app_users (uid, last_email, last_name, last_seen) VALUES ($1, $2, $3, now())
+     ON CONFLICT (uid) DO UPDATE SET last_email = $2, last_name = $3, last_seen = now()`,
+    [req.user.uid, req.user.email, req.user.name])
+  next()
+})]
+
+// Admins (APP_ADMINS or the admin role) pass every check.
+export async function hasRole(u, role) {
+  if (ADMINS.has(u.email.toLowerCase())) return true
+  const r = await pool.query(`SELECT 1 FROM app_roles WHERE uid = $1 AND role IN ('admin', $2)`, [u.uid, role])
+  return r.rowCount > 0
+}
+
+export function requireRole(role) {
+  if (!ROLES.has(role)) throw new Error('unknown role ' + role)
+  return [...user, wrap(async (req, res, next) => {
+    if (!(await hasRole(req.user, role))) return res.status(403).json({ error: 'forbidden' })
+    next()
+  })]
+}
+```
+
+```js
+// server.js — the admin API; the /admin page calls it through the api() helper (§6)
+import { ROLES, pool, requireRole, wrap } from './roles.js'
+
+app.use(express.json())   // only parses application/json — a cross-site form cannot send it
+
+app.get('/api/admin/users', requireRole('admin'), wrap(async (req, res) => {
+  const r = await pool.query(
+    `SELECT u.uid, u.last_email AS email, u.last_name AS name, u.last_seen,
+            coalesce(array_agg(r.role) FILTER (WHERE r.role IS NOT NULL), '{}') AS roles
+     FROM app_users u LEFT JOIN app_roles r USING (uid)
+     GROUP BY u.uid ORDER BY u.last_seen DESC NULLS LAST`)
+  res.json(r.rows)
+}))
+
+app.post('/api/admin/roles', requireRole('admin'), wrap(async (req, res) => {
+  const { uid, role, grant } = req.body || {}
+  if (!req.is('application/json') || typeof uid !== 'string' || !ROLES.has(role) || typeof grant !== 'boolean') {
+    return res.status(400).json({ error: 'bad_request' })
+  }
+  const known = await pool.query('SELECT 1 FROM app_users WHERE uid = $1', [uid])
+  if (known.rowCount === 0) return res.status(400).json({ error: 'unknown_user' })
+  if (grant) {
+    await pool.query('INSERT INTO app_roles (uid, role, granted_by) VALUES ($1, $2, $3) ON CONFLICT DO NOTHING',
+      [uid, role, req.user.uid])
+  } else {
+    await pool.query('DELETE FROM app_roles WHERE uid = $1 AND role = $2', [uid, role])
+  }
+  res.json({ ok: true })
+}))
+
+app.get('/api/tasks/admin', requireRole('tasks-admin'), (req, res) => { /* … */ })
+```
+
+Use `...user` on the app's ordinary routes too, so everyone who opens the app appears in the
+admin list. (Express 4: wrap every async handler with `wrap()`; Express 5 catches them itself.)
+
+The `/admin` page itself: a table from `GET /api/admin/users`, a checkbox per role, each change a
+`POST /api/admin/roles` with `{uid, role, grant}` via `api()`. Someone who has never opened the
+app is not in the list — ask them to open it once, or add their email to `APP_ADMINS` if they
+are to be an admin. Revoking a role takes effect on their next request. Taking someone out of the
+app altogether is `vd access <name> remove <email>`, not a role.
 
 ---
 
@@ -328,11 +555,18 @@ group. A platform admin creates the service account and puts it in `vibe-<name>`
 - **Limiting it is your app's job.** The group admits the account to every route. Recognise it
   by `X-authentik-uid` (or email) and allow only what it needs, e.g. `GET` on the export
   endpoints; answer 403 to everything else.
-- **It also opens Basic to people.** The outpost accepts an Authentik *app password* as Basic,
-  and any member of the group can create one for themselves in their Authentik settings — then
-  reach the app with it, skipping the login page (and MFA, once there is MFA). Treat every
-  member as able to script the app. Turn the flag on only for apps where that is acceptable,
-  and tell the user.
+- **It also opens Basic to people — that is how a person scripts the app.** The outpost accepts
+  an Authentik *app password* as `Authorization: Basic <username>:<app password>`. Any member of
+  the group can create one for themselves in their Authentik settings (self-service, revocable
+  there), and their own scripts then reach the app as them, skipping the login page (and MFA,
+  once there is MFA). Treat every member as able to script the app. Turn the flag on only for
+  apps where that is acceptable, and tell the user. App passwords work **only** on this header
+  path: since 2026-10-01 the platform's login page no longer accepts them as a password.
+- **Revoking an app password** (or removing the person from the group) bites within about a
+  minute: the outpost caches a successful Basic check for 60 s.
+- **A failed header check is a `302` to the login page, not a `401`.** Scripts must treat any
+  redirect to `auth.<platform>` as "credentials rejected" — `curl -f` alone will not notice;
+  check the status code (or use `--max-redirs 0`) and fail on `3xx`.
 - Sticky: redeploys keep it; `--auth-bearer=false` turns it off. Needs `--auth`
   (`AUTH_BEARER_REQUIRES_AUTH` otherwise). The deploy JSON's `auth.bearer` and `vd status`
   report it.
@@ -347,7 +581,8 @@ right person; a second browser profile that is not in the group gets "access den
 - [ ] No login, signup or password code anywhere in the app.
 - [ ] Every route that serves data uses the guard; the guard checks **`X-Vibe-Ingress`** first.
 - [ ] Constant-time comparison on **bytes** (`hmac.compare_digest(a.encode(...), b.encode())` / `timingSafeEqual`).
-- [ ] User rows keyed on `X-authentik-uid`; no email or name stored.
+- [ ] User rows keyed on `X-authentik-uid`; email/name at most as a refreshed display cache, never a key or a permission.
+- [ ] Roles, if any, live in the app's own `app_roles` (§7b) — none requested from the platform, none read from `X-authentik-groups`.
 - [ ] SPA uses `redirect: 'manual'`; **only** `opaqueredirect` navigates to `/outpost.goauthentik.io/start?rd=<full URL>`, a `401` is an error.
 - [ ] Logout navigates to `/outpost.goauthentik.io/sign_out`.
 - [ ] Deployed with `--auth`, subdomain routing; group name relayed to the user.
@@ -363,14 +598,15 @@ right person; a second browser profile that is not in the group gets "access den
 | `AUTH_FAILED` | Authentik rejected the setup. Nothing was deployed on the server. If the group binding could not be made, vd also takes the app off the platform login service, so it answers `404` instead of being open to everyone — `details` says what it undid. Retry once; if it repeats, give the `details` to the platform admin. |
 | `AUTH_REQUIRES_SUBDOMAIN` | Drop `--routing path`. |
 | Every request to your API is `401` | The guard's secret check fails — you compared against a hardcoded value or a stale `.env`. Read `VIBE_INGRESS_SECRET` from the environment. |
-| Everyone gets Authentik's "access denied" | Nobody is in `vibe-<name>` yet. That is the human step (§1). |
+| Everyone gets Authentik's "access denied" | Nobody is in `vibe-<name>` yet: `vd access <name> add <email>` on the user's word (§1). |
 | SPA shows network errors after a while | Missing `redirect: 'manual'`, so the login bounce looks like an outage (§6). |
 | SPA calls fail about an hour after the page was opened, a reload fixes it | API calls do not go through the `api()` helper, so the hourly renewal never happens (§6). |
 | "Your session was renewed — please repeat the action" | Expected, rare: a write hit the hourly renewal and was deliberately not repeated. The person presses the button again. |
 | `ROLLBACK_WOULD_UNPROTECT` | The previous version was public; rolling back would publish it. Fix forward and redeploy with `--auth`. |
 | `404` from the app for a few minutes right after the **first** `--auth` deploy | The platform's login service picks up new apps on a 5-minute refresh. `vd status` shows `auth.state: ok` already; wait five minutes and retry before debugging anything. |
 | Names show as `Ð Ð°Ð¼Ð¸Ñ…` | Headers read raw. Use the `header()` helper (§4/§5): UTF-8 bytes decoded as latin-1. |
-| After typing the password the person lands in Authentik's own screens, not the app | They are not in `vibe-<name>` yet. Authentik answers with its "access denied" page and its links lead into Authentik. Add them to the group, then have them open the app's address again. |
+| After typing the password the person lands in Authentik's own screens, not the app | They are not in `vibe-<name>` yet. Authentik answers with its "access denied" page and its links lead into Authentik. `vd access <name> add <email>`, then have them open the app's address again. |
+| A user asks for a role "in the platform" (`tasks-admin`, `editor`, …) | There are none. Build it in the app (§7b); never ask an admin for extra groups. |
 | "Log out" ends on the Authentik login page instead of back in the app | The server has no `vibe-provider-invalidation-flow` yet (`vd deploy` warns about it). Logout still works; only the landing page differs. Once a platform admin creates the flow, the next deploy picks it up. |
 | `vd status` says `auth.state: broken` | Something was removed or changed in Authentik by hand — look at `auth.authentik`. `binding: false` is the serious one: without an enabled binding to `vibe-<name>` the app is open to **every** signed-in account. Redeploy — vd recreates or repairs it. |
 
@@ -390,7 +626,7 @@ refresh tokens, no token storage, no `offline_access`**, and **secrets in `.env`
 
 | Step | Who |
 |---|---|
-| Create the OIDC provider, application and access group in Authentik; hand over `client_id` + `client_secret` | **The platform admin — the only human step** |
+| Create the OIDC provider, application and access group in Authentik; hand over `client_id` + `client_secret`; later add and remove people in that group | **The platform admin** |
 | Everything else: app name, `.env`, login/callback/logout routes, group check, session cookie, `sub`-keyed data, deploy, verification | **You, the agent** |
 
 Pick the app name **first** (lowercase, starts with a letter, 2–63 chars, `a-z 0-9 -`). It fixes
@@ -403,7 +639,8 @@ admin. Changing the name later breaks login.
 > prod: `https://auth.platform.acuradai.com`):
 >
 > 1. **Group** `vibe-<name>` — everyone who may use the app becomes a member. Membership is
->    the access grant; the app checks nothing else.
+>    the access grant; the app checks nothing else. (An admin creates this group by hand, so
+>    `vd access` cannot manage it: in the fallback, the admin adds and removes people.)
 > 2. **Provider**, type *OAuth2/OpenID*:
 >    - Client type: **Confidential**
 >    - Redirect URIs (both, exact, strict match):
