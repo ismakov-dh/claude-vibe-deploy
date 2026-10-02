@@ -71,7 +71,7 @@ var mcpOAuthCmd = &cobra.Command{
 		res := ensureMCPOAuth(name, cfg, mcpOAuthOwner)
 		if res == nil {
 			output.Fail("mcp-oauth", output.NewError("AUTH_FAILED",
-				"Could not set up the MCP's resource in Authentik — nothing changed, the MCP stays on Basic",
+				"Could not set up the MCP's sign-in in Authentik — nothing changed",
 				"See warnings; retry once the cause is fixed"))
 		}
 
@@ -94,7 +94,7 @@ var mcpOAuthCmd = &cobra.Command{
 				output.Warn("revert: %v", e)
 			}
 			output.Fail("mcp-oauth", output.NewError("MCP_OAUTH_FAILED",
-				why+" — reverted, the MCP is on Basic as before (see warnings if a revert step failed)",
+				why+" — reverted to how it was (see warnings if a revert step failed); the MCP is not available to agents until this succeeds",
 				"The Authentik resource stays; retrying is safe"))
 		}
 		if err := syncMCPGateway(cfg); err != nil {
@@ -114,7 +114,6 @@ var mcpOAuthCmd = &cobra.Command{
 		output.Success("mcp-oauth", map[string]any{
 			"name":  name,
 			"oauth": mcpOAuthInfo(name, cfg, mcpOAuthOwner, res),
-			"basic": "unchanged — the same password keeps working",
 		})
 	},
 }
@@ -157,7 +156,7 @@ func mcpOAuthPreflight(name string) (*state.Manifest, *state.Config, string, str
 	}
 	pw := envValue(state.AppMCPEnvPath(name), "VD_MCP_PASSWORD")
 	if pw == "" {
-		output.Fail("mcp-oauth", output.NewError("NO_MCP", "No Basic password in "+state.AppMCPEnvPath(name),
+		output.Fail("mcp-oauth", output.NewError("NO_MCP", "The MCP's server-side credentials file is incomplete: "+state.AppMCPEnvPath(name),
 			"Redeploy the app once so its MCP has one"))
 	}
 	ingress := ""

@@ -55,7 +55,7 @@ func syncMCPGateway(cfg *state.Config) error {
 		return err
 	}
 	for _, name := range dropped {
-		output.Warn("vd-mcpgw rejected the route for %s (issuer unreachable?) — left out, Basic still works; any vd deploy or vd init retries", name)
+		output.Warn("vd-mcpgw rejected the route for %s (issuer unreachable?) — that MCP is unreachable for now; any vd deploy or vd init retries", name)
 	}
 	state.ChownLikeHome(state.MCPGWDir())
 	state.ChownLikeHome(state.MCPGWDir() + "/config.yaml")
@@ -66,10 +66,11 @@ func syncMCPGateway(cfg *state.Config) error {
 func mcpOAuthInfo(app string, cfg *state.Config, owner string, res *authentik.MCPResult) map[string]any {
 	url := "https://" + mcpHost(app, cfg) + "/mcp"
 	info := map[string]any{
-		"url":   url,
-		"group": res.Name,
-		"add":   fmt.Sprintf("claude mcp add --transport http %s-db %s", app, url),
-		"note":  "Sign in through the browser when the client asks; access is membership in " + res.Name + ".",
+		"available": true,
+		"url":       url,
+		"group":     res.Name,
+		"add":       fmt.Sprintf("claude mcp add --transport http %s-db %s", app, url),
+		"note":      "Sign in through the browser when the client asks; access is membership in " + res.Name + ". Read-only access to the whole database for everyone in the group.",
 	}
 	switch {
 	case owner == "":
@@ -88,17 +89,17 @@ func mcpOAuthInfo(app string, cfg *state.Config, owner string, res *authentik.MC
 }
 
 // ensureMCPOAuth provisions the app's MCP resource in Authentik. Failure leaves
-// the MCP on Basic only — still protected — and says so; it never publishes a
+// the MCP unavailable to agents — still protected — and says so; it never publishes a
 // gateway route for a resource that does not exist.
 func ensureMCPOAuth(app string, cfg *state.Config, owner string) *authentik.MCPResult {
 	if err := cfg.AuthentikReady(); err != nil {
-		output.Warn("MCP OAuth not set up (%v) — the MCP stays on Basic credentials only", err)
+		output.Warn("The database MCP is unavailable: platform login is not set up on this server (%v)", err)
 		return nil
 	}
 	token, _ := state.LoadAuthentikToken()
 	unlock, err := state.LockAuthentik()
 	if err != nil {
-		output.Warn("MCP OAuth not set up (lock: %v) — the MCP stays on Basic credentials only", err)
+		output.Warn("The database MCP is unavailable: %v — redeploy to retry", err)
 		return nil
 	}
 	res, err := authentik.New(cfg.AuthentikURL, token).EnsureMCP(authentik.MCPSpec{
@@ -109,7 +110,7 @@ func ensureMCPOAuth(app string, cfg *state.Config, owner string) *authentik.MCPR
 		output.Warn("--mcp-owner not added: %s — the MCP OAuth is set up, the group just has no new member", res.OwnerError)
 	}
 	if err != nil {
-		output.Warn("MCP OAuth not set up in Authentik (%v) — the MCP stays on Basic credentials only; redeploy to retry", err)
+		output.Warn("The database MCP is unavailable: its sign-in could not be set up in Authentik (%v) — redeploy to retry", err)
 		return nil
 	}
 	return res

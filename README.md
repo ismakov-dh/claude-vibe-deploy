@@ -24,8 +24,8 @@ This adds three skills:
 |-----------|---------|
 | HTTP app hosting | Static sites, Node.js, Python, Go — auto-detected |
 | PostgreSQL database | Auto-provisioned per app, `DATABASE_URL` injected |
-| Read-only database MCP | Automatic with `--db postgres`. Per-app SELECT-only endpoint at `<app>.mcp.<apps-domain>`, credentials returned by `vd deploy --json` |
-| MCP sign-in | `--mcp-oauth`: the same endpoint also accepts Authentik sign-in (group `mcp-vibe-<app>`) through vd's own agentgateway `vd-mcpgw`; Basic keeps working. See `docs/plans/mcp-oauth.md` |
+| Read-only database MCP | Automatic with `--db postgres`. Per-app SELECT-only endpoint at `<app>.mcp.<apps-domain>/mcp`, browser sign-in; `vd deploy --json` returns the `claude mcp add` line |
+| MCP sign-in | Every database MCP is behind Authentik sign-in (group `mcp-vibe-<app>`, `vd access … --mcp`) through vd's own agentgateway `vd-mcpgw`. Agents get only the OAuth `add`. See `docs/plans/mcp-oauth.md` |
 | Prod DB read-only | Dashboards can query existing production data (replica supported) |
 | HTTPS | Automatic via wildcard cert |
 | Cron jobs | Scheduled tasks inside containers |
@@ -105,7 +105,7 @@ vd status <name>
 vd list
 vd logs-snapshot <name> [--lines N]
 vd rollback <name>
-vd mcp-oauth <name> [--owner <email>] [--check]   # MCP behind login, no redeploy
+vd mcp-oauth <name> [--owner <email>] [--check]   # admin: sign-in for an app deployed before it was default
 vd access <name> list|add|remove [email] [--mcp]   # the owner grants/revokes access
 vd destroy <name> --yes [--drop-db]
 vd cron-set <name> --schedule "..." --command "..."

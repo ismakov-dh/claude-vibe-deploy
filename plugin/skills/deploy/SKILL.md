@@ -120,63 +120,44 @@ The JSON response's `url` field is the app's live origin (e.g. `https://<app-nam
 
 ### 3b. Read-only database MCP (only with `--db postgres`)
 
-Every app deployed with `--db postgres` also gets a **read-only MCP server for its
-own database**, so you can inspect the schema and query data while debugging
-instead of guessing. `vd deploy --json` and `vd status --json` return an `mcp`
-block:
+Every app deployed with `--db postgres` also gets a **read-only MCP server for its own
+database**, behind platform sign-in, so you can inspect the schema and query data while
+debugging instead of guessing. `vd deploy --json` and `vd status --json` return an `mcp` block:
 
 ```json
 "mcp": {
-  "url": "https://<app-name>.mcp.<apps-domain>/sse",
-  "user": "mcp",
-  "password": "…",
-  "health": "healthy",
-  "add": "claude mcp add --transport sse <app-name>-db https://… --header \"Authorization: Basic …\""
-}
-```
-
-Run the `add` command verbatim — it already contains the encoded credentials.
-Then use it to read the app's tables.
-
-**With `--mcp-oauth`** the block also carries `mcp.oauth`:
-
-```json
-"oauth": {
+  "available": true,
   "url": "https://<app-name>.mcp.<apps-domain>/mcp",
   "group": "mcp-vibe-<app-name>",
-  "add": "claude mcp add --transport http <app-name>-db https://…/mcp",
-  "owner": "<the email you passed, or null>"
+  "add": "claude mcp add --transport http <app-name>-db https://<app-name>.mcp.<apps-domain>/mcp",
+  "owner": "<the email you passed with --mcp-owner, or null>"
 }
 ```
 
-Prefer this `add`: no password to hand around; the client opens a browser for sign-in. Access is
-membership in `mcp-vibe-<app-name>` — pass `--mcp-owner <email>` for the person you are working
-with; anyone else later with `vd access <app-name> add <email> --mcp`. The Basic `add` keeps working on the
-same host meanwhile. If `oauth` is missing and `warnings` says why, the MCP is on Basic only —
-still protected; redeploy to retry. For an app already running without it, `vd mcp-oauth
-<app-name>` turns it on without redeploying the app.
+Run the `add` command verbatim. On first use the client opens a browser for platform sign-in;
+there is no password. Access is membership in `mcp-vibe-<app-name>`: pass `--mcp-owner <email>`
+on deploy for the person you are working with, and grant anyone else later with
+`vd access <app-name> add <email> --mcp` — only for emails the user gave you.
+
+If the block says `"available": false`, the MCP is not reachable for agents right now — `hint`
+(and on deploy, `warnings`) says why. Do not look for another way in;
+tell the user.
 
 **Who sees what through the MCP** — say this to the user before granting MCP access:
 
 - **Everything in the app's database, read-only.** No per-user, per-table or per-row rights:
   anyone in `mcp-vibe-<app>` reads every row of every table. Do not grant the MCP to people who
   should only see their own data in the app — give them the app, not the MCP.
-- **Signing in:** `claude mcp add --transport http <app>-db https://<app>.mcp.<apps-domain>/mcp`,
-  then the client opens a browser once. Access tokens last 5 minutes and are renewed silently;
-  the renewal token lasts 12 hours — after 12 hours without use the client opens the browser
-  again, normally without a password while the platform session is alive.
+- **Signing in:** after the browser sign-in, access tokens last 5 minutes and are renewed
+  silently; the renewal token lasts 12 hours — after 12 hours without use the client opens the
+  browser again, normally without a password while the platform session is alive.
 - **Revoking:** `vd access <app> remove <email> --mcp` — effective within 5 minutes (the next
   token is issued without the group).
-- **The Basic password is one shared secret for the whole app** and ignores the group: whoever
-  holds it has full read access, and removing someone from `mcp-vibe-<app>` does not stop it.
-  Prefer OAuth; if the password may have leaked, redeploy with `--mcp-rotate-password`. Switching
-  Basic off per app is **not available yet** — it stays on alongside OAuth.
 
-`--mcp-owner` matches the whole email, case-insensitively, and refuses if two accounts share it. That is safe only
-because users on this Authentik cannot change their own email (or username) — if the platform
-ever allows it, anyone could claim an owner's address. A failed owner lookup is a warning: the
-MCP is set up, nobody was added. `vd destroy` deletes the group `mcp-vibe-<app>` with its
-members, so a later app with the same name starts with nobody.
+`--mcp-owner` matches the whole email, case-insensitively, and refuses if two accounts share it.
+That is safe only because users on this Authentik cannot change their own email (or username).
+A failed owner lookup is a warning: the MCP is set up, nobody was added. `vd destroy` deletes the
+group `mcp-vibe-<app>` with its members, so a later app with the same name starts with nobody.
 
 Notes worth knowing:
 
@@ -184,9 +165,6 @@ Notes worth knowing:
   restricted mode. You cannot use it to fix data, only to look — and it looks at all of it.
 - **`--db prod-ro` apps get no MCP.** The production database stays reachable only
   through the deployed dashboard. Do not try to work around this.
-- The Basic password stays the same across redeploys, so a registered `add` keeps working.
-  If it leaked, redeploy with `--mcp-rotate-password`: a new one is issued and every client on
-  the old one is cut off — re-run the new `add` (after `claude mcp remove`).
 - If `health` is not `healthy`, the endpoint will hang rather than answer. Check
   `vd logs-snapshot` and redeploy.
 
@@ -246,9 +224,7 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--env-file` | none | Path to .env file on server |
 | `--allow-external` | false | Silence warnings about unsupported external services |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky. Subdomain routing only |
-| `--mcp-oauth` | false | Also put the database MCP behind platform login (browser sign-in, group `mcp-vibe-<app>`). Basic keeps working alongside. Needs `--db postgres`. Sticky |
-| `--mcp-rotate-password` | false | Issue a new MCP Basic password; every client on the old one is cut off. Without it the password survives redeploys |
-| `--mcp-owner` | none | Email of one person to add to `mcp-vibe-<app>` (with `--mcp-oauth`) |
+| `--mcp-owner` | none | Email of one person to add to `mcp-vibe-<app>`, the database MCP's group (with `--db postgres`) |
 | `--auth-bearer` | false | With `--auth`: the outpost also accepts `Authorization: Bearer` (service accounts' client_credentials tokens) and `Basic` with an app password from **any** group member. The app must restrict service accounts' routes itself — see `/auth`. Sticky; `--auth-bearer=false` turns it off |
 | `--auth-ttl` | `hours=1` | How long a sign-in lasts before Authentik is asked again (`hours=`, `minutes=`, `days=`). Longer than a day produces a warning: group removal then takes that long to bite |
 
@@ -273,25 +249,16 @@ Revert to previous deployment. Last 5 backups kept. Refused with `ROLLBACK_WOULD
 
 ### `vd access <app-name> list | add <email> | remove <email> [--mcp]`
 
-Who may use an `--auth` app (group `vibe-<app>`), or with `--mcp` its database MCP after
-`--mcp-oauth` (group `mcp-vibe-<app>`). The group comes from the app name only. `add` and
+Who may use an `--auth` app (group `vibe-<app>`), or with `--mcp` its database MCP (group
+`mcp-vibe-<app>`, every `--db postgres` app). The group comes from the app name only. `add` and
 `remove` are safe to repeat (`changed: false`); `remove` returns `takes_effect` — the app's
 sign-in lifetime, or 5 minutes for the MCP. Only for emails the user gave you. Errors:
-`ACCESS_NOT_ENABLED` (no `--auth` / no MCP OAuth), `NO_ACCOUNT` (no platform account — an admin
+`ACCESS_NOT_ENABLED` (no `--auth` / no MCP behind sign-in yet), `NO_ACCOUNT` (no platform account — an admin
 invites first), `ACCESS_FORBIDDEN` (vd has no rights on that group — older apps; an admin
 grants them), `INVALID_ARGS`, `ACCESS_FAILED`.
 
-### `vd mcp-oauth <app-name> [--owner <email>] [--check]`
-
-Puts a running app's database MCP behind platform login as well, without a redeploy: Authentik,
-the gateway route and the MCP container only — the app is not rebuilt or restarted, Basic keeps
-the same password. `--check` changes nothing and reports whether the rebuild is faithful. The
-JSON carries the same `oauth` block as `vd deploy --mcp-oauth`. Errors: `NO_MCP` (no `--db
-postgres` MCP), `COMPOSE_DRIFT` (the app's compose file is not what vd would render — redeploy
-once, then retry; nothing changed), `MCP_OAUTH_FAILED` (reverted, still on Basic).
-
 ### `vd destroy <app-name> --yes [--drop-db]`
-Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping. For `--auth` apps it also removes the app's Authentik application and provider; the access group `vibe-<app>` is kept, so redeploying under the same name restores access for the same people. For `--mcp-oauth` apps it removes the MCP's application, provider **and** group `mcp-vibe-<app>`. After a **failed first deploy** vd stops the container, but the app's files — its `.env`, with the prod DSN for `--db prod-ro` — stay for the next attempt: fix and deploy again, or run `vd destroy <app> --yes`, which works without a manifest too.
+Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping. For `--auth` apps it also removes the app's Authentik application and provider; the access group `vibe-<app>` is kept, so redeploying under the same name restores access for the same people. For apps with a database MCP it removes the MCP's application, provider **and** group `mcp-vibe-<app>`. After a **failed first deploy** vd stops the container, but the app's files — its `.env`, with the prod DSN for `--db prod-ro` — stay for the next attempt: fix and deploy again, or run `vd destroy <app> --yes`, which works without a manifest too.
 
 ### `vd cron-set <app-name> --schedule "..." --command "..."`
 Add a scheduled task. Runs inside the container.

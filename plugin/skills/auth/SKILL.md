@@ -62,7 +62,7 @@ Access is granted and revoked by the app's owner with `vd access` — no platfor
 ssh vd-server "vd access <name> list --json"
 ssh vd-server "vd access <name> add person@example.com --json"
 ssh vd-server "vd access <name> remove person@example.com --json"
-# the app's database MCP (after vd mcp-oauth / --mcp-oauth): add --mcp; removal bites within 5 minutes
+# the app's database MCP (every --db postgres app): add --mcp; removal bites within 5 minutes
 ssh vd-server "vd access <name> add person@example.com --mcp --json"
 ```
 

@@ -95,9 +95,11 @@ var destroyCmd = &cobra.Command{
 		}
 
 		mcpRemoved := ""
-		if m.MCPOAuth {
+		// Skip quietly where nothing could have been created: no platform login
+		// on this server and no route ever went live.
+		if dcfg, _ := state.LoadConfig(); m.MCPOAuth && (m.MCPOAuthLive || (dcfg != nil && dcfg.AuthentikURL != "")) {
 			mcpRemoved = "removed"
-			cfg, _ := state.LoadConfig()
+			cfg := dcfg
 			token, terr := state.LoadAuthentikToken()
 			switch {
 			case cfg == nil || cfg.AuthentikURL == "":
