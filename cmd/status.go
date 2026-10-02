@@ -2,8 +2,6 @@ package cmd
 
 import (
 	"fmt"
-	"os"
-	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vibe-deploy/vd/internal/authentik"
@@ -47,8 +45,10 @@ var statusCmd = &cobra.Command{
 			if m.DB != "" && m.DB != "none" {
 				output.Info("Database:  %s (%s)", m.DB, m.DBAccess)
 			}
-			if mcp != nil {
+			if mcp != nil && mcp["available"] == true {
 				output.Info("MCP:       %s (%s)", mcp["url"], mcpHealth)
+			} else if mcp != nil {
+				output.Info("MCP:       unavailable (%s)", mcp["hint"])
 			}
 		}
 		authInfo := authStatus(m, cfg)
@@ -71,7 +71,7 @@ var statusCmd = &cobra.Command{
 		}
 		if mcp != nil {
 			mcp["health"] = mcpHealth
-			if m.MCPOAuth {
+			if m.MCPOAuthLive {
 				mcp["oauth"] = mcpOAuthStatus(m, cfg)
 			}
 			data["mcp"] = mcp
@@ -83,8 +83,9 @@ var statusCmd = &cobra.Command{
 	},
 }
 
-// mcpStatus reads back what deploy wrote. The password lives in mcp.env rather
-// than the manifest because the manifest is world-readable and this is not.
+// mcpStatus is the MCP block for agents: the sign-in entry point, never the
+// Basic credentials (those stay server-side for clients that already have
+// them). An MCP not yet behind sign-in is reported unavailable, not as Basic.
 //
 // Gated on m.MCP, not on m.DB: an app deployed before MCP existed has a database
 // and no MCP container, and advertising a URL that 404s is worse than silence.
@@ -92,32 +93,23 @@ func mcpStatus(m *state.Manifest, cfg *state.Config) (map[string]any, string) {
 	if !m.MCP || cfg == nil || cfg.Domain == "" {
 		return nil, ""
 	}
-	// An MCP the manifest knows about but whose credentials cannot be read is a
-	// different thing from no MCP, and it must not look the same. Report the
-	// endpoint and say why the credentials are missing — silence here previously
-	// hid a working MCP whose mcp.env a root-run deploy had left unreadable.
-	data, err := os.ReadFile(state.AppMCPEnvPath(m.Name))
-	if err != nil {
-		return map[string]any{
-			"url":   "https://" + m.Name + ".mcp." + cfg.Domain + "/sse",
-			"error": "cannot read " + state.AppMCPEnvPath(m.Name) + ": " + err.Error(),
-			"hint":  "redeploy to regenerate the credentials file with the right owner",
-		}, mcpContainerHealth(m.Name)
-	}
+	return mcpStatusBlock(m, cfg), mcpContainerHealth(m.Name)
+}
 
-	user, password := "", ""
-	for _, line := range strings.Split(string(data), "\n") {
-		switch {
-		case strings.HasPrefix(line, "VD_MCP_USER="):
-			user = strings.TrimPrefix(line, "VD_MCP_USER=")
-		case strings.HasPrefix(line, "VD_MCP_PASSWORD="):
-			password = strings.TrimPrefix(line, "VD_MCP_PASSWORD=")
+func mcpStatusBlock(m *state.Manifest, cfg *state.Config) map[string]any {
+	if !m.MCPOAuthLive {
+		return map[string]any{
+			"available": false,
+			"hint":      "not behind platform login yet — a platform admin runs: vd mcp-oauth " + m.Name,
 		}
 	}
-	if user == "" || password == "" {
-		return nil, ""
+	url := "https://" + mcpHost(m.Name, cfg) + "/mcp"
+	return map[string]any{
+		"available": true,
+		"url":       url,
+		"group":     "mcp-vibe-" + m.Name,
+		"add":       fmt.Sprintf("claude mcp add --transport http %s-db %s", m.Name, url),
 	}
-	return mcpInfo(m.Name, m.Name+".mcp."+cfg.Domain, user, password), mcpContainerHealth(m.Name)
 }
 
 func mcpContainerHealth(appName string) string {
@@ -194,7 +186,7 @@ func mcpOAuthStatus(m *state.Manifest, cfg *state.Config) map[string]any {
 		info["state"] = "ok"
 	} else {
 		info["state"] = "broken"
-		info["hint"] = "redeploy the app; Basic credentials keep working meanwhile"
+		info["hint"] = "redeploy the app to repair its MCP sign-in"
 	}
 	return info
 }

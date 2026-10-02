@@ -94,7 +94,7 @@ var mcpOAuthCmd = &cobra.Command{
 				output.Warn("revert: %v", e)
 			}
 			output.Fail("mcp-oauth", output.NewError("MCP_OAUTH_FAILED",
-				why+" — reverted, the MCP is on Basic as before (see warnings if a revert step failed)",
+				why+" — reverted to how it was (see warnings if a revert step failed); the MCP is not available to agents until this succeeds",
 				"The Authentik resource stays; retrying is safe"))
 		}
 		if err := syncMCPGateway(cfg); err != nil {
@@ -114,7 +114,6 @@ var mcpOAuthCmd = &cobra.Command{
 		output.Success("mcp-oauth", map[string]any{
 			"name":  name,
 			"oauth": mcpOAuthInfo(name, cfg, mcpOAuthOwner, res),
-			"basic": "unchanged — the same password keeps working",
 		})
 	},
 }

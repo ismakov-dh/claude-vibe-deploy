@@ -28,7 +28,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Path routing** | `--routing path` | App at `<apps-domain>/<name>` |
 | **TLS/HTTPS** | Automatic | Host nginx has wildcard cert. All apps are HTTPS. No config needed. |
 | **Own PostgreSQL database** | `--db postgres` | Auto-provisioned on deploy. `DATABASE_URL` injected into `.env`. Fresh DB per app. |
-| **Read-only MCP for the app's own DB** | automatic with `--db postgres` | Per-app postgres-mcp at `<name>.mcp.<apps-domain>`, SELECT-only, behind basicauth. Credentials and a ready-made `claude mcp add` command come back in the `mcp` field. Not provisioned for `prod-ro`. |
+| **Read-only MCP for the app's own DB** | automatic with `--db postgres` | Per-app postgres-mcp at `<name>.mcp.<apps-domain>/mcp`, SELECT-only on the whole DB, behind platform sign-in (group `mcp-vibe-<name>`, granted with `vd access <name> add <email> --mcp`). The `mcp` field carries a ready-made `claude mcp add --transport http …` — no password. Not provisioned for `prod-ro`. |
 | **Prod DB read-only access** | `--db prod-ro --auth` | Production read-only replica over a dedicated overlay, shared SELECT-only role. **Includes patient data** — agents ask the user first. `--auth` required, sign-in ≤ `hours=1`, no MCP. |
 | **Environment variables** | `--env-file` or auto-injected | Pass secrets, API keys, config. `DATABASE_URL` is auto-injected when using `--db`. |
 | **Cron jobs** | `vd cron-set` | Scheduled commands that run inside the app container. |
@@ -173,9 +173,7 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky; subdomain routing only. Needs `vd init --authentik-url … --authentik-internal …` on the server |
 | `--auth-ttl` | `hours=1` | Sign-in lifetime before Authentik is asked again; over a day warns |
 | `--auth-bearer` | false | With `--auth`: outpost also accepts Bearer (this provider's client_credentials tokens) and Basic from group members; the app restricts service accounts' routes. Sticky; `=false` turns off |
-| `--mcp-oauth` | false | Database MCP also behind Authentik (vd-mcpgw, group `mcp-vibe-<name>`); Basic keeps working. Sticky |
-| `--mcp-owner` | none | Email added to `mcp-vibe-<name>` (with `--mcp-oauth`) |
-| `--mcp-rotate-password` | false | New MCP Basic password (revokes the old one). Otherwise it survives redeploys |
+| `--mcp-owner` | none | Email added to `mcp-vibe-<name>`, the database MCP's group (with `--db postgres`) |
 
 **Policy scan**: on every deploy, vd scans the source for hardcoded secrets and unsupported external services. Hardcoded credentials (AWS/OpenAI/Anthropic/GitHub/Google/Slack/Stripe keys, private keys, DB URLs with passwords) **block** the deploy with `POLICY_VIOLATION`. `.env` files are never scanned. Unsupported services (Supabase, Firebase, MongoDB, Redis, S3) produce warnings in the `warnings` field of the JSON response; `--allow-external` silences them. (A hardcoded JWT-shaped token in source also warns — it's there to catch pasted Supabase anon keys, not to flag the use of a JWT library.)
 
@@ -210,26 +208,15 @@ Stop container, remove app files.
 | `--yes` | false | Skip confirmation (always use in automation) |
 | `--drop-db` | false | Also drop the database, its user and the MCP read-only role (vd-managed only, never drops prod) |
 
-For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept. For `--mcp-oauth` apps, destroy removes the MCP application, provider and the group `mcp-vibe-<app>`, and vd's own permission rows on that group (if Authentik refuses, a warning: the rows grant nothing). It also works on the leftovers of a failed first deploy (no manifest): container, Authentik objects and files, including a `.env` with the prod DSN.
+For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept. For apps with a database MCP, destroy removes the MCP application, provider and the group `mcp-vibe-<app>`, and vd's own permission rows on that group (if Authentik refuses, a warning: the rows grant nothing). It also works on the leftovers of a failed first deploy (no manifest): container, Authentik objects and files, including a `.env` with the prod DSN.
 
 #### `vd access <app-name> list|add|remove [email]`
 
-The app's owner grants and revokes access without a platform admin: membership of `vibe-<app>` (an `--auth` app) or, with `--mcp`, `mcp-vibe-<app>` (after `--mcp-oauth`). The group is derived from the app name — no free group names. `add`/`remove` are idempotent (`changed`); `remove` reports `takes_effect` (the app's `auth_ttl`, or 5 minutes for the MCP). `add` for an email without a platform account fails with `NO_ACCOUNT`; a group vd has no rights on fails with `ACCESS_FORBIDDEN`.
+The app's owner grants and revokes access without a platform admin: membership of `vibe-<app>` (an `--auth` app) or, with `--mcp`, `mcp-vibe-<app>` (every `--db postgres` app). The group is derived from the app name — no free group names. `add`/`remove` are idempotent (`changed`); `remove` reports `takes_effect` (the app's `auth_ttl`, or 5 minutes for the MCP). `add` for an email without a platform account fails with `NO_ACCOUNT`; a group vd has no rights on fails with `ACCESS_FORBIDDEN`.
 
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--mcp` | false | The MCP's group instead of the app's |
-
-#### `vd mcp-oauth <app-name>`
-
-Turn on `--mcp-oauth` for a running `--db postgres` app **without redeploying it**: sets up Authentik, writes the gateway route and recreates only the MCP container with its new labels. The app container is not rebuilt or restarted; Basic keeps working with the same password.
-
-| Flag | Default | Description |
-|------|---------|-------------|
-| `--owner` | none | Email added to `mcp-vibe-<app>` |
-| `--check` | false | Change nothing: report whether vd can re-render the app's compose file faithfully (`faithful`, `mcp_lines_differ`, `other_lines_differ`) |
-
-Refuses with `COMPOSE_DRIFT` before any change if lines outside the MCP service differ from what vd renders from the manifest (redeploy once, then retry). Holds the app lock, which `vd deploy` takes too.
 
 #### `vd db-create <app-name>`
 
@@ -271,9 +258,9 @@ Success:
 {"ok": true, "command": "deploy", "data": {"name": "my-app", "url": "https://my-app.<apps-domain>", "status": "running", "health": "healthy"}}
 ```
 
-With `--db postgres` the `data` object also carries an `mcp` block — `url`, `user`,
-`password` and an `add` field holding a complete `claude mcp add` command with the
-Basic credentials already encoded.
+With `--db postgres` the `data` object also carries an `mcp` block — `url`, `group` and an
+`add` field holding a complete `claude mcp add --transport http …` command; the client signs in
+through the browser. No block (and a warning) means the MCP is not available on this server.
 
 Error:
 ```json
@@ -363,6 +350,30 @@ scripts/
 - Docker operations via CLI shell-out, not SDK
 - State: JSON files at `/opt/vibe-deploy/`
 - TLS: host nginx wildcard cert, not Traefik
+
+### MCP Basic (platform admins only — never in skills)
+
+Every app's database MCP is behind platform sign-in; agents are never given Basic credentials.
+Basic still works server-side for clients that already hold an old password, until its traffic
+is zero (count per app: `docker logs vd-traefik | grep '"RouterName":"vd-<app>-mcp-basic@docker"'`);
+switching it off is a later step. Admin tools:
+
+- `vd deploy … --mcp-rotate-password` (hidden flag): new server-side Basic password, cutting off
+  clients on the old one. It is not printed; it lives in the app's `mcp.env`.
+- `--mcp-oauth` (hidden) is accepted and does nothing: sign-in is always on.
+
+#### `vd mcp-oauth <app-name>`
+
+For apps deployed before sign-in was the default (`vd status` shows `mcp.available: false`).
+
+Turn on `--mcp-oauth` for a running `--db postgres` app **without redeploying it**: sets up Authentik, writes the gateway route and recreates only the MCP container with its new labels. The app container is not rebuilt or restarted; Basic keeps working with the same password.
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--owner` | none | Email added to `mcp-vibe-<app>` |
+| `--check` | false | Change nothing: report whether vd can re-render the app's compose file faithfully (`faithful`, `mcp_lines_differ`, `other_lines_differ`) |
+
+Refuses with `COMPOSE_DRIFT` before any change if lines outside the MCP service differ from what vd renders from the manifest (redeploy once, then retry). Holds the app lock, which `vd deploy` takes too.
 
 ### Keeping Skills in Sync
 
