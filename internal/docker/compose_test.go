@@ -7,11 +7,8 @@ import (
 	"testing"
 )
 
-// The MCP service is two Traefik routers over one container, and the whole
-// arrangement fails silently in both directions: get it wrong one way and the
-// endpoint is wide open, wrong the other way and MCP clients see a 401 on
-// /.well-known/, read it as "start the OAuth flow", and throw away the Basic
-// credentials they were handed. Neither shows up as a failed deploy.
+// The MCP has one Traefik router and it goes to vd-mcpgw; get that wrong and
+// the endpoint is wide open, which does not show up as a failed deploy.
 func renderMCP(t *testing.T, data ComposeData) string {
 	t.Helper()
 	out := filepath.Join(t.TempDir(), "docker-compose.vd.yml")
@@ -28,15 +25,14 @@ func renderMCP(t *testing.T, data ComposeData) string {
 
 func mcpData() ComposeData {
 	return ComposeData{
-		Name:         "myapp",
-		AppType:      "node-server",
-		Port:         3000,
-		Routing:      "subdomain",
-		Domain:       "apps.example.com",
-		NeedsDB:      true,
-		NeedsMCP:     true,
-		MCPImage:     "example/postgres-mcp:test",
-		MCPBasicAuth: "mcp:{SHA}abc123=",
+		Name:     "myapp",
+		AppType:  "node-server",
+		Port:     3000,
+		Routing:  "subdomain",
+		Domain:   "apps.example.com",
+		NeedsDB:  true,
+		NeedsMCP: true,
+		MCPImage: "example/postgres-mcp:test",
 	}
 }
 
@@ -47,40 +43,6 @@ func line(body, needle string) string {
 		}
 	}
 	return ""
-}
-
-func TestComposeMCPAuthOnlyOnTheMainRouter(t *testing.T) {
-	body := renderMCP(t, mcpData())
-
-	main := line(body, "routers.vd-myapp-mcp.rule=")
-	wellknown := line(body, "routers.vd-myapp-mcp-wellknown.rule=")
-	if main == "" || wellknown == "" {
-		t.Fatalf("expected both routers, got:\n%s", body)
-	}
-
-	if !strings.Contains(body, "routers.vd-myapp-mcp.middlewares=vd-myapp-mcp-auth") {
-		t.Error("main router is missing the basicauth middleware — endpoint would be unauthenticated")
-	}
-	if strings.Contains(body, "routers.vd-myapp-mcp-wellknown.middlewares") {
-		t.Error("/.well-known/ router must not carry auth — a 401 there makes clients drop their Basic credentials")
-	}
-}
-
-// Traefik derives router priority from rule length. The wellknown rule is a
-// strict superset of the main rule, so it wins by default and needs no explicit
-// priority — a literal priority would have to beat a default that grows with the
-// app name, and would silently stop winning past ~62 characters.
-func TestComposeMCPWellKnownOutranksByRuleLength(t *testing.T) {
-	body := renderMCP(t, mcpData())
-
-	main := line(body, "routers.vd-myapp-mcp.rule=")
-	wellknown := line(body, "routers.vd-myapp-mcp-wellknown.rule=")
-	if len(wellknown) <= len(main) {
-		t.Errorf("wellknown rule must be longer than the main rule\n main: %s\n well: %s", main, wellknown)
-	}
-	if strings.Contains(body, "-mcp-wellknown.priority") {
-		t.Error("explicit priority on the wellknown router: it competes with a length-derived default that grows with the app name")
-	}
 }
 
 // Traefik runs with exposedbydefault=false, and the command line sets 8089 while
@@ -105,7 +67,6 @@ func TestComposeMCPCarriesEnableAndPort(t *testing.T) {
 func TestComposeWithoutMCPRendersNoMCPService(t *testing.T) {
 	data := mcpData()
 	data.NeedsMCP = false
-	data.MCPBasicAuth = ""
 	body := renderMCP(t, data)
 
 	if strings.Contains(body, "-mcp") {
@@ -286,54 +247,33 @@ func TestGatewayCIDRs(t *testing.T) {
 	}
 }
 
-func oauthData() ComposeData {
-	d := mcpData()
-	d.MCPOAuth = true
-	return d
-}
-
-func ruleOf(body, router string) string {
-	l := line(body, "routers."+router+".rule=")
-	return l[strings.Index(l, ".rule=")+len(".rule=") : strings.LastIndex(l, `"`)]
-}
-
-// The seamless transition rests on one ordering: a request with Basic
-// credentials must match the Basic router on every path, /.well-known/
-// included, or a Basic client could be shown OAuth metadata and drop its
-// credentials. Traefik orders same-entrypoint routers by rule length.
-func TestComposeMCPOAuthKeepsBasicFirst(t *testing.T) {
-	body := renderMCP(t, oauthData())
-	basic, wk, main := ruleOf(body, "vd-myapp-mcp-basic"), ruleOf(body, "vd-myapp-mcp-wellknown"), ruleOf(body, "vd-myapp-mcp")
-	if !(len(basic) > len(wk) && len(wk) > len(main)) {
-		t.Fatalf("priority by length broken: basic %d, wellknown %d, main %d", len(basic), len(wk), len(main))
+// The only way into the MCP is the gateway: one router, no middleware of its
+// own, and no Basic route under any input.
+func TestComposeMCPOnlyThroughTheGateway(t *testing.T) {
+	body := renderMCP(t, mcpData())
+	if !strings.Contains(line(body, "routers.vd-myapp-mcp.service="), "vd-mcpgw@docker") {
+		t.Fatal("the MCP router must go to the gateway")
 	}
-	if !strings.Contains(basic, "HeaderRegexp(`Authorization`, `(?i)^Basic `)") {
-		t.Fatalf("basic rule %q", basic)
-	}
-	if !strings.Contains(line(body, "routers.vd-myapp-mcp-basic.middlewares="), "vd-myapp-mcp-auth") {
-		t.Fatal("Basic router lost its basicauth")
-	}
-	if !strings.Contains(line(body, "routers.vd-myapp-mcp-basic.service="), "vd-myapp-mcp\"") {
-		t.Fatal("Basic router must go straight to the MCP container")
-	}
-	for _, r := range []string{"vd-myapp-mcp", "vd-myapp-mcp-wellknown"} {
-		if !strings.Contains(line(body, "routers."+r+".service="), "vd-mcpgw@docker") {
-			t.Errorf("%s must go to the gateway", r)
+	for _, l := range strings.Split(body, "\n") {
+		if strings.Contains(l, "routers.vd-myapp-mcp") && !strings.Contains(l, "routers.vd-myapp-mcp.") {
+			t.Errorf("second MCP router: %s", l)
 		}
 	}
 	if line(body, "routers.vd-myapp-mcp.middlewares=") != "" {
-		t.Fatal("the gateway router must not sit behind basicauth")
+		t.Fatal("the gateway router must carry no middleware")
 	}
-}
-
-// Without --mcp-oauth nothing changes for existing apps.
-func TestComposeMCPWithoutOAuthUnchanged(t *testing.T) {
-	body := renderMCP(t, mcpData())
-	if strings.Contains(body, "vd-mcpgw") || strings.Contains(body, "mcp-basic") {
-		t.Fatal("OAuth labels rendered without --mcp-oauth")
-	}
-	if !strings.Contains(line(body, "routers.vd-myapp-mcp.middlewares="), "vd-myapp-mcp-auth") {
-		t.Fatal("Basic-only MCP lost its basicauth")
+	for _, auth := range []bool{false, true} {
+		for _, mcp := range []bool{false, true} {
+			d := mcpData()
+			d.NeedsMCP, d.Auth = mcp, auth
+			if auth {
+				d.IngressSecret = "deadbeef"
+			}
+			b := strings.ToLower(renderMCP(t, d))
+			if strings.Contains(b, "basicauth") || strings.Contains(b, "mcp-basic") {
+				t.Errorf("auth=%v mcp=%v renders Basic", auth, mcp)
+			}
+		}
 	}
 }
 
@@ -353,7 +293,7 @@ func TestComposeRefusesUnsafeProdRO(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "c.yml")
 	for name, mut := range map[string]func(*ComposeData){
 		"no auth":  func(d *ComposeData) { d.Auth = false; d.IngressSecret = "" },
-		"with MCP": func(d *ComposeData) { d.NeedsMCP = true; d.MCPImage = "x"; d.MCPBasicAuth = "a:b" },
+		"with MCP": func(d *ComposeData) { d.NeedsMCP = true; d.MCPImage = "x" },
 		"on vd-db": func(d *ComposeData) { d.NeedsDB = true },
 	} {
 		d := authData()

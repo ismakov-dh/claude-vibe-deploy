@@ -351,22 +351,21 @@ scripts/
 - State: JSON files at `/opt/vibe-deploy/`
 - TLS: host nginx wildcard cert, not Traefik
 
-### MCP Basic (platform admins only — never in skills)
+### MCP sign-in (platform admins only)
 
-Every app's database MCP is behind platform sign-in; agents are never given Basic credentials.
-Basic still works server-side for clients that already hold an old password, until its traffic
-is zero (count per app: `docker logs vd-traefik | grep '"RouterName":"vd-<app>-mcp-basic@docker"'`);
-switching it off is a later step. Admin tools:
-
-- `vd deploy … --mcp-rotate-password` (hidden flag): new server-side Basic password, cutting off
-  clients on the old one. It is not printed; it lives in the app's `mcp.env`.
-- `--mcp-oauth` (hidden) is accepted and does nothing: sign-in is always on.
+Every app's database MCP has one way in: vd-mcpgw, behind platform sign-in. There is no Basic
+route (removed in 2026-10; the `VD_MCP_USER`/`VD_MCP_PASSWORD` lines left in old `mcp.env` files
+are read by nothing and disappear on the next deploy). Fail closed: when the MCP's Authentik
+resource cannot be set up, the MCP container is not started at all, and `vd status` reports
+`mcp.available: false` with the reason. A rollback to a backup that still has the Basic route
+re-renders its compose file before starting it. `--mcp-oauth` (hidden) is accepted and does nothing.
 
 #### `vd mcp-oauth <app-name>`
 
-For apps deployed before sign-in was the default (`vd status` shows `mcp.available: false`).
-
-Turn on `--mcp-oauth` for a running `--db postgres` app **without redeploying it**: sets up Authentik, writes the gateway route and recreates only the MCP container with its new labels. The app container is not rebuilt or restarted; Basic keeps working with the same password.
+Brings a running `--db postgres` app's MCP up behind sign-in **without redeploying it**: when
+`vd status` shows `mcp.available: false`, and to drop the Basic route from an app last deployed by
+an older vd. Sets up Authentik, writes the gateway route and recreates only the MCP container with
+its new labels. The app container is not rebuilt or restarted.
 
 | Flag | Default | Description |
 |------|---------|-------------|

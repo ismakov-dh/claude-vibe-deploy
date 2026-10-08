@@ -22,7 +22,8 @@ type Manifest struct {
 	DeployCount   int    `json:"deploy_count"`
 	HasEnvFile    bool   `json:"env_file"`
 
-	// MCP records whether this deploy actually rendered an MCP service. Deliberately
+	// MCP records that the app has a database MCP (its role and mcp.env exist);
+	// its container runs only while MCPOAuthLive — there is no other way in. Deliberately
 	// not derived from DB == "postgres": apps deployed before the feature existed
 	// have a database and no MCP container until their next deploy, and deriving it
 	// would make vd status advertise a URL that 404s.
@@ -41,13 +42,12 @@ type Manifest struct {
 	// AuthBearer mirrors the provider's intercept_header_auth (--auth-bearer).
 	AuthBearer bool `json:"auth_bearer,omitempty"`
 
-	// MCP behind vd-mcpgw and Authentik. Sticky like Auth. Basic keeps working
-	// alongside it until it is switched off per app.
-	MCPOAuth bool   `json:"mcp_oauth,omitempty"`
 	MCPOwner string `json:"mcp_owner,omitempty"`
-	// MCPOAuthLive is set when this deploy's labels send non-Basic traffic to
-	// vd-mcpgw, i.e. the Authentik resource exists. Routes follow it, not the
-	// intent: a route for a missing issuer fails validation for every app.
+	// MCPOAuthLive is set when the app's MCP resource exists in Authentik, so
+	// the MCP container runs behind vd-mcpgw. Without it the MCP is not
+	// rendered at all, and no gateway route is written: a route for a missing
+	// issuer fails validation for every app. (Old manifests also carry
+	// "mcp_oauth"; every MCP is behind sign-in now, so it is no longer read.)
 	MCPOAuthLive bool `json:"mcp_oauth_live,omitempty"`
 }
 

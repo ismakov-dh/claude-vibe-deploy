@@ -26,40 +26,38 @@ func render(t *testing.T, d docker.ComposeData) string {
 // saved (through JSON, as on disk), must be the same file.
 func TestRebuildFromManifestMatchesDeploy(t *testing.T) {
 	cfg := &state.Config{Domain: "apps.example.com"}
-	basic := htpasswdSHA(mcpUser, "pw")
 	for _, deployed := range []state.Manifest{
 		{Name: "demo", AppType: "node-server", Port: 3000, Routing: "subdomain", HasEnvFile: true, DB: "postgres", MCP: true, Auth: true},
 		{Name: "plain", AppType: "python-fastapi", Port: 8000, Routing: "subdomain", HasEnvFile: true, DB: "postgres", MCP: true},
-		{Name: "live", AppType: "go", Port: 8080, Routing: "subdomain", DB: "postgres", MCP: true, MCPOAuth: true, MCPOAuthLive: true},
+		{Name: "live", AppType: "go", Port: 8080, Routing: "subdomain", DB: "postgres", MCP: true, MCPOAuthLive: true},
 	} {
-		fromDeploy := render(t, composeDataFor(&deployed, cfg, basic, "deadbeef"))
+		fromDeploy := render(t, composeDataFor(&deployed, cfg, "deadbeef"))
 		raw, _ := json.Marshal(deployed)
 		var saved state.Manifest
 		if err := json.Unmarshal(raw, &saved); err != nil {
 			t.Fatal(err)
 		}
-		if d := lineDiff(fromDeploy, render(t, composeDataFor(&saved, cfg, basic, "deadbeef")), deployed.Name); d != (composeDiff{}) {
+		if d := lineDiff(fromDeploy, render(t, composeDataFor(&saved, cfg, "deadbeef")), deployed.Name); d != (composeDiff{}) {
 			t.Errorf("%s: re-render differs from deploy: %+v", deployed.Name, d)
 		}
 	}
 }
 
-// Turning OAuth on changes MCP lines only, and keeps Basic and forward auth.
+// Turning OAuth on changes MCP lines only, and keeps the app's forward auth.
 func TestMCPOAuthRenderTouchesOnlyTheMCP(t *testing.T) {
 	m := &state.Manifest{Name: "demo", AppType: "node-server", Port: 3000, Routing: "subdomain",
 		HasEnvFile: true, DB: "postgres", MCP: true, Auth: true}
 	cfg := &state.Config{Domain: "apps.example.com"}
-	basic := htpasswdSHA(mcpUser, "pw")
-	before := render(t, composeDataFor(m, cfg, basic, "deadbeef"))
+	before := render(t, composeDataFor(m, cfg, "deadbeef"))
 	on := *m
-	on.MCPOAuth, on.MCPOAuthLive = true, true
-	after := render(t, composeDataFor(&on, cfg, basic, "deadbeef"))
+	on.MCPOAuthLive = true
+	after := render(t, composeDataFor(&on, cfg, "deadbeef"))
 	if d := lineDiff(before, after, "demo"); d.other != 0 || d.mcp == 0 {
 		t.Fatalf("OAuth changed non-MCP lines or nothing: %+v", d)
 	}
-	if !strings.Contains(after, "basicauth.users="+basic) || !strings.Contains(after, "vd-mcpgw@docker") ||
+	if strings.Contains(after, "basicauth") || !strings.Contains(after, "vd-mcpgw@docker") ||
 		!strings.Contains(after, "authentik-fa@file") || !strings.Contains(after, "X-Vibe-Ingress=deadbeef") {
-		t.Fatal("OAuth render lost Basic, the gateway route or the app's forward auth")
+		t.Fatal("OAuth render has Basic, or lost the gateway route or the app's forward auth")
 	}
 }
 
@@ -82,13 +80,15 @@ func TestLineDiffSeparatesMCPFromTheRest(t *testing.T) {
 }
 
 func TestRevertMCPOAuthRestoresEverything(t *testing.T) {
+	const oldCompose = "services:\n  demo:\n    image: x\n  demo-mcp:\n    image: y\n"
 	t.Setenv("VD_HOME", t.TempDir())
 	oldV := mcpgw.Validate
 	mcpgw.Validate = func(string) error { return nil }
-	var upped []string
-	oldUp := composeUpService
+	var upped, removed []string
+	oldUp, oldRm := composeUpService, removeContainer
 	composeUpService = func(dir, file, svc string) error { upped = append(upped, svc); return nil }
-	t.Cleanup(func() { mcpgw.Validate, composeUpService = oldV, oldUp })
+	removeContainer = func(name string) error { removed = append(removed, name); return nil }
+	t.Cleanup(func() { mcpgw.Validate, composeUpService, removeContainer = oldV, oldUp, oldRm })
 
 	if err := os.MkdirAll(state.AppDir("demo"), 0755); err != nil {
 		t.Fatal(err)
@@ -98,25 +98,32 @@ func TestRevertMCPOAuthRestoresEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := *old
-	now.MCPOAuth, now.MCPOAuthLive = true, true
+	now.MCPOAuthLive = true
 	if err := state.WriteManifest(&now); err != nil {
 		t.Fatal(err)
 	}
 
-	if errs := revertMCPOAuth("demo", []byte("old compose"), old, &state.Config{Domain: "apps.example.com", AuthentikURL: "https://auth.example.com"}); len(errs) != 0 {
+	if errs := revertMCPOAuth("demo", []byte(oldCompose), old, &state.Config{Domain: "apps.example.com", AuthentikURL: "https://auth.example.com"}); len(errs) != 0 {
 		t.Fatalf("revert errors: %v", errs)
 	}
 	b, _ := os.ReadFile(state.AppComposePath("demo"))
 	fi, _ := os.Stat(state.AppComposePath("demo"))
-	if string(b) != "old compose" || fi.Mode().Perm() != 0600 {
+	if string(b) != oldCompose || fi.Mode().Perm() != 0600 {
 		t.Fatalf("compose after revert: %q mode %v", b, fi.Mode().Perm())
 	}
 	m, _ := state.LoadManifest("demo")
-	if m.MCPOAuth || m.MCPOAuthLive || m.DeployedAt != old.DeployedAt {
+	if m.MCPOAuthLive || m.DeployedAt != old.DeployedAt {
 		t.Fatalf("manifest after revert: %+v", m)
 	}
-	if len(upped) != 1 || upped[0] != "demo-mcp" {
-		t.Fatalf("recreated %v, want only demo-mcp", upped)
+	if len(upped) != 1 || upped[0] != "demo-mcp" || len(removed) != 0 {
+		t.Fatalf("recreated %v removed %v, want only demo-mcp recreated", upped, removed)
+	}
+	// An old compose without the MCP service (no sign-in before): the MCP the
+	// failed run started is removed, not left behind.
+	upped = nil
+	revertMCPOAuth("demo", []byte("services:\n  demo:\n"), old, &state.Config{Domain: "apps.example.com"})
+	if len(upped) != 0 || len(removed) != 1 || removed[0] != "vd-demo-mcp" {
+		t.Fatalf("recreated %v removed %v, want vd-demo-mcp removed", upped, removed)
 	}
 	if routes, _ := os.ReadFile(filepath.Join(state.MCPGWDir(), "config.yaml")); strings.Contains(string(routes), "demo.mcp.") {
 		t.Fatal("gateway still routes the reverted app")

@@ -55,8 +55,7 @@ services:
       - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-Forwarded-Port="
       - "traefik.http.middlewares.vd-{{.Name}}-ingress.headers.customrequestheaders.X-Vibe-Ingress={{.IngressSecret}}"
       # The outpost's own paths (start, callback, sign_out) must reach the outpost
-      # on the app's host, not the app. No explicit priority, same reasoning as
-      # the MCP /.well-known/ router below: this rule is a strict superset of the
+      # on the app's host, not the app. No explicit priority: this rule is a strict superset of the
       # app's, so it always wins, where a literal number stops winning once the
       # app name makes the app rule long enough.
       - "traefik.http.routers.vd-{{.Name}}-outpost.rule=Host(`{{.Name}}.{{.Domain}}`) && PathPrefix(`/outpost.goauthentik.io/`)"
@@ -106,44 +105,9 @@ services:
       - "traefik.http.services.vd-{{.Name}}-mcp.loadbalancer.server.port=8089"
       - "traefik.http.routers.vd-{{.Name}}-mcp.rule=Host(`{{.Name}}.mcp.{{.Domain}}`)"
       - "traefik.http.routers.vd-{{.Name}}-mcp.entrypoints=web"
-      - "traefik.http.middlewares.vd-{{.Name}}-mcp-auth.basicauth.users={{.MCPBasicAuth}}"
-{{- if .MCPOAuth}}
-      # --- OAuth via vd-mcpgw, with Basic kept working (docs/plans/mcp-oauth.md) ---
-      # Anything that is not Basic — no credentials, or a Bearer token — goes to
-      # the gateway, which does the OAuth dance and checks the group.
+      # The only way in is vd-mcpgw: it does the OAuth dance and checks the
+      # group, then proxies to this container. There is no Basic route.
       - "traefik.http.routers.vd-{{.Name}}-mcp.service=vd-mcpgw@docker"
-      # A request carrying Basic credentials goes exactly where it always went
-      # (scheme matched case-insensitively, as net/http's BasicAuth does).
-      # This rule is longer than both others, so it wins on every path —
-      # including a client's probe of /.well-known/ — and a Basic client keeps
-      # getting the same answers as before, never OAuth metadata that could make
-      # it drop the credentials it holds.
-      - "traefik.http.routers.vd-{{.Name}}-mcp-basic.rule=Host(`{{.Name}}.mcp.{{.Domain}}`) && HeaderRegexp(`Authorization`, `(?i)^Basic `)"
-      - "traefik.http.routers.vd-{{.Name}}-mcp-basic.entrypoints=web"
-      - "traefik.http.routers.vd-{{.Name}}-mcp-basic.service=vd-{{.Name}}-mcp"
-      - "traefik.http.routers.vd-{{.Name}}-mcp-basic.middlewares=vd-{{.Name}}-mcp-auth"
-{{- else}}
-      - "traefik.http.routers.vd-{{.Name}}-mcp.service=vd-{{.Name}}-mcp"
-      - "traefik.http.routers.vd-{{.Name}}-mcp.middlewares=vd-{{.Name}}-mcp-auth"
-{{- end}}
-      # /.well-known/* must NOT sit behind basicauth. MCP clients probe it for
-      # OAuth metadata; a 401 there reads as "do the OAuth flow" and the client
-      # drops the Basic credentials it already holds. A 404 is the answer it needs.
-      #
-      # No explicit priority. Traefik derives priority from rule length, and this
-      # rule is a strict superset of the one above, so it always wins. A literal
-      # priority=100 would have to beat a default that grows with the app name —
-      # at 62 characters it silently stops winning and /.well-known/ falls behind
-      # the auth middleware.
-      - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.rule=Host(`{{.Name}}.mcp.{{.Domain}}`) && PathPrefix(`/.well-known/`)"
-      - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.entrypoints=web"
-{{- if .MCPOAuth}}
-      # With OAuth on, /.well-known/ for clients without Basic is the gateway's
-      # protected-resource and authorization-server metadata.
-      - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.service=vd-mcpgw@docker"
-{{- else}}
-      - "traefik.http.routers.vd-{{.Name}}-mcp-wellknown.service=vd-{{.Name}}-mcp"
-{{- end}}
     networks:
       - vd-net
       - vd-db

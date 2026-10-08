@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -16,8 +17,9 @@ var (
 	mcpOAuthOwner string
 	mcpOAuthCheck bool
 
-	// Replaced in tests: the only docker call on the revert path.
+	// Replaced in tests: the docker calls on the revert path.
 	composeUpService = docker.ComposeUpService
+	removeContainer  = docker.RemoveContainer
 )
 
 func init() {
@@ -26,13 +28,14 @@ func init() {
 	rootCmd.AddCommand(mcpOAuthCmd)
 }
 
-// vd mcp-oauth turns on --mcp-oauth for a running app without redeploying it:
+// vd mcp-oauth puts a running app's MCP behind sign-in without redeploying it:
 // a deploy rebuilds and force-recreates the app container, and all this needs
-// is Authentik, the gateway route and new labels on the MCP container. Basic
-// keeps working with the same password.
+// is Authentik, the gateway route and new labels on the MCP container. On an
+// app whose MCP is already behind sign-in it re-renders the MCP only: that is
+// how an app deployed by an older vd loses its Basic route.
 var mcpOAuthCmd = &cobra.Command{
 	Use:   "mcp-oauth <app-name>",
-	Short: "Put an app's database MCP behind platform login too, without touching the app",
+	Short: "Put an app's database MCP behind platform login, without touching the app",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
@@ -47,8 +50,8 @@ var mcpOAuthCmd = &cobra.Command{
 		}
 		defer unlock()
 
-		m, cfg, basic, ingress := mcpOAuthPreflight(name)
-		drift, err := composeDrift(m, cfg, basic, ingress)
+		m, cfg, ingress := mcpOAuthPreflight(name)
+		drift, err := composeDrift(m, cfg, ingress)
 		if err != nil {
 			output.Fail("mcp-oauth", output.NewError("COMPOSE_FAILED", err.Error(), ""))
 		}
@@ -82,7 +85,7 @@ var mcpOAuthCmd = &cobra.Command{
 		}
 		oldManifest := *m
 
-		m.MCPOAuth, m.MCPOAuthLive = true, true
+		m.MCPOAuthLive = true
 		if mcpOAuthOwner != "" {
 			m.MCPOwner = mcpOAuthOwner
 		}
@@ -90,6 +93,16 @@ var mcpOAuthCmd = &cobra.Command{
 			output.Fail("mcp-oauth", output.NewError("MANIFEST_WRITE_FAILED", err.Error(), "Nothing on the MCP changed"))
 		}
 		fail := func(why string) {
+			if hasBasicMCP(oldCompose) {
+				// Never back to Basic: an app from an older vd reverts to no MCP,
+				// until a retry succeeds.
+				oldManifest.MCPOAuthLive = false
+				if err := docker.GenerateComposeFile(templatesFS, composeDataFor(&oldManifest, cfg, ingress), composePath); err != nil {
+					output.Warn("revert: render without the MCP: %v", err)
+				} else if b, err := os.ReadFile(composePath); err == nil {
+					oldCompose = b
+				}
+			}
 			for _, e := range revertMCPOAuth(name, oldCompose, &oldManifest, cfg) {
 				output.Warn("revert: %v", e)
 			}
@@ -100,7 +113,7 @@ var mcpOAuthCmd = &cobra.Command{
 		if err := syncMCPGateway(cfg); err != nil {
 			fail("gateway route not written: " + err.Error())
 		}
-		if err := docker.GenerateComposeFile(templatesFS, composeDataFor(m, cfg, basic, ingress), composePath); err != nil {
+		if err := docker.GenerateComposeFile(templatesFS, composeDataFor(m, cfg, ingress), composePath); err != nil {
 			fail("compose file: " + err.Error())
 		}
 		output.Info("Recreating the MCP container of %s (the app keeps running)...", name)
@@ -118,8 +131,8 @@ var mcpOAuthCmd = &cobra.Command{
 	},
 }
 
-// revertMCPOAuth puts the compose file (0600: it holds the ingress secret and
-// the Basic hash) and the manifest back, recreates the MCP as it was and
+// revertMCPOAuth puts the compose file (0600: it holds the ingress secret) and
+// the manifest back, recreates the MCP as it was and
 // rewrites the routes. Returns every step that failed.
 func revertMCPOAuth(name string, oldCompose []byte, oldManifest *state.Manifest, cfg *state.Config) []error {
 	var errs []error
@@ -132,8 +145,12 @@ func revertMCPOAuth(name string, oldCompose []byte, oldManifest *state.Manifest,
 	if err := state.WriteManifest(oldManifest); err != nil {
 		errs = append(errs, fmt.Errorf("restore manifest: %w", err))
 	}
-	if err := composeUpService(state.AppDir(name), "docker-compose.vd.yml", name+"-mcp"); err != nil {
-		errs = append(errs, fmt.Errorf("recreate MCP container: %w", err))
+	if bytes.Contains(oldCompose, []byte("\n  "+name+"-mcp:")) {
+		if err := composeUpService(state.AppDir(name), "docker-compose.vd.yml", name+"-mcp"); err != nil {
+			errs = append(errs, fmt.Errorf("recreate MCP container: %w", err))
+		}
+	} else if err := removeContainer("vd-" + name + "-mcp"); err != nil {
+		errs = append(errs, fmt.Errorf("remove MCP container: %w", err))
 	}
 	if err := syncMCPGateway(cfg); err != nil {
 		errs = append(errs, fmt.Errorf("rewrite gateway routes: %w", err))
@@ -142,7 +159,7 @@ func revertMCPOAuth(name string, oldCompose []byte, oldManifest *state.Manifest,
 }
 
 // mcpOAuthPreflight checks everything that can be checked before any change.
-func mcpOAuthPreflight(name string) (*state.Manifest, *state.Config, string, string) {
+func mcpOAuthPreflight(name string) (*state.Manifest, *state.Config, string) {
 	m, err := state.LoadManifest(name)
 	if err != nil {
 		output.Fail("mcp-oauth", output.NewError("NOT_FOUND", "App not found: "+name, "Check app name with: vd list"))
@@ -154,9 +171,8 @@ func mcpOAuthPreflight(name string) (*state.Manifest, *state.Config, string, str
 	if err != nil || cfg.Domain == "" {
 		output.Fail("mcp-oauth", output.NewError("NOT_INITIALIZED", "Run vd init first", ""))
 	}
-	pw := envValue(state.AppMCPEnvPath(name), "VD_MCP_PASSWORD")
-	if pw == "" {
-		output.Fail("mcp-oauth", output.NewError("NO_MCP", "The MCP's server-side credentials file is incomplete: "+state.AppMCPEnvPath(name),
+	if _, err := os.Stat(state.AppMCPEnvPath(name)); err != nil {
+		output.Fail("mcp-oauth", output.NewError("NO_MCP", "The MCP's environment file is missing: "+state.AppMCPEnvPath(name),
 			"Redeploy the app once so its MCP has one"))
 	}
 	ingress := ""
@@ -166,22 +182,22 @@ func mcpOAuthPreflight(name string) (*state.Manifest, *state.Config, string, str
 				"App is behind --auth but its ingress secret is missing", "Redeploy the app"))
 		}
 	}
-	return m, cfg, htpasswdSHA(mcpUser, pw), ingress
+	return m, cfg, ingress
 }
 
 type composeDiff struct{ mcp, other int }
 
 // composeDrift renders the compose file from the manifest as it stands and
 // compares it with the file on disk: lines of the <app>-mcp service are
-// counted apart from the rest. Counts only — the file holds the ingress secret and the Basic hash.
-func composeDrift(m *state.Manifest, cfg *state.Config, basic, ingress string) (composeDiff, error) {
+// counted apart from the rest. Counts only — the file holds the ingress secret.
+func composeDrift(m *state.Manifest, cfg *state.Config, ingress string) (composeDiff, error) {
 	tmp, err := os.CreateTemp(state.VDHome(), ".compose-check-*.yml") // not /tmp: secrets
 	if err != nil {
 		return composeDiff{}, err
 	}
 	tmp.Close()
 	defer os.Remove(tmp.Name())
-	if err := docker.GenerateComposeFile(templatesFS, composeDataFor(m, cfg, basic, ingress), tmp.Name()); err != nil {
+	if err := docker.GenerateComposeFile(templatesFS, composeDataFor(m, cfg, ingress), tmp.Name()); err != nil {
 		return composeDiff{}, err
 	}
 	a, err := os.ReadFile(state.AppComposePath(m.Name))

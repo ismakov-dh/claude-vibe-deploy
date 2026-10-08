@@ -18,10 +18,9 @@ func TestSyncMCPGatewayRoutesOnlyLiveApps(t *testing.T) {
 	t.Cleanup(func() { mcpgw.Validate = old })
 
 	for _, m := range []*state.Manifest{
-		{Name: "live", MCP: true, MCPOAuth: true, MCPOAuthLive: true},
-		{Name: "intent", MCP: true, MCPOAuth: true},         // Authentik failed: no issuer yet
-		{Name: "nomcp", MCPOAuth: true, MCPOAuthLive: true}, // MCP gone
-		{Name: "basic", MCP: true},                          // never opted in
+		{Name: "live", MCP: true, MCPOAuthLive: true},
+		{Name: "intent", MCP: true},         // Authentik failed: no issuer yet
+		{Name: "nomcp", MCPOAuthLive: true}, // MCP gone
 	} {
 		if err := os.MkdirAll(state.AppDir(m.Name), 0755); err != nil {
 			t.Fatal(err)
@@ -48,7 +47,7 @@ func TestSyncMCPGatewayRoutesOnlyLiveApps(t *testing.T) {
 	if err := os.MkdirAll(state.AppDir("late"), 0755); err != nil {
 		t.Fatal(err)
 	}
-	if err := state.SaveManifest(&state.Manifest{Name: "late", MCP: true, MCPOAuth: true, MCPOAuthLive: true}); err != nil {
+	if err := state.SaveManifest(&state.Manifest{Name: "late", MCP: true, MCPOAuthLive: true}); err != nil {
 		t.Fatal(err)
 	}
 	unlock()
