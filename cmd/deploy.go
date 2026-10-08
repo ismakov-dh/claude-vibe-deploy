@@ -1,8 +1,6 @@
 package cmd
 
 import (
-	"crypto/sha1"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -39,7 +37,6 @@ var (
 	deployAuthBearerSet bool // --auth-bearer given explicitly, true or false
 	deployMCPOAuth      bool
 	deployMCPOwner      string
-	deployMCPRotate     bool
 )
 
 func init() {
@@ -54,8 +51,6 @@ func init() {
 	deployCmd.Flags().BoolVar(&deployAuth, "auth", false, "put the app behind platform login (Authentik forward auth); sticky once set")
 	deployCmd.Flags().BoolVar(&deployMCPOAuth, "mcp-oauth", false, "no-op: every database MCP is behind platform login")
 	deployCmd.Flags().MarkHidden("mcp-oauth")
-	deployCmd.Flags().BoolVar(&deployMCPRotate, "mcp-rotate-password", false, "platform admin: issue a new server-side Basic password for the database MCP (cuts off clients still using the old one)")
-	deployCmd.Flags().MarkHidden("mcp-rotate-password")
 	deployCmd.Flags().StringVar(&deployMCPOwner, "mcp-owner", "", "email of a person to add to the database MCP's access group (apps with --db postgres)")
 	deployCmd.Flags().BoolVar(&deployAuthBearer, "auth-bearer", false, "with --auth: also accept Authorization: Bearer (service accounts) and Basic with an app password (any group member) — intercept_header_auth. Sticky; --auth-bearer=false turns it off")
 	deployCmd.Flags().StringVar(&deployAuthTTL, "auth-ttl", "", "how long a sign-in lasts before re-checking with Authentik, e.g. hours=1 or minutes=30 (default hours=1)")
@@ -218,9 +213,6 @@ func runDeploy(srcPath string) {
 
 	// MCP wiring, filled in during provisioning below.
 	needsMCP := false
-	mcpAuth := ""
-	mcpHostName := ""
-	mcpPassword := ""
 
 	// Leaving prod-ro — or an --env-file carrying its DSN — must not leave the
 	// DSN behind: detaching the network is not enough if the value survives in
@@ -284,15 +276,11 @@ func runDeploy(srcPath string) {
 				if err != nil {
 					output.Warn("MCP database role failed: %v — deploying without MCP", err)
 				} else {
-					mcpPassword = mcpPasswordFor(deployName, deployMCPRotate)
-					mcpAuth = htpasswdSHA(mcpUser, mcpPassword)
-					if err := writeMCPEnv(deployName, ro.URL, mcpUser, mcpPassword); err != nil {
+					if err := writeMCPEnv(deployName, ro.URL); err != nil {
 						output.Warn("Could not write mcp.env: %v — deploying without MCP", err)
-						mcpAuth = ""
 					} else {
 						needsMCP = true
-						mcpHostName = deployName + ".mcp." + cfg.Domain
-						output.Info("Read-only MCP container prepared for %s", mcpHostName)
+						output.Info("Read-only MCP prepared for %s.mcp.%s", deployName, cfg.Domain)
 					}
 				}
 			}
@@ -300,16 +288,14 @@ func runDeploy(srcPath string) {
 	}
 
 	prevM, _ := state.LoadManifest(deployName)
-	// Every database MCP is behind platform login; agents are never given the
-	// Basic credentials (they stay on the server for clients that already hold
-	// them, until their traffic is zero). --mcp-oauth is accepted and changes
-	// nothing.
-	wantMCPOAuth := mcpOAuthFor(needsMCP)
+	// A database MCP is reachable only through platform sign-in: if its
+	// Authentik resource cannot be set up, the MCP is not started at all.
+	// --mcp-oauth is accepted and changes nothing.
 	var mcpRes *authentik.MCPResult
-	if deployMCPOwner != "" && !wantMCPOAuth {
+	if deployMCPOwner != "" && !needsMCP {
 		output.Warn("--mcp-owner ignored: the app has no database MCP (deploy with --db postgres)")
 	}
-	if wantMCPOAuth {
+	if needsMCP {
 		mcpRes = ensureMCPOAuth(deployName, cfg, deployMCPOwner)
 	}
 
@@ -359,7 +345,7 @@ func runDeploy(srcPath string) {
 		Name: deployName, AppType: string(appType), Port: deployPort, Routing: deployRouting,
 		HasEnvFile: hasEnvFile, DB: deployDB, MCP: needsMCP, Auth: auth != nil,
 		MCPOAuthLive: mcpRes != nil, ProdRONetwork: prodRONet,
-	}, cfg, mcpAuth, ingressSecret)
+	}, cfg, ingressSecret)
 	if err := docker.GenerateComposeFile(templatesFS, composeData, state.AppComposePath(deployName)); err != nil {
 		output.Fail("deploy", output.NewError("COMPOSE_FAILED",
 			"Failed to generate compose file: "+err.Error(), "This is a bug"))
@@ -395,7 +381,7 @@ func runDeploy(srcPath string) {
 		if isRedeploy {
 			output.Warn("Rolling back to previous version...")
 			docker.ComposeDown(appDir, "docker-compose.vd.yml")
-			backup.Restore(deployName)
+			backup.Restore(deployName, dropBasicMCP)
 		}
 		stopFailedFirstDeploy(appDir, isRedeploy)
 		output.Fail("deploy", e)
@@ -428,9 +414,8 @@ func runDeploy(srcPath string) {
 		manifest.AuthBearer = auth.bearer
 		manifest.AuthGroup = auth.group
 	}
-	// Keep the intent even if Authentik failed this time, so the next deploy
-	// retries; the route follows only what actually exists (MCP && res != nil).
-	manifest.MCPOAuth = wantMCPOAuth
+	// MCP stays set even if Authentik failed this time, so the next deploy
+	// retries; the container and route follow only what exists (res != nil).
 	manifest.MCPOAuthLive = mcpRes != nil
 	if deployMCPOwner != "" {
 		manifest.MCPOwner = deployMCPOwner
@@ -489,26 +474,7 @@ func runDeploy(srcPath string) {
 	}
 }
 
-// mcpUser is fixed; the password is per-app and regenerated on every deploy.
-const mcpUser = "mcp"
-
-// htpasswdSHA builds a Traefik basicauth entry using the {SHA} scheme.
-//
-// Traefik accepts MD5 (apr1), SHA1 and bcrypt. bcrypt would mean adding
-// golang.org/x/crypto to a tool whose only dependency is cobra, and apr1 is
-// ~40 lines of Apache MD5-crypt. Against a 128-bit random password the missing
-// salt is not a practical weakness — an unsalted SHA1 of 32 hex characters is
-// not brute-forceable, and the password is never reused anywhere. {SHA} also
-// contains no '$', so there is no compose interpolation to escape.
-func htpasswdSHA(user, password string) string {
-	sum := sha1.Sum([]byte(password))
-	return user + ":{SHA}" + base64.StdEncoding.EncodeToString(sum[:])
-}
-
-// writeMCPEnv writes the MCP container's environment. The basicauth pair is
-// stored alongside DATABASE_URI (server-side only — never shown to agents); it is also visible
-// inside the MCP container, which costs nothing — anything that can read that
-// container's environment already holds its database URI.
+// writeMCPEnv writes the MCP container's environment: its DATABASE_URI.
 //
 // The ownership dance is not decoration. vd runs both as root (admin, over a
 // login shell) and as vd-user (every agent, through the forced-command wrapper).
@@ -518,18 +484,7 @@ func htpasswdSHA(user, password string) string {
 // symptoms are two, both silent: `vd status` omits the mcp block for an MCP that
 // is up and serving, and the next deploy as vd-user cannot overwrite the file, so
 // it drops the MCP entirely with a warning nobody reads.
-// mcpPasswordFor keeps the MCP's Basic password across redeploys: clients hold
-// it in `claude mcp add --header`, and a new one on every deploy silently cut
-// them all off. A new password when the app has none yet, or when asked to
-// rotate — that is how a leaked one is revoked.
-func mcpPasswordFor(app string, rotate bool) string {
-	if pw := envValue(state.AppMCPEnvPath(app), "VD_MCP_PASSWORD"); pw != "" && !rotate {
-		return pw
-	}
-	return generateRandomPassword(32)
-}
-
-func writeMCPEnv(appName, dbURI, user, password string) error {
+func writeMCPEnv(appName, dbURI string) error {
 	path := state.AppMCPEnvPath(appName)
 
 	// Unlink first, so a vd-user deploy can replace a file root left behind.
@@ -537,7 +492,7 @@ func writeMCPEnv(appName, dbURI, user, password string) error {
 	// owns, not by ownership of the file itself.
 	os.Remove(path)
 
-	body := fmt.Sprintf("DATABASE_URI=%s\nVD_MCP_USER=%s\nVD_MCP_PASSWORD=%s\n", dbURI, user, password)
+	body := fmt.Sprintf("DATABASE_URI=%s\n", dbURI)
 	if err := os.WriteFile(path, []byte(body), 0600); err != nil {
 		return err
 	}
@@ -780,9 +735,9 @@ func stopFailedFirstDeploy(appDir string, isRedeploy bool) {
 // composeDataFor is the one place that turns an app's settings into compose
 // data. vd deploy calls it with what it is deploying, vd mcp-oauth with the
 // manifest on disk — so a re-render outside a deploy cannot drift from what
-// the deploy wrote. basic is the MCP's htpasswd entry, ingress the forward-auth
+// the deploy wrote. ingress is the forward-auth
 // secret; both live in the app's own files, not in the manifest.
-func composeDataFor(m *state.Manifest, cfg *state.Config, basic, ingress string) docker.ComposeData {
+func composeDataFor(m *state.Manifest, cfg *state.Config, ingress string) docker.ComposeData {
 	d := docker.ComposeData{
 		Name:          m.Name,
 		AppType:       m.AppType,
@@ -791,10 +746,8 @@ func composeDataFor(m *state.Manifest, cfg *state.Config, basic, ingress string)
 		Domain:        cfg.Domain,
 		HasEnvFile:    m.HasEnvFile,
 		NeedsDB:       m.DB == "postgres",
-		NeedsMCP:      m.MCP,
+		NeedsMCP:      m.MCP && m.MCPOAuthLive, // fail closed: no sign-in, no MCP
 		MCPImage:      docker.MCPImage,
-		MCPBasicAuth:  basic,
-		MCPOAuth:      m.MCP && m.MCPOAuthLive,
 		ProdRONetwork: m.ProdRONetwork,
 	}
 	if m.Auth {
@@ -813,10 +766,6 @@ func deployMCPBlock(app string, cfg *state.Config, owner string, res *authentik.
 	}
 	return mcpOAuthInfo(app, cfg, owner, res)
 }
-
-// mcpOAuthFor: an app's database MCP, when it has one, is always behind
-// platform login — no flag, no opt-out.
-func mcpOAuthFor(hasMCP bool) bool { return hasMCP }
 
 // prevDB is the database type of the running deploy, "" if none.
 func prevDB(app string) string {

@@ -84,8 +84,7 @@ var statusCmd = &cobra.Command{
 }
 
 // mcpStatus is the MCP block for agents: the sign-in entry point, never the
-// Basic credentials (those stay server-side for clients that already have
-// them). An MCP not yet behind sign-in is reported unavailable, not as Basic.
+// credentials. An MCP not behind sign-in is not running, and is reported unavailable.
 //
 // Gated on m.MCP, not on m.DB: an app deployed before MCP existed has a database
 // and no MCP container, and advertising a URL that 404s is worse than silence.
@@ -98,12 +97,10 @@ func mcpStatus(m *state.Manifest, cfg *state.Config) (map[string]any, string) {
 
 func mcpStatusBlock(m *state.Manifest, cfg *state.Config) map[string]any {
 	if !m.MCPOAuthLive {
-		hint := "deployed before sign-in was the default — a platform admin runs: vd mcp-oauth " + m.Name
-		switch {
-		case cfg.AuthentikURL == "":
+		// The MCP is not running: without sign-in it has no way in.
+		hint := "its sign-in is not set up — redeploy to retry, or a platform admin runs: vd mcp-oauth " + m.Name
+		if cfg.AuthentikURL == "" {
 			hint = "platform login is not set up on this server"
-		case m.MCPOAuth:
-			hint = "sign-in setup failed on the last deploy — redeploy to retry"
 		}
 		return map[string]any{"available": false, "hint": hint}
 	}

@@ -97,7 +97,7 @@ var destroyCmd = &cobra.Command{
 		mcpRemoved := ""
 		// Skip quietly where nothing could have been created: no platform login
 		// on this server and no route ever went live.
-		if dcfg, _ := state.LoadConfig(); m.MCPOAuth && (m.MCPOAuthLive || (dcfg != nil && dcfg.AuthentikURL != "")) {
+		if dcfg, _ := state.LoadConfig(); m.MCP && (m.MCPOAuthLive || (dcfg != nil && dcfg.AuthentikURL != "")) {
 			mcpRemoved = "removed"
 			cfg := dcfg
 			token, terr := state.LoadAuthentikToken()
@@ -182,7 +182,7 @@ var destroyCmd = &cobra.Command{
 		os.RemoveAll(appDir)
 
 		// The manifest is gone now, so the rebuilt routes file no longer has it.
-		if m.MCPOAuth {
+		if m.MCP {
 			if cfg, _ := state.LoadConfig(); cfg != nil {
 				if err := syncMCPGateway(cfg); err != nil {
 					output.Warn("Could not rewrite vd-mcpgw routes: %v", err)
@@ -201,7 +201,7 @@ var destroyCmd = &cobra.Command{
 		if m.Auth {
 			data["auth"] = map[string]any{"cleanup": authRemoved, "group_kept": m.AuthGroup}
 		}
-		if m.MCPOAuth {
+		if m.MCP {
 			data["mcp_oauth"] = map[string]any{"cleanup": mcpRemoved, "group_deleted": "mcp-vibe-" + name}
 		}
 		output.Success("destroy", data)
@@ -231,9 +231,9 @@ func manifestForDestroy(name string) (*state.Manifest, *output.VDError) {
 	compose := state.AppComposePath(name)
 	output.Warn("%s has no manifest (a first deploy that failed) — removing what its files show", name)
 	m = &state.Manifest{
-		Name:     name,
-		Auth:     fileContains(compose, "authentik-fa@file"),
-		MCPOAuth: fileContains(compose, "vd-mcpgw@docker"),
+		Name: name,
+		Auth: fileContains(compose, "authentik-fa@file"),
+		MCP:  fileContains(compose, "vd-mcpgw@docker"),
 	}
 	if m.Auth {
 		m.AuthGroup = "vibe-" + name

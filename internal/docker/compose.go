@@ -36,11 +36,11 @@ type ComposeData struct {
 	// sharing one image layer. Noise below ~20 such apps. If it stops being
 	// noise, put it behind a `vd deploy --mcp` flag: the template already renders
 	// conditionally, so that is a flag plus a manifest field.
-	NeedsMCP     bool
-	MCPImage     string
-	MCPBasicAuth string // htpasswd entry, user:{SHA}base64(sha1(pw))
-	// MCPOAuth puts the MCP behind vd-mcpgw and Authentik, keeping Basic working.
-	MCPOAuth bool
+	//
+	// NeedsMCP renders the MCP behind vd-mcpgw and Authentik, its only route:
+	// set it only once the app's MCP resource exists in Authentik.
+	NeedsMCP bool
+	MCPImage string
 
 	// ProdRONetwork is the overlay to the prod read-only replica, for --db
 	// prod-ro. Such an app sees patient data: it must be behind forward auth
@@ -59,9 +59,6 @@ func GenerateComposeFile(tmplFS fs.FS, data ComposeData, destPath string) error 
 	// external_host are host-based, and path routing would render an app whose
 	// middleware label collides with the strip-prefix one. Failing at the lowest
 	// layer keeps a future caller from publishing an app it believes is protected.
-	if data.MCPOAuth && !data.NeedsMCP {
-		return fmt.Errorf("MCP OAuth needs an MCP to protect")
-	}
 	// Repeated from deploy on purpose, like the checks below: a later caller
 	// must not be able to render a public or MCP-exposed production reader.
 	if data.ProdRONetwork != "" && (!data.Auth || data.NeedsMCP || data.NeedsDB) {

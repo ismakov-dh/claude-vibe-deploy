@@ -26,7 +26,7 @@ func TestManifestForDestroy(t *testing.T) {
 		t.Fatal(err)
 	}
 	m, e := manifestForDestroy("half")
-	if e != nil || m.Name != "half" || !m.Auth || m.AuthGroup != "vibe-half" || m.MCPOAuth {
+	if e != nil || m.Name != "half" || !m.Auth || m.AuthGroup != "vibe-half" || m.MCP {
 		t.Fatalf("stand-in: %+v %v", m, e)
 	}
 

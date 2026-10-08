@@ -89,8 +89,9 @@ func Create(appName string) error {
 	return nil
 }
 
-// Restore rolls back to the most recent backup.
-func Restore(appName string) (*Metadata, error) {
+// Restore rolls back to the most recent backup. beforeStart runs once the
+// files are back and before anything starts; its error aborts the start.
+func Restore(appName string, beforeStart func(*Metadata) error) (*Metadata, error) {
 	backupDir, meta, err := Latest(appName)
 	if err != nil {
 		return nil, err
@@ -129,6 +130,10 @@ func Restore(appName string) (*Metadata, error) {
 	// passes its health check and cannot reach its database — and the MCP endpoint
 	// answers 500 to every query.
 	restorePasswords(appName, meta.Manifest)
+
+	if err := beforeStart(meta); err != nil {
+		return nil, fmt.Errorf("before start: %w", err)
+	}
 
 	// Start restored container
 	if err := docker.ComposeUp(appDir, "docker-compose.vd.yml"); err != nil {

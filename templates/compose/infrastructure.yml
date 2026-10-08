@@ -38,8 +38,7 @@ services:
       - "--entrypoints.web.forwardedHeaders.trustedIPs={{.TrustedIPs}}"
       - "--log.level=WARN"
       # Access log, to stdout (docker logs), for counting who still uses what —
-      # e.g. Basic on an MCP (RouterName vd-<app>-mcp-basic) before switching it
-      # off. Everything dropped except the fields that answer that: no path (an
+      # e.g. traffic on a route before removing it. Everything dropped except the fields that answer that: no path (an
       # outpost callback's query carries an auth code), no headers (Basic and
       # Bearer credentials), no client address.
       - "--accesslog=true"
@@ -69,7 +68,7 @@ services:
     labels:
       - "vd.role=traefik"
 
-  # agentgateway in front of apps' database MCPs deployed with --mcp-oauth.
+  # agentgateway in front of apps' database MCPs: their only way in.
   # Its own instance, not the stacks gateway: routes change on every vd deploy,
   # and a Swarm config (what stacks uses) cannot change in place. vd rewrites
   # ./mcpgw/config.yaml and the gateway picks it up live. No port is published;

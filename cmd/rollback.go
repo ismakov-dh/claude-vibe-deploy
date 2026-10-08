@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"bytes"
+	"errors"
+	"os"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -99,7 +102,7 @@ var rollbackCmd = &cobra.Command{
 		}
 
 		output.Info("Rolling back %s...", name)
-		meta, err := backup.Restore(name)
+		meta, err := backup.Restore(name, dropBasicMCP)
 		if err != nil {
 			output.Fail("rollback", output.NewError("ROLLBACK_FAILED", err.Error(), "Check backup integrity with: vd backups "+name))
 		}
@@ -185,4 +188,39 @@ var backupsCmd = &cobra.Command{
 			"count":   len(list),
 		})
 	},
+}
+
+// dropBasicMCP re-renders a restored compose file that still carries the MCP's
+// Basic route — a backup from before vd removed it — so the restored app starts
+// with its MCP behind sign-in, or without the MCP when sign-in cannot be set up.
+// Any other restored compose file is left exactly as it was.
+func dropBasicMCP(meta *backup.Metadata) error {
+	if meta.Manifest == nil {
+		return nil // rollback refuses these; a deploy's own backup always has one
+	}
+	name := meta.Manifest.Name
+	compose, err := os.ReadFile(state.AppComposePath(name))
+	if err != nil {
+		return err
+	}
+	if !bytes.Contains(compose, []byte("mcp-basic")) && !bytes.Contains(compose, []byte("basicauth.users")) {
+		return nil
+	}
+	cfg, err := state.LoadConfig()
+	if err != nil {
+		return err
+	}
+	m := meta.Manifest
+	m.MCPOAuthLive = m.MCP && ensureMCPOAuth(name, cfg, m.MCPOwner) != nil
+	ingress := ""
+	if m.Auth {
+		if ingress = envValue(state.AppEnvPath(name), ingressEnvKey); ingress == "" {
+			return errors.New("the restored app is behind --auth but its ingress secret is missing")
+		}
+	}
+	if err := state.SaveManifest(m); err != nil {
+		return err
+	}
+	output.Info("Restored version had the MCP's Basic route; re-rendered it without (MCP running: %v)", m.MCPOAuthLive)
+	return docker.GenerateComposeFile(templatesFS, composeDataFor(m, cfg, ingress), state.AppComposePath(name))
 }

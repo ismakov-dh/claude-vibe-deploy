@@ -26,40 +26,38 @@ func render(t *testing.T, d docker.ComposeData) string {
 // saved (through JSON, as on disk), must be the same file.
 func TestRebuildFromManifestMatchesDeploy(t *testing.T) {
 	cfg := &state.Config{Domain: "apps.example.com"}
-	basic := htpasswdSHA(mcpUser, "pw")
 	for _, deployed := range []state.Manifest{
 		{Name: "demo", AppType: "node-server", Port: 3000, Routing: "subdomain", HasEnvFile: true, DB: "postgres", MCP: true, Auth: true},
 		{Name: "plain", AppType: "python-fastapi", Port: 8000, Routing: "subdomain", HasEnvFile: true, DB: "postgres", MCP: true},
-		{Name: "live", AppType: "go", Port: 8080, Routing: "subdomain", DB: "postgres", MCP: true, MCPOAuth: true, MCPOAuthLive: true},
+		{Name: "live", AppType: "go", Port: 8080, Routing: "subdomain", DB: "postgres", MCP: true, MCPOAuthLive: true},
 	} {
-		fromDeploy := render(t, composeDataFor(&deployed, cfg, basic, "deadbeef"))
+		fromDeploy := render(t, composeDataFor(&deployed, cfg, "deadbeef"))
 		raw, _ := json.Marshal(deployed)
 		var saved state.Manifest
 		if err := json.Unmarshal(raw, &saved); err != nil {
 			t.Fatal(err)
 		}
-		if d := lineDiff(fromDeploy, render(t, composeDataFor(&saved, cfg, basic, "deadbeef")), deployed.Name); d != (composeDiff{}) {
+		if d := lineDiff(fromDeploy, render(t, composeDataFor(&saved, cfg, "deadbeef")), deployed.Name); d != (composeDiff{}) {
 			t.Errorf("%s: re-render differs from deploy: %+v", deployed.Name, d)
 		}
 	}
 }
 
-// Turning OAuth on changes MCP lines only, and keeps Basic and forward auth.
+// Turning OAuth on changes MCP lines only, and keeps the app's forward auth.
 func TestMCPOAuthRenderTouchesOnlyTheMCP(t *testing.T) {
 	m := &state.Manifest{Name: "demo", AppType: "node-server", Port: 3000, Routing: "subdomain",
 		HasEnvFile: true, DB: "postgres", MCP: true, Auth: true}
 	cfg := &state.Config{Domain: "apps.example.com"}
-	basic := htpasswdSHA(mcpUser, "pw")
-	before := render(t, composeDataFor(m, cfg, basic, "deadbeef"))
+	before := render(t, composeDataFor(m, cfg, "deadbeef"))
 	on := *m
-	on.MCPOAuth, on.MCPOAuthLive = true, true
-	after := render(t, composeDataFor(&on, cfg, basic, "deadbeef"))
+	on.MCPOAuthLive = true
+	after := render(t, composeDataFor(&on, cfg, "deadbeef"))
 	if d := lineDiff(before, after, "demo"); d.other != 0 || d.mcp == 0 {
 		t.Fatalf("OAuth changed non-MCP lines or nothing: %+v", d)
 	}
-	if !strings.Contains(after, "basicauth.users="+basic) || !strings.Contains(after, "vd-mcpgw@docker") ||
+	if strings.Contains(after, "basicauth") || !strings.Contains(after, "vd-mcpgw@docker") ||
 		!strings.Contains(after, "authentik-fa@file") || !strings.Contains(after, "X-Vibe-Ingress=deadbeef") {
-		t.Fatal("OAuth render lost Basic, the gateway route or the app's forward auth")
+		t.Fatal("OAuth render has Basic, or lost the gateway route or the app's forward auth")
 	}
 }
 
@@ -98,7 +96,7 @@ func TestRevertMCPOAuthRestoresEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 	now := *old
-	now.MCPOAuth, now.MCPOAuthLive = true, true
+	now.MCPOAuthLive = true
 	if err := state.WriteManifest(&now); err != nil {
 		t.Fatal(err)
 	}
@@ -112,7 +110,7 @@ func TestRevertMCPOAuthRestoresEverything(t *testing.T) {
 		t.Fatalf("compose after revert: %q mode %v", b, fi.Mode().Perm())
 	}
 	m, _ := state.LoadManifest("demo")
-	if m.MCPOAuth || m.MCPOAuthLive || m.DeployedAt != old.DeployedAt {
+	if m.MCPOAuthLive || m.DeployedAt != old.DeployedAt {
 		t.Fatalf("manifest after revert: %+v", m)
 	}
 	if len(upped) != 1 || upped[0] != "demo-mcp" {

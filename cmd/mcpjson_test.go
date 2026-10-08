@@ -39,7 +39,7 @@ func TestMCPBlocksCarryNoBasic(t *testing.T) {
 		t.Fatalf("deploy block without sign-in: %v", down)
 	}
 
-	live := mcpStatusBlock(&state.Manifest{Name: "demo", MCP: true, MCPOAuth: true, MCPOAuthLive: true}, cfg)
+	live := mcpStatusBlock(&state.Manifest{Name: "demo", MCP: true, MCPOAuthLive: true}, cfg)
 	assertNoBasic(t, "status block (live)", live)
 	if live["available"] != true || live["add"] != dep["add"] || live["group"] != "mcp-vibe-demo" {
 		t.Fatalf("status block: %v", live)
@@ -53,9 +53,9 @@ func TestMCPBlocksCarryNoBasic(t *testing.T) {
 		m    *state.Manifest
 		hint string
 	}{
-		{"deployed before the default", withAK, &state.Manifest{Name: "demo", MCP: true}, "vd mcp-oauth demo"},
-		{"setup failed last deploy", withAK, &state.Manifest{Name: "demo", MCP: true, MCPOAuth: true}, "redeploy"},
-		{"no platform login here", cfg, &state.Manifest{Name: "demo", MCP: true, MCPOAuth: true}, "not set up on this server"},
+		{"sign-in not set up", withAK, &state.Manifest{Name: "demo", MCP: true}, "vd mcp-oauth demo"},
+		{"sign-in not set up", withAK, &state.Manifest{Name: "demo", MCP: true}, "redeploy"},
+		{"no platform login here", cfg, &state.Manifest{Name: "demo", MCP: true}, "not set up on this server"},
 	} {
 		b := mcpStatusBlock(c.m, c.cfg)
 		assertNoBasic(t, "status block ("+c.name+")", b)
@@ -65,17 +65,27 @@ func TestMCPBlocksCarryNoBasic(t *testing.T) {
 	}
 }
 
-// --mcp-oauth is no longer needed: every app with an MCP gets it, and the old
-// flag is still accepted so existing commands keep working.
+// --mcp-oauth is no longer needed and is still accepted so existing commands
+// keep working; the Basic password flag is gone with Basic.
 func TestMCPOAuthIsTheDefault(t *testing.T) {
-	if !mcpOAuthFor(true) || mcpOAuthFor(false) {
-		t.Fatal("MCP OAuth must follow the MCP: on with --db postgres, off without")
-	}
 	f := deployCmd.Flags().Lookup("mcp-oauth")
 	if f == nil || !f.Hidden {
 		t.Fatal("--mcp-oauth must stay accepted (old commands) and hidden")
 	}
-	if r := deployCmd.Flags().Lookup("mcp-rotate-password"); r == nil || !r.Hidden {
-		t.Fatal("--mcp-rotate-password is a hidden admin flag")
+	if deployCmd.Flags().Lookup("mcp-rotate-password") != nil {
+		t.Fatal("--mcp-rotate-password must be gone with Basic")
+	}
+}
+
+// An MCP without sign-in is not rendered at all: fail closed.
+func TestMCPWithoutSignInIsNotRendered(t *testing.T) {
+	cfg := &state.Config{Domain: "apps.example.com"}
+	m := &state.Manifest{Name: "demo", AppType: "go", Port: 8080, Routing: "subdomain", DB: "postgres", MCP: true}
+	if body := render(t, composeDataFor(m, cfg, "")); strings.Contains(body, "demo-mcp") {
+		t.Fatal("MCP rendered without a live sign-in route")
+	}
+	m.MCPOAuthLive = true
+	if body := render(t, composeDataFor(m, cfg, "")); !strings.Contains(body, "routers.vd-demo-mcp.service=vd-mcpgw@docker") {
+		t.Fatal("live MCP not rendered behind the gateway")
 	}
 }
