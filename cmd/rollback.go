@@ -196,14 +196,16 @@ var backupsCmd = &cobra.Command{
 // Any other restored compose file is left exactly as it was.
 func dropBasicMCP(meta *backup.Metadata) error {
 	if meta.Manifest == nil {
-		return nil // rollback refuses these; a deploy's own backup always has one
+		// Unreachable today (rollback refuses these, deploy backs up only with
+		// one) — and nothing to re-render from, so refuse to start.
+		return errors.New("backup has no manifest")
 	}
 	name := meta.Manifest.Name
 	compose, err := os.ReadFile(state.AppComposePath(name))
 	if err != nil {
 		return err
 	}
-	if !bytes.Contains(compose, []byte("mcp-basic")) && !bytes.Contains(compose, []byte("basicauth.users")) {
+	if !hasBasicMCP(compose) {
 		return nil
 	}
 	cfg, err := state.LoadConfig()
@@ -211,7 +213,8 @@ func dropBasicMCP(meta *backup.Metadata) error {
 		return err
 	}
 	m := meta.Manifest
-	m.MCPOAuthLive = m.MCP && ensureMCPOAuth(name, cfg, m.MCPOwner) != nil
+	// No owner: the backup's may since have been removed with vd access.
+	m.MCPOAuthLive = m.MCP && ensureMCPOAuth(name, cfg, "") != nil
 	ingress := ""
 	if m.Auth {
 		if ingress = envValue(state.AppEnvPath(name), ingressEnvKey); ingress == "" {
@@ -223,4 +226,10 @@ func dropBasicMCP(meta *backup.Metadata) error {
 	}
 	output.Info("Restored version had the MCP's Basic route; re-rendered it without (MCP running: %v)", m.MCPOAuthLive)
 	return docker.GenerateComposeFile(templatesFS, composeDataFor(m, cfg, ingress), state.AppComposePath(name))
+}
+
+// hasBasicMCP reports whether a compose file from an older vd still has the
+// MCP's Basic route.
+func hasBasicMCP(compose []byte) bool {
+	return bytes.Contains(compose, []byte("mcp-basic")) || bytes.Contains(compose, []byte("basicauth.users"))
 }

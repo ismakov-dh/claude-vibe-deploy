@@ -21,7 +21,6 @@ func TestSyncMCPGatewayRoutesOnlyLiveApps(t *testing.T) {
 		{Name: "live", MCP: true, MCPOAuthLive: true},
 		{Name: "intent", MCP: true},         // Authentik failed: no issuer yet
 		{Name: "nomcp", MCPOAuthLive: true}, // MCP gone
-		{Name: "basic", MCP: true},          // never opted in
 	} {
 		if err := os.MkdirAll(state.AppDir(m.Name), 0755); err != nil {
 			t.Fatal(err)

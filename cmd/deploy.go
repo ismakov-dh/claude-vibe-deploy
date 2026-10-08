@@ -381,7 +381,13 @@ func runDeploy(srcPath string) {
 		if isRedeploy {
 			output.Warn("Rolling back to previous version...")
 			docker.ComposeDown(appDir, "docker-compose.vd.yml")
-			backup.Restore(deployName, dropBasicMCP)
+			if _, err := backup.Restore(deployName, dropBasicMCP); err != nil {
+				output.Warn("Rollback failed, the app is down: %v", err)
+			}
+			// The restored manifest decides whether the MCP has a route.
+			if err := syncMCPGateway(cfg); err != nil {
+				output.Warn("Could not rewrite vd-mcpgw routes: %v", err)
+			}
 		}
 		stopFailedFirstDeploy(appDir, isRedeploy)
 		output.Fail("deploy", e)
@@ -735,8 +741,8 @@ func stopFailedFirstDeploy(appDir string, isRedeploy bool) {
 // composeDataFor is the one place that turns an app's settings into compose
 // data. vd deploy calls it with what it is deploying, vd mcp-oauth with the
 // manifest on disk — so a re-render outside a deploy cannot drift from what
-// the deploy wrote. ingress is the forward-auth
-// secret; both live in the app's own files, not in the manifest.
+// the deploy wrote. ingress is the forward-auth secret; it lives in the app's
+// .env, not in the manifest.
 func composeDataFor(m *state.Manifest, cfg *state.Config, ingress string) docker.ComposeData {
 	d := docker.ComposeData{
 		Name:          m.Name,

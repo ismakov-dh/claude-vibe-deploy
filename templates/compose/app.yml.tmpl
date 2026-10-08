@@ -55,8 +55,7 @@ services:
       - "traefik.http.middlewares.vd-{{.Name}}-strip-identity.headers.customrequestheaders.X-Forwarded-Port="
       - "traefik.http.middlewares.vd-{{.Name}}-ingress.headers.customrequestheaders.X-Vibe-Ingress={{.IngressSecret}}"
       # The outpost's own paths (start, callback, sign_out) must reach the outpost
-      # on the app's host, not the app. No explicit priority, same reasoning as
-      # the MCP /.well-known/ router below: this rule is a strict superset of the
+      # on the app's host, not the app. No explicit priority: this rule is a strict superset of the
       # app's, so it always wins, where a literal number stops winning once the
       # app name makes the app rule long enough.
       - "traefik.http.routers.vd-{{.Name}}-outpost.rule=Host(`{{.Name}}.{{.Domain}}`) && PathPrefix(`/outpost.goauthentik.io/`)"

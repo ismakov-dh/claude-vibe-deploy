@@ -53,8 +53,8 @@ func TestMCPBlocksCarryNoBasic(t *testing.T) {
 		m    *state.Manifest
 		hint string
 	}{
-		{"sign-in not set up", withAK, &state.Manifest{Name: "demo", MCP: true}, "vd mcp-oauth demo"},
-		{"sign-in not set up", withAK, &state.Manifest{Name: "demo", MCP: true}, "redeploy"},
+		{"sign-in not set up: admin path", withAK, &state.Manifest{Name: "demo", MCP: true}, "vd mcp-oauth demo"},
+		{"sign-in not set up: redeploy", withAK, &state.Manifest{Name: "demo", MCP: true}, "redeploy"},
 		{"no platform login here", cfg, &state.Manifest{Name: "demo", MCP: true}, "not set up on this server"},
 	} {
 		b := mcpStatusBlock(c.m, c.cfg)

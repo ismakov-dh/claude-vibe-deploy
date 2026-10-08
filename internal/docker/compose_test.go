@@ -25,14 +25,14 @@ func renderMCP(t *testing.T, data ComposeData) string {
 
 func mcpData() ComposeData {
 	return ComposeData{
-		Name:         "myapp",
-		AppType:      "node-server",
-		Port:         3000,
-		Routing:      "subdomain",
-		Domain:       "apps.example.com",
-		NeedsDB:      true,
-		NeedsMCP:     true,
-		MCPImage:     "example/postgres-mcp:test",
+		Name:     "myapp",
+		AppType:  "node-server",
+		Port:     3000,
+		Routing:  "subdomain",
+		Domain:   "apps.example.com",
+		NeedsDB:  true,
+		NeedsMCP: true,
+		MCPImage: "example/postgres-mcp:test",
 	}
 }
 

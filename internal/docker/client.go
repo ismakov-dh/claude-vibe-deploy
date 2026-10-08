@@ -128,6 +128,15 @@ func ComposeUpService(dir, composefile, service string) error {
 	return nil
 }
 
+// RemoveContainer stops and removes one container; a missing one is not an error.
+func RemoveContainer(name string) error {
+	r, err := shell.Run(time.Minute, "docker", "rm", "-f", name)
+	if err != nil && !strings.Contains(r.Stderr, "No such container") {
+		return fmt.Errorf("docker rm %s failed: %s", name, r.Stderr)
+	}
+	return nil
+}
+
 func ComposeDown(dir, composefile string) error {
 	r, err := shell.Run(2*time.Minute, "docker", "compose", "-f", dir+"/"+composefile, "down", "--remove-orphans")
 	if err != nil {

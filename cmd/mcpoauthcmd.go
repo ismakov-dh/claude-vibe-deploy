@@ -1,6 +1,7 @@
 package cmd
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"strings"
@@ -16,8 +17,9 @@ var (
 	mcpOAuthOwner string
 	mcpOAuthCheck bool
 
-	// Replaced in tests: the only docker call on the revert path.
+	// Replaced in tests: the docker calls on the revert path.
 	composeUpService = docker.ComposeUpService
+	removeContainer  = docker.RemoveContainer
 )
 
 func init() {
@@ -26,14 +28,14 @@ func init() {
 	rootCmd.AddCommand(mcpOAuthCmd)
 }
 
-// vd mcp-oauth turns on --mcp-oauth for a running app without redeploying it:
+// vd mcp-oauth puts a running app's MCP behind sign-in without redeploying it:
 // a deploy rebuilds and force-recreates the app container, and all this needs
 // is Authentik, the gateway route and new labels on the MCP container. On an
 // app whose MCP is already behind sign-in it re-renders the MCP only: that is
 // how an app deployed by an older vd loses its Basic route.
 var mcpOAuthCmd = &cobra.Command{
 	Use:   "mcp-oauth <app-name>",
-	Short: "Put an app's database MCP behind platform login too, without touching the app",
+	Short: "Put an app's database MCP behind platform login, without touching the app",
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
@@ -91,6 +93,16 @@ var mcpOAuthCmd = &cobra.Command{
 			output.Fail("mcp-oauth", output.NewError("MANIFEST_WRITE_FAILED", err.Error(), "Nothing on the MCP changed"))
 		}
 		fail := func(why string) {
+			if hasBasicMCP(oldCompose) {
+				// Never back to Basic: an app from an older vd reverts to no MCP,
+				// until a retry succeeds.
+				oldManifest.MCPOAuthLive = false
+				if err := docker.GenerateComposeFile(templatesFS, composeDataFor(&oldManifest, cfg, ingress), composePath); err != nil {
+					output.Warn("revert: render without the MCP: %v", err)
+				} else if b, err := os.ReadFile(composePath); err == nil {
+					oldCompose = b
+				}
+			}
 			for _, e := range revertMCPOAuth(name, oldCompose, &oldManifest, cfg) {
 				output.Warn("revert: %v", e)
 			}
@@ -133,8 +145,12 @@ func revertMCPOAuth(name string, oldCompose []byte, oldManifest *state.Manifest,
 	if err := state.WriteManifest(oldManifest); err != nil {
 		errs = append(errs, fmt.Errorf("restore manifest: %w", err))
 	}
-	if err := composeUpService(state.AppDir(name), "docker-compose.vd.yml", name+"-mcp"); err != nil {
-		errs = append(errs, fmt.Errorf("recreate MCP container: %w", err))
+	if bytes.Contains(oldCompose, []byte("\n  "+name+"-mcp:")) {
+		if err := composeUpService(state.AppDir(name), "docker-compose.vd.yml", name+"-mcp"); err != nil {
+			errs = append(errs, fmt.Errorf("recreate MCP container: %w", err))
+		}
+	} else if err := removeContainer("vd-" + name + "-mcp"); err != nil {
+		errs = append(errs, fmt.Errorf("remove MCP container: %w", err))
 	}
 	if err := syncMCPGateway(cfg); err != nil {
 		errs = append(errs, fmt.Errorf("rewrite gateway routes: %w", err))

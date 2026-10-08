@@ -80,13 +80,15 @@ func TestLineDiffSeparatesMCPFromTheRest(t *testing.T) {
 }
 
 func TestRevertMCPOAuthRestoresEverything(t *testing.T) {
+	const oldCompose = "services:\n  demo:\n    image: x\n  demo-mcp:\n    image: y\n"
 	t.Setenv("VD_HOME", t.TempDir())
 	oldV := mcpgw.Validate
 	mcpgw.Validate = func(string) error { return nil }
-	var upped []string
-	oldUp := composeUpService
+	var upped, removed []string
+	oldUp, oldRm := composeUpService, removeContainer
 	composeUpService = func(dir, file, svc string) error { upped = append(upped, svc); return nil }
-	t.Cleanup(func() { mcpgw.Validate, composeUpService = oldV, oldUp })
+	removeContainer = func(name string) error { removed = append(removed, name); return nil }
+	t.Cleanup(func() { mcpgw.Validate, composeUpService, removeContainer = oldV, oldUp, oldRm })
 
 	if err := os.MkdirAll(state.AppDir("demo"), 0755); err != nil {
 		t.Fatal(err)
@@ -101,20 +103,27 @@ func TestRevertMCPOAuthRestoresEverything(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	if errs := revertMCPOAuth("demo", []byte("old compose"), old, &state.Config{Domain: "apps.example.com", AuthentikURL: "https://auth.example.com"}); len(errs) != 0 {
+	if errs := revertMCPOAuth("demo", []byte(oldCompose), old, &state.Config{Domain: "apps.example.com", AuthentikURL: "https://auth.example.com"}); len(errs) != 0 {
 		t.Fatalf("revert errors: %v", errs)
 	}
 	b, _ := os.ReadFile(state.AppComposePath("demo"))
 	fi, _ := os.Stat(state.AppComposePath("demo"))
-	if string(b) != "old compose" || fi.Mode().Perm() != 0600 {
+	if string(b) != oldCompose || fi.Mode().Perm() != 0600 {
 		t.Fatalf("compose after revert: %q mode %v", b, fi.Mode().Perm())
 	}
 	m, _ := state.LoadManifest("demo")
 	if m.MCPOAuthLive || m.DeployedAt != old.DeployedAt {
 		t.Fatalf("manifest after revert: %+v", m)
 	}
-	if len(upped) != 1 || upped[0] != "demo-mcp" {
-		t.Fatalf("recreated %v, want only demo-mcp", upped)
+	if len(upped) != 1 || upped[0] != "demo-mcp" || len(removed) != 0 {
+		t.Fatalf("recreated %v removed %v, want only demo-mcp recreated", upped, removed)
+	}
+	// An old compose without the MCP service (no sign-in before): the MCP the
+	// failed run started is removed, not left behind.
+	upped = nil
+	revertMCPOAuth("demo", []byte("services:\n  demo:\n"), old, &state.Config{Domain: "apps.example.com"})
+	if len(upped) != 0 || len(removed) != 1 || removed[0] != "vd-demo-mcp" {
+		t.Fatalf("recreated %v removed %v, want vd-demo-mcp removed", upped, removed)
 	}
 	if routes, _ := os.ReadFile(filepath.Join(state.MCPGWDir(), "config.yaml")); strings.Contains(string(routes), "demo.mcp.") {
 		t.Fatal("gateway still routes the reverted app")
