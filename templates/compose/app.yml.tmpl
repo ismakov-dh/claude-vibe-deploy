@@ -106,12 +106,15 @@ services:
       - "traefik.http.services.vd-{{.Name}}-mcp.loadbalancer.server.port=8089"
       - "traefik.http.routers.vd-{{.Name}}-mcp.rule=Host(`{{.Name}}.mcp.{{.Domain}}`)"
       - "traefik.http.routers.vd-{{.Name}}-mcp.entrypoints=web"
+{{- if not .MCPBasicOff}}
       - "traefik.http.middlewares.vd-{{.Name}}-mcp-auth.basicauth.users={{.MCPBasicAuth}}"
+{{- end}}
 {{- if .MCPOAuth}}
       # --- OAuth via vd-mcpgw, with Basic kept working (docs/plans/mcp-oauth.md) ---
       # Anything that is not Basic — no credentials, or a Bearer token — goes to
       # the gateway, which does the OAuth dance and checks the group.
       - "traefik.http.routers.vd-{{.Name}}-mcp.service=vd-mcpgw@docker"
+{{- if not .MCPBasicOff}}
       # A request carrying Basic credentials goes exactly where it always went
       # (scheme matched case-insensitively, as net/http's BasicAuth does).
       # This rule is longer than both others, so it wins on every path —
@@ -122,6 +125,7 @@ services:
       - "traefik.http.routers.vd-{{.Name}}-mcp-basic.entrypoints=web"
       - "traefik.http.routers.vd-{{.Name}}-mcp-basic.service=vd-{{.Name}}-mcp"
       - "traefik.http.routers.vd-{{.Name}}-mcp-basic.middlewares=vd-{{.Name}}-mcp-auth"
+{{- end}}
 {{- else}}
       - "traefik.http.routers.vd-{{.Name}}-mcp.service=vd-{{.Name}}-mcp"
       - "traefik.http.routers.vd-{{.Name}}-mcp.middlewares=vd-{{.Name}}-mcp-auth"

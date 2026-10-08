@@ -41,6 +41,9 @@ type ComposeData struct {
 	MCPBasicAuth string // htpasswd entry, user:{SHA}base64(sha1(pw))
 	// MCPOAuth puts the MCP behind vd-mcpgw and Authentik, keeping Basic working.
 	MCPOAuth bool
+	// MCPBasicOff drops the Basic router and its basicauth: only the gateway
+	// is left. Never without MCPOAuth — that would leave the MCP open.
+	MCPBasicOff bool
 
 	// ProdRONetwork is the overlay to the prod read-only replica, for --db
 	// prod-ro. Such an app sees patient data: it must be behind forward auth
@@ -61,6 +64,9 @@ func GenerateComposeFile(tmplFS fs.FS, data ComposeData, destPath string) error 
 	// layer keeps a future caller from publishing an app it believes is protected.
 	if data.MCPOAuth && !data.NeedsMCP {
 		return fmt.Errorf("MCP OAuth needs an MCP to protect")
+	}
+	if data.MCPBasicOff && !data.MCPOAuth {
+		return fmt.Errorf("Basic off needs MCP OAuth, or the MCP would be open")
 	}
 	// Repeated from deploy on purpose, like the checks below: a later caller
 	// must not be able to render a public or MCP-exposed production reader.

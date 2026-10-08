@@ -372,3 +372,25 @@ func TestComposeWithoutProdROHasNoReplicaNetwork(t *testing.T) {
 		t.Fatalf("replica network without prod-ro:\n%s", body)
 	}
 }
+
+// --basic-off leaves only the gateway: no Basic router, no basicauth, and the
+// password hash is not even in the file.
+func TestComposeMCPBasicOff(t *testing.T) {
+	d := oauthData()
+	d.MCPBasicOff = true
+	body := renderMCP(t, d)
+	for _, bad := range []string{"mcp-basic", "basicauth.users", "mcp-auth", d.MCPBasicAuth} {
+		if strings.Contains(body, bad) {
+			t.Errorf("Basic off still renders %q", bad)
+		}
+	}
+	for _, r := range []string{"vd-myapp-mcp", "vd-myapp-mcp-wellknown"} {
+		if !strings.Contains(line(body, "routers."+r+".service="), "vd-mcpgw@docker") {
+			t.Errorf("%s must go to the gateway", r)
+		}
+	}
+	d.MCPOAuth = false
+	if err := GenerateComposeFile(os.DirFS("../.."), d, filepath.Join(t.TempDir(), "x.yml")); err == nil {
+		t.Fatal("Basic off without OAuth must be refused: the MCP would be open")
+	}
+}

@@ -49,6 +49,9 @@ type Manifest struct {
 	// vd-mcpgw, i.e. the Authentik resource exists. Routes follow it, not the
 	// intent: a route for a missing issuer fails validation for every app.
 	MCPOAuthLive bool `json:"mcp_oauth_live,omitempty"`
+	// MCPBasicOff: the MCP's Basic route is gone (vd mcp-oauth --basic-off).
+	// Sticky like MCPOAuth; takes effect only while MCPOAuthLive.
+	MCPBasicOff bool `json:"mcp_basic_off,omitempty"`
 }
 
 func LoadManifest(appName string) (*Manifest, error) {

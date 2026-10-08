@@ -312,6 +312,10 @@ func runDeploy(srcPath string) {
 	if wantMCPOAuth {
 		mcpRes = ensureMCPOAuth(deployName, cfg, deployMCPOwner)
 	}
+	if mcpRes == nil && needsMCP && prevM != nil && prevM.MCPBasicOff {
+		// Without the gateway the only lock on the MCP is Basic, so it comes back.
+		output.Warn("The MCP's Basic route is back on until a deploy sets up sign-in again (mcp_basic_off is kept)")
+	}
 
 	if auth != nil {
 		if err := setEnvVar(state.AppEnvPath(deployName), ingressEnvKey, ingressSecret); err != nil {
@@ -359,6 +363,7 @@ func runDeploy(srcPath string) {
 		Name: deployName, AppType: string(appType), Port: deployPort, Routing: deployRouting,
 		HasEnvFile: hasEnvFile, DB: deployDB, MCP: needsMCP, Auth: auth != nil,
 		MCPOAuthLive: mcpRes != nil, ProdRONetwork: prodRONet,
+		MCPBasicOff: prevM != nil && prevM.MCPBasicOff,
 	}, cfg, mcpAuth, ingressSecret)
 	if err := docker.GenerateComposeFile(templatesFS, composeData, state.AppComposePath(deployName)); err != nil {
 		output.Fail("deploy", output.NewError("COMPOSE_FAILED",
@@ -432,6 +437,7 @@ func runDeploy(srcPath string) {
 	// retries; the route follows only what actually exists (MCP && res != nil).
 	manifest.MCPOAuth = wantMCPOAuth
 	manifest.MCPOAuthLive = mcpRes != nil
+	manifest.MCPBasicOff = prevM != nil && prevM.MCPBasicOff
 	if deployMCPOwner != "" {
 		manifest.MCPOwner = deployMCPOwner
 	} else if prevM != nil {
@@ -795,6 +801,7 @@ func composeDataFor(m *state.Manifest, cfg *state.Config, basic, ingress string)
 		MCPImage:      docker.MCPImage,
 		MCPBasicAuth:  basic,
 		MCPOAuth:      m.MCP && m.MCPOAuthLive,
+		MCPBasicOff:   m.MCP && m.MCPOAuthLive && m.MCPBasicOff,
 		ProdRONetwork: m.ProdRONetwork,
 	}
 	if m.Auth {

@@ -355,8 +355,8 @@ scripts/
 
 Every app's database MCP is behind platform sign-in; agents are never given Basic credentials.
 Basic still works server-side for clients that already hold an old password, until its traffic
-is zero (count per app: `docker logs vd-traefik | grep '"RouterName":"vd-<app>-mcp-basic@docker"'`);
-switching it off is a later step. Admin tools:
+is zero (count per app: `docker logs vd-traefik | grep '"RouterName":"vd-<app>-mcp-basic@docker"'`),
+then is switched off per app with `vd mcp-oauth <app> --basic-off`. Admin tools:
 
 - `vd deploy … --mcp-rotate-password` (hidden flag): new server-side Basic password, cutting off
   clients on the old one. It is not printed; it lives in the app's `mcp.env`.
@@ -371,6 +371,8 @@ Turn on `--mcp-oauth` for a running `--db postgres` app **without redeploying it
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--owner` | none | Email added to `mcp-vibe-<app>` |
+| `--basic-off` | false | Remove the MCP's Basic route and its basicauth: a Basic request reaches the gateway and gets its 401. Sticky (`mcp_basic_off` in the manifest, kept by `vd deploy`; `vd status` shows `mcp.oauth.only_sign_in`). Recreates only the MCP container. A rollback to a backup from before it is refused (`ROLLBACK_WOULD_UNPROTECT`); a deploy whose sign-in setup fails brings Basic back with a warning, since it is then the MCP's only lock |
+| `--basic-on` | false | Undo `--basic-off`; the password in `mcp.env` is unchanged |
 | `--check` | false | Change nothing: report whether vd can re-render the app's compose file faithfully (`faithful`, `mcp_lines_differ`, `other_lines_differ`) |
 
 Refuses with `COMPOSE_DRIFT` before any change if lines outside the MCP service differ from what vd renders from the manifest (redeploy once, then retry). Holds the app lock, which `vd deploy` takes too.

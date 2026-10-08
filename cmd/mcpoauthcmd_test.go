@@ -122,3 +122,26 @@ func TestRevertMCPOAuthRestoresEverything(t *testing.T) {
 		t.Fatal("gateway still routes the reverted app")
 	}
 }
+
+// --basic-off changes MCP lines only, and is ignored while the gateway route
+// is not live: then Basic is the MCP's only lock.
+func TestMCPBasicOffTouchesOnlyTheMCP(t *testing.T) {
+	m := &state.Manifest{Name: "demo", AppType: "node-server", Port: 3000, Routing: "subdomain",
+		HasEnvFile: true, DB: "postgres", MCP: true, Auth: true, MCPOAuth: true, MCPOAuthLive: true}
+	cfg := &state.Config{Domain: "apps.example.com"}
+	basic := htpasswdSHA(mcpUser, "pw")
+	before := render(t, composeDataFor(m, cfg, basic, "deadbeef"))
+	off := *m
+	off.MCPBasicOff = true
+	after := render(t, composeDataFor(&off, cfg, basic, "deadbeef"))
+	if d := lineDiff(before, after, "demo"); d.other != 0 || d.mcp == 0 {
+		t.Fatalf("Basic off changed non-MCP lines or nothing: %+v", d)
+	}
+	if strings.Contains(after, basic) || !strings.Contains(after, "authentik-fa@file") {
+		t.Fatal("Basic off kept the hash or lost the app's forward auth")
+	}
+	off.MCPOAuthLive = false
+	if !strings.Contains(render(t, composeDataFor(&off, cfg, basic, "deadbeef")), "basicauth.users="+basic) {
+		t.Fatal("without a live gateway route the MCP must keep Basic")
+	}
+}

@@ -15,6 +15,8 @@ import (
 var (
 	mcpOAuthOwner string
 	mcpOAuthCheck bool
+	mcpBasicOff   bool
+	mcpBasicOn    bool
 
 	// Replaced in tests: the only docker call on the revert path.
 	composeUpService = docker.ComposeUpService
@@ -23,6 +25,9 @@ var (
 func init() {
 	mcpOAuthCmd.Flags().StringVar(&mcpOAuthOwner, "owner", "", "email of a person to add to the MCP's access group")
 	mcpOAuthCmd.Flags().BoolVar(&mcpOAuthCheck, "check", false, "change nothing: report whether vd can re-render this app's compose file faithfully")
+	mcpOAuthCmd.Flags().BoolVar(&mcpBasicOff, "basic-off", false, "platform admin: remove the MCP's Basic route, leaving only sign-in (sticky)")
+	mcpOAuthCmd.Flags().BoolVar(&mcpBasicOn, "basic-on", false, "platform admin: bring the MCP's Basic route back, same password")
+	mcpOAuthCmd.MarkFlagsMutuallyExclusive("basic-off", "basic-on", "check")
 	rootCmd.AddCommand(mcpOAuthCmd)
 }
 
@@ -83,6 +88,9 @@ var mcpOAuthCmd = &cobra.Command{
 		oldManifest := *m
 
 		m.MCPOAuth, m.MCPOAuthLive = true, true
+		if mcpBasicOff || mcpBasicOn {
+			m.MCPBasicOff = mcpBasicOff
+		}
 		if mcpOAuthOwner != "" {
 			m.MCPOwner = mcpOAuthOwner
 		}
@@ -112,8 +120,9 @@ var mcpOAuthCmd = &cobra.Command{
 		}
 
 		output.Success("mcp-oauth", map[string]any{
-			"name":  name,
-			"oauth": mcpOAuthInfo(name, cfg, mcpOAuthOwner, res),
+			"name":      name,
+			"oauth":     mcpOAuthInfo(name, cfg, mcpOAuthOwner, res),
+			"basic_off": m.MCPBasicOff,
 		})
 	},
 }

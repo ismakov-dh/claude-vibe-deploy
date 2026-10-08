@@ -170,6 +170,9 @@ func authState(h *authentik.Health, bearer bool) (state, hint string) {
 // mcpOAuthStatus reads what exists in Authentik for the app's MCP resource.
 func mcpOAuthStatus(m *state.Manifest, cfg *state.Config) map[string]any {
 	info := map[string]any{"enabled": true, "group": "mcp-vibe-" + m.Name}
+	if m.MCPBasicOff {
+		info["only_sign_in"] = true // vd mcp-oauth --basic-off
+	}
 	if cfg != nil {
 		info["url"] = "https://" + mcpHost(m.Name, cfg) + "/mcp"
 	}

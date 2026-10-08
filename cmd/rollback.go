@@ -92,6 +92,15 @@ var rollbackCmd = &cobra.Command{
 			}
 		}
 
+		// Same for the MCP's Basic route: a backup from before --basic-off brings it back.
+		if cur.MCPBasicOff {
+			if _, meta, err := backup.Latest(name); err == nil && (meta == nil || meta.Manifest == nil || !meta.Manifest.MCPBasicOff) {
+				output.Fail("rollback", output.NewError("ROLLBACK_WOULD_UNPROTECT",
+					"The previous version of "+name+" had the MCP's Basic route on; rolling back would bring it back",
+					"Redeploy a fixed version instead"))
+			}
+		}
+
 		if _, meta, err := backup.Latest(name); err == nil && meta != nil {
 			if e := rollbackProdROGate(cur, meta.Manifest); e != nil {
 				output.Fail("rollback", e)
