@@ -43,3 +43,25 @@ func TestEntryQuotesEverything(t *testing.T) {
 		t.Error("accepted an app name that is not a vd name")
 	}
 }
+
+// Only the app's own line goes, and List reads back what Entry wrote.
+func TestJobLinesMatchExactly(t *testing.T) {
+	t.Setenv("VD_HOME", "/opt/vibe-deploy")
+	dash, _ := Entry("ops-dash", "@daily", `sh -c 'echo x >> /tmp/f'`)
+	ops, _ := Entry("ops", "0 2,14 * * *", `echo "# vd-cron-victim"`)
+	crontab := "MAILTO=x\n" + dash + "\n" + ops + "\n"
+	if got := withoutJob(crontab, "ops"); len(got) != 2 || got[1] != dash {
+		t.Fatalf("removing ops left %q", got)
+	}
+	if got := withoutJob(crontab, "victim"); len(got) != 3 {
+		t.Fatalf("a command's text matched as a tag: %q", got)
+	}
+	jobs := jobsIn(crontab, "")
+	if len(jobs) != 2 || jobs[0].Command != "sh -c echo x >> /tmp/f" || jobs[0].Schedule != "@daily" ||
+		jobs[1].App != "ops" || jobs[1].Schedule != "0 2,14 * * *" || jobs[1].Command != "echo # vd-cron-victim" {
+		t.Fatalf("jobs %+v", jobs)
+	}
+	if Remove("") == nil {
+		t.Fatal("an empty app name would match every vd job")
+	}
+}

@@ -22,4 +22,7 @@ func TestSSHArgs(t *testing.T) {
 			t.Errorf("%q: got %v, want %s", line, e, code)
 		}
 	}
+	if e := forbiddenOverSSH([]string{"--json", "exec", "app", "--", "id"}); e == nil {
+		t.Error("old-wrapper words reach vd exec")
+	}
 }
