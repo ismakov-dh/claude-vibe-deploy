@@ -172,7 +172,7 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--routing` | `subdomain` | `subdomain` or `path` |
 | `--db` | `none` | `postgres` (own DB), `prod-ro` (read-only prod), `postgres,prod-ro` (both: `DATABASE_URL` + `PROD_RO_DATABASE_URL`), or `none` |
 | `--db-access` | `rw` | `rw` or `ro` (prod-ro always forces `ro`) |
-| `--db-name` | app name | Database name of the own database (ignored for `prod-ro` alone) |
+| `--db-name` | app name | Database name of the own database (ignored for `prod-ro` alone). Only the app's own: a name another app holds, or an existing database that is not this app's, is refused |
 | `--env-file` | none | Path to .env file to inject (merged with auto-generated DATABASE_URL) |
 | `--allow-external` | false | Silence warnings about unsupported external services (Supabase, Firebase, etc.) |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky; subdomain routing only. Needs `vd init --authentik-url … --authentik-internal …` on the server |
@@ -211,7 +211,7 @@ Stop container, remove app files.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--yes` | false | Skip confirmation (always use in automation) |
-| `--drop-db` | false | Also drop the database, its user and the MCP read-only role (vd-managed only, never drops prod) |
+| `--drop-db` | false | Also drop the database, its user and the MCP read-only role (vd-managed only, never drops prod). Required for an app whose MCP is strict (it read production) |
 
 For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept. For apps with a database MCP, destroy removes the MCP application, provider and the group `mcp-vibe-<app>`, and vd's own permission rows on that group (if Authentik refuses, a warning: the rows grant nothing). It also works on the leftovers of a failed first deploy (no manifest): container, Authentik objects and files, including a `.env` with the prod DSN.
 
@@ -364,7 +364,9 @@ with prod-ro, kept by deploy and rollback): its Authentik application has `polic
 and a second group binding, `vibe-<app>`. Authentik checks it when a token is issued from a
 sign-in, **not on refresh** (2026.8.2: the refresh grant runs no policy), so removing someone from
 `vibe-<app>` alone takes effect at their next sign-in; removing them from `mcp-vibe-<app>` takes
-effect within 5 minutes, as for every MCP (the gateway reads the groups in each token). There is no Basic
+effect within 5 minutes, as for every MCP (the gateway reads the groups in each token). So `vd access
+<app> remove <email>` on a strict app removes them from both groups. `--drop-strict` is refused
+over the SSH wrapper. There is no Basic
 route (removed in 2026-10; the `VD_MCP_USER`/`VD_MCP_PASSWORD` lines left in old `mcp.env` files
 are read by nothing and disappear on the next deploy). Fail closed: when the MCP's Authentik
 resource cannot be set up, the MCP container is not started at all, and `vd status` reports

@@ -290,3 +290,56 @@ func TestStrictMCPIsSticky(t *testing.T) {
 		t.Fatalf("rollback to a pre-prod-ro backup loosened the MCP: %+v", m)
 	}
 }
+
+// --db-name cannot hand one app another's database.
+func TestDBNameAllowed(t *testing.T) {
+	t.Setenv("VD_HOME", t.TempDir())
+	for _, m := range []*state.Manifest{
+		{Name: "aa", DB: "postgres", MCPStrict: true},
+		{Name: "cc", DB: "postgres", DBName: "custom"},
+	} {
+		os.MkdirAll(state.AppDir(m.Name), 0755)
+		if err := state.SaveManifest(m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	existing := map[string]bool{"aa": true, "custom": true, "orphan": true}
+	exists := func(n string) (bool, error) { return existing[n], nil }
+	for _, c := range []struct {
+		app, db string
+		prev    *state.Manifest
+		ok      bool
+	}{
+		{"bb", "bb", nil, true},                               // its own name
+		{"bb", "aa", nil, false},                              // another app's (default name)
+		{"bb", "custom", nil, false},                          // another app's (--db-name)
+		{"bb", "orphan", nil, false},                          // exists, nobody's
+		{"bb", "fresh", nil, true},                            // new
+		{"bb", "kept", &state.Manifest{DBName: "kept"}, true}, // its previous deploy's
+		{"bb", "Bad;name", nil, false},
+		{"cc", "custom", &state.Manifest{DBName: "custom"}, true},
+	} {
+		if got := dbNameAllowed(c.app, c.db, c.prev, exists) == nil; got != c.ok {
+			t.Errorf("app %s db %s: allowed=%v", c.app, c.db, got)
+		}
+	}
+}
+
+// A strict app's database goes with it; an SSH agent cannot loosen its MCP.
+func TestStrictAppGuards(t *testing.T) {
+	strict := &state.Manifest{Name: "a", DB: "postgres", MCPStrict: true}
+	if strictKeepsNoDB(strict, false) == nil || strictKeepsNoDB(strict, true) != nil ||
+		strictKeepsNoDB(&state.Manifest{Name: "b", DB: "postgres"}, false) != nil {
+		t.Fatal("destroy rule wrong")
+	}
+	if e := forbiddenOverSSH([]string{"mcp-oauth", "a", "--drop-strict"}); e == nil {
+		t.Fatal("--drop-strict reachable over SSH")
+	}
+	if e := forbiddenOverSSH([]string{"mcp-oauth", "a", "--check"}); e != nil {
+		t.Fatal("plain mcp-oauth refused")
+	}
+	// Reading production makes the MCP strict even if the flag were lost.
+	if g := (&state.Manifest{Name: "a", DB: "postgres", ProdRONetwork: "net", AuthGroup: "vibe-a"}).MCPAppGroup(); g != "vibe-a" {
+		t.Fatalf("prod-reading app's MCP not strict: %q", g)
+	}
+}

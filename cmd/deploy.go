@@ -282,6 +282,9 @@ func runDeploy(srcPath string) {
 		if dbNameToUse == "" {
 			dbNameToUse = deployName
 		}
+		if e := dbNameAllowed(deployName, dbNameToUse, prevM0, vdDatabaseExists); e != nil {
+			output.Fail("deploy", e)
+		}
 
 		output.Info("Provisioning database (%s)...", deployDB)
 		ownerRole := db.RoleName(deployName)
@@ -432,6 +435,9 @@ func runDeploy(srcPath string) {
 		var gate *output.VDError
 		if _, meta, err := backup.Latest(deployName); err == nil {
 			gate = rollbackProdROGate(cur, meta.Manifest)
+			if gate == nil && cur.Auth && (meta.Manifest == nil || !meta.Manifest.Auth) {
+				gate = output.NewError("ROLLBACK_WOULD_UNPROTECT", "the previous version was deployed without platform login", "")
+			}
 		}
 		if isRedeploy && gate != nil {
 			output.Warn("Not rolling back, the app is down: %s", gate.Message)
@@ -830,6 +836,42 @@ func deployMCPBlock(app string, cfg *state.Config, owner string, res *authentik.
 		return map[string]any{"available": false, "hint": "see warnings — the MCP could not be put behind platform sign-in"}
 	}
 	return mcpOAuthInfo(app, cfg, owner, res)
+}
+
+var dbNameRegex = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,62}$`)
+
+// dbNameAllowed decides whether app may be given the database dbName: its own
+// name or its previous deploy's, else only a name no other app holds and no
+// database has. Otherwise --db-name would hand one app another's database —
+// a strict app's, with what it copied from production, included.
+func dbNameAllowed(app, dbName string, prev *state.Manifest, exists func(string) (bool, error)) *output.VDError {
+	if !dbNameRegex.MatchString(dbName) {
+		return output.NewError("INVALID_ARGS", "Invalid database name: "+dbName, "Lowercase, starts with a letter, a-z/0-9/_/-")
+	}
+	apps, _ := state.ListApps()
+	for _, a := range apps {
+		if a == app {
+			continue
+		}
+		if m, err := state.LoadManifest(a); err == nil && m.DB == "postgres" && (m.DBName == dbName || m.DBName == "" && a == dbName) {
+			return output.NewError("INVALID_ARGS", "Database "+dbName+" belongs to the app "+a, "Leave --db-name out")
+		}
+	}
+	if dbName == app || prev != nil && prev.DBName == dbName {
+		return nil
+	}
+	ok, err := exists(dbName)
+	if err != nil {
+		return output.NewError("DB_PROVISION_FAILED", "Cannot check whether database "+dbName+" exists: "+err.Error(), "")
+	}
+	if ok {
+		return output.NewError("INVALID_ARGS", "Database "+dbName+" already exists and is not this app's", "Leave --db-name out")
+	}
+	return nil
+}
+
+func vdDatabaseExists(name string) (bool, error) {
+	return db.DatabaseExists("vd-postgres", "vd_admin", name)
 }
 
 // mcpStrictFor: an MCP turns strict with the first deploy that reads

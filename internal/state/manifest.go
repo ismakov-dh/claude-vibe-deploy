@@ -58,7 +58,7 @@ type Manifest struct {
 
 // MCPAppGroup is the login group a strict MCP also requires, "" otherwise.
 func (m *Manifest) MCPAppGroup() string {
-	if !m.MCPStrict {
+	if !m.MCPStrict && !m.ReadsProd() {
 		return ""
 	}
 	if m.AuthGroup != "" {

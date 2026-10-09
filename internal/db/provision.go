@@ -154,6 +154,18 @@ func DropPostgresDB(container, adminUser, dbName, user string) error {
 	return nil
 }
 
+// DatabaseExists reports whether the vd-postgres instance has the database.
+// The name must already have passed vd's database-name rule.
+func DatabaseExists(container, adminUser, dbName string) (bool, error) {
+	r, err := shell.Run(30*time.Second, "docker", "exec", container,
+		"psql", "-U", adminUser, "-d", "postgres", "-Atc",
+		fmt.Sprintf("SELECT 1 FROM pg_database WHERE datname = '%s'", dbName))
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(r.Stdout) == "1", nil
+}
+
 func execSQL(container, adminUser, sql string) error {
 	_, err := shell.Run(30*time.Second, "docker", "exec", container,
 		"psql", "-U", adminUser, "-d", "postgres", "-c", sql)

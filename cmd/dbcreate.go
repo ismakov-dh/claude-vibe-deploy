@@ -63,6 +63,10 @@ var dbCreateCmd = &cobra.Command{
 			if dbName == "" {
 				dbName = name
 			}
+			prev, _ := state.LoadManifest(name)
+			if e := dbNameAllowed(name, dbName, prev, vdDatabaseExists); e != nil {
+				output.Fail("db-create", e)
+			}
 
 		default:
 			output.Fail("db-create", output.NewError("INVALID_TYPE",

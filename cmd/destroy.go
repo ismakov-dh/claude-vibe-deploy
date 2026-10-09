@@ -45,6 +45,9 @@ var destroyCmd = &cobra.Command{
 		if err != nil {
 			output.Fail("destroy", err)
 		}
+		if e := strictKeepsNoDB(m, destroyDropDB); e != nil {
+			output.Fail("destroy", e)
+		}
 
 		if !destroyYes && !output.IsJSON() {
 			msg := fmt.Sprintf("Destroy app %q? This will stop the container and remove all files.", name)
@@ -246,4 +249,16 @@ func removeMCPOAuth(name string, cfg *state.Config) string {
 		output.Warn("MCP OAuth removed; its permission rows on the deleted group were not (%v) — harmless, a platform admin can sweep them", permsLeft)
 	}
 	return "removed"
+}
+
+// strictKeepsNoDB: an app that read production is destroyed with its
+// database. A kept one would come back, under a fresh manifest, with an
+// ordinary MCP over what the app copied from production.
+func strictKeepsNoDB(m *state.Manifest, dropDB bool) *output.VDError {
+	if m.MCPStrict && m.DB == "postgres" && !dropDB {
+		return output.NewError("INVALID_ARGS",
+			m.Name+" read production data: its database may hold copies, so it is destroyed with it",
+			"Add --drop-db (a backup of the database is taken first)")
+	}
+	return nil
 }

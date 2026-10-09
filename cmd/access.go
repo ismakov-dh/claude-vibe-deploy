@@ -83,6 +83,19 @@ var accessCmd = &cobra.Command{
 			} else {
 				changed, err = c.RemoveMember(group, email)
 			}
+			// A strict MCP needs the app's group at sign-in only — Authentik
+			// runs no policy on refresh — so leaving the app leaves its MCP too:
+			// the gateway then refuses the next 5-minute token.
+			mcpRemoved := false
+			if m, _ := state.LoadManifest(name); err == nil && action == "remove" && !accessMCP && m != nil && m.MCPStrict && m.MCPOAuthLive {
+				mg, _ := authentik.MCPName(name)
+				if mcpRemoved, err = c.RemoveMember(mg, email); err == nil {
+					data["mcp_removed"] = mcpRemoved
+					changed = changed || mcpRemoved
+				} else {
+					group = mg
+				}
+			}
 			unlock()
 			if err != nil {
 				failAccess(group, err)

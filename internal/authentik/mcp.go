@@ -170,7 +170,7 @@ func (c *Client) EnsureMCP(s MCPSpec) (*MCPResult, error) {
 		if err := c.ensureBinding(app.PK, appGroupPK); err != nil {
 			return nil, fmt.Errorf("bind %s to %s: %w", name, s.AppGroup, err)
 		}
-	} else if err := c.dropOtherBindings(app.PK, groupPK); err != nil {
+	} else if err := c.dropAppGroupBinding(app.PK, s.App); err != nil {
 		return nil, err
 	} else if err := c.setPolicyEngineMode(name, "any"); err != nil {
 		return nil, err
@@ -508,6 +508,13 @@ func (c *Client) mcpScopeMappings() (openid, offline, mcp string, err error) {
 // setPolicyEngineMode sets whether one ("any") or every ("all") binding of the
 // application must pass, and reads it back.
 func (c *Client) setPolicyEngineMode(slug, mode string) error {
+	var cur application
+	if _, err := c.do("GET", "/core/applications/"+slug+"/", nil, &cur); err != nil {
+		return err
+	}
+	if cur.PolicyEngineMode == mode || mode == "any" && cur.PolicyEngineMode == "" {
+		return nil
+	}
 	if _, err := c.do("PATCH", "/core/applications/"+slug+"/", map[string]any{"policy_engine_mode": mode}, nil); err != nil {
 		return fmt.Errorf("set policy_engine_mode=%s on %s: %w", mode, slug, err)
 	}
@@ -521,15 +528,24 @@ func (c *Client) setPolicyEngineMode(slug, mode string) error {
 	return nil
 }
 
-// dropOtherBindings removes the application's group bindings other than
-// keepGroup's: under "any", each of them would be a way in on its own.
-func (c *Client) dropOtherBindings(appPK, keepGroup string) error {
+// dropAppGroupBinding removes the binding to the app's login group that a
+// strict MCP had: under "any" it would be a way in on its own. Bindings an
+// admin added are left alone.
+func (c *Client) dropAppGroupBinding(appPK, app string) error {
+	name, err := GroupName(app)
+	if err != nil {
+		return err
+	}
+	groupPK, _, err := c.findGroup(name)
+	if err != nil || groupPK == "" {
+		return err
+	}
 	bs, err := c.bindingsFor(appPK)
 	if err != nil {
 		return err
 	}
 	for _, b := range bs {
-		if b.Group != "" && b.Group != keepGroup {
+		if b.Group == groupPK {
 			if _, err := c.do("DELETE", "/policies/bindings/"+b.PK+"/", nil, nil); err != nil {
 				return fmt.Errorf("remove binding %s: %w", b.PK, err)
 			}

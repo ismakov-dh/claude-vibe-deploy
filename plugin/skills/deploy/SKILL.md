@@ -104,7 +104,9 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing
 >   signing in to it needs membership in both `mcp-vibe-<app>` and the app's group `vibe-<app>`.
 >   It shows the whole own database, including whatever the app copied from production — grant
 >   `--mcp` only to people who may see patient data. Strict is for good: leaving prod-ro or a
->   rollback does not loosen it, because the copied data stays in the database.
+>   rollback does not loosen it, because the copied data stays in the database. `vd access
+>   <app> remove <email>` (the app's group) takes them off the MCP group too, and `vd destroy`
+>   of such an app needs `--drop-db`.
 > - **An app never reads a database through an MCP** — its code uses `DATABASE_URL` /
 >   `PROD_RO_DATABASE_URL`. MCPs are for people and agents, not for apps.
 > - All prod-ro apps share **one** database role and one network. They can reach each other on
