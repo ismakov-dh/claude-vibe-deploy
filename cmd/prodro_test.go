@@ -25,8 +25,17 @@ func TestProdROGate(t *testing.T) {
 		{"prod-ro hours=2 refused", "prod-ro", true, "hours=2", "INVALID_AUTH_TTL"},
 		{"prod-ro hours=1;minutes=1 refused", "prod-ro", true, "hours=1;minutes=1", "INVALID_AUTH_TTL"},
 		{"long ttl fine without prod-ro", "postgres", true, "days=7", ""},
+		// The replica beside the app's own database keeps every rule.
+		{"both without auth refused", "postgres,prod-ro", false, "", "PROD_RO_REQUIRES_AUTH"},
+		{"both reversed without auth refused", "prod-ro,postgres", false, "", "PROD_RO_REQUIRES_AUTH"},
+		{"both hours=2 refused", "postgres,prod-ro", true, "hours=2", "INVALID_AUTH_TTL"},
+		{"both hours=1 ok", "postgres,prod-ro", true, "hours=1", ""},
 	} {
-		e := prodROGate(c.db, c.auth, c.ttl)
+		_, prodRO, ok := parseDB(c.db)
+		if !ok {
+			t.Fatalf("%s: --db %q not accepted", c.name, c.db)
+		}
+		e := prodROGate(prodRO, c.auth, c.ttl)
 		got := ""
 		if e != nil {
 			got = e.Code
@@ -34,6 +43,30 @@ func TestProdROGate(t *testing.T) {
 		if got != c.code {
 			t.Errorf("%s: got %q, want %q", c.name, got, c.code)
 		}
+	}
+}
+
+func TestParseDB(t *testing.T) {
+	for in, want := range map[string]string{
+		"": "none/false", "none": "none/false", "postgres": "postgres/false", "prod-ro": "prod-ro/true",
+		"postgres,prod-ro": "postgres/true", "prod-ro,postgres": "postgres/true",
+	} {
+		db, prodRO, ok := parseDB(in)
+		if got := db + "/" + map[bool]string{true: "true", false: "false"}[prodRO]; !ok || got != want {
+			t.Errorf("parseDB(%q) = %s ok=%v, want %s", in, got, ok, want)
+		}
+	}
+	for _, bad := range []string{"mysql", "postgres,", "prod-ro,prod-ro", "postgres, prod-ro", "none,prod-ro"} {
+		if _, _, ok := parseDB(bad); ok {
+			t.Errorf("parseDB(%q) accepted", bad)
+		}
+	}
+	both := &state.Manifest{DB: "postgres", ProdRONetwork: "net"}
+	if !both.ReadsProd() || both.DBSpec() != "postgres,prod-ro" {
+		t.Fatalf("own database plus replica: ReadsProd=%v DBSpec=%q", both.ReadsProd(), both.DBSpec())
+	}
+	if (&state.Manifest{DB: "postgres"}).ReadsProd() || !(&state.Manifest{DB: "prod-ro"}).ReadsProd() {
+		t.Fatal("ReadsProd wrong for one database")
 	}
 }
 
@@ -57,6 +90,8 @@ func TestValidProdROURL(t *testing.T) {
 func TestRollbackProdROGate(t *testing.T) {
 	good := &state.Manifest{Name: "a", DB: "prod-ro", Auth: true, AuthTTL: "hours=1", ProdRONetwork: "net"}
 	cur := &state.Manifest{Name: "a", DB: "prod-ro", Auth: true, AuthTTL: "hours=1", ProdRONetwork: "net"}
+	both := &state.Manifest{Name: "a", DB: "postgres", Auth: true, AuthTTL: "hours=1", ProdRONetwork: "net"}
+	bothB := &state.Manifest{Name: "a", DB: "postgres", Auth: true, AuthTTL: "minutes=30", ProdRONetwork: "net"}
 	for _, c := range []struct {
 		name   string
 		cur, b *state.Manifest
@@ -69,6 +104,11 @@ func TestRollbackProdROGate(t *testing.T) {
 		{"backup without login", cur, &state.Manifest{DB: "prod-ro", ProdRONetwork: "net"}, true},
 		{"backup with long sign-in", cur, &state.Manifest{DB: "prod-ro", Auth: true, AuthTTL: "days=7", ProdRONetwork: "net"}, true},
 		{"no current manifest", nil, good, true},
+		// The replica beside the app's own database is held to the same rules.
+		{"both backup onto both app", both, bothB, false},
+		{"both backup onto app that left prod-ro", &state.Manifest{DB: "postgres"}, bothB, true},
+		{"both backup without login", both, &state.Manifest{DB: "postgres", ProdRONetwork: "net"}, true},
+		{"both backup with long sign-in", both, &state.Manifest{DB: "postgres", Auth: true, AuthTTL: "days=7", ProdRONetwork: "net"}, true},
 		{"backup without manifest", cur, nil, true},
 	} {
 		if got := rollbackProdROGate(c.cur, c.b) != nil; got != c.refuse {
@@ -91,19 +131,25 @@ func TestDropProdRODSN(t *testing.T) {
 	}
 
 	write("A=1\nDATABASE_URL=" + dsn + "\n")
-	if !dropProdRODSN(env, false) || envValue(env, "DATABASE_URL") != "" || envValue(env, "A") != "1" {
+	if !dropProdRODSN(env, "DATABASE_URL", false) || envValue(env, "DATABASE_URL") != "" || envValue(env, "A") != "1" {
 		t.Fatal("stored DSN left in .env, or other keys lost")
 	}
 
 	write("DATABASE_URL=postgres://own:pw@vd-postgres/own\n")
-	if dropProdRODSN(env, false) || envValue(env, "DATABASE_URL") == "" {
+	if dropProdRODSN(env, "DATABASE_URL", false) || envValue(env, "DATABASE_URL") == "" {
 		t.Fatal("an app's own DATABASE_URL was removed")
 	}
 
 	// Previous deploy was prod-ro, DSN rotated since: removed anyway.
 	write("DATABASE_URL=postgres://vibe_ro:old@db-replica/reporting\n")
-	if !dropProdRODSN(env, true) || envValue(env, "DATABASE_URL") != "" {
+	if !dropProdRODSN(env, "DATABASE_URL", true) || envValue(env, "DATABASE_URL") != "" {
 		t.Fatal("rotated-out prod DSN left behind")
+	}
+
+	// Beside an own database the replica has its own key; the own one stays.
+	write("DATABASE_URL=postgres://own:pw@vd-postgres/own\n" + prodROEnvKey + "=" + dsn + "\n")
+	if !dropProdRODSN(env, prodROEnvKey, false) || envValue(env, prodROEnvKey) != "" || envValue(env, "DATABASE_URL") == "" {
+		t.Fatal("leaving prod-ro kept the replica key or lost the own DATABASE_URL")
 	}
 	if fi, _ := os.Stat(env); fi.Mode().Perm() != 0600 {
 		t.Fatalf(".env mode %v", fi.Mode().Perm())
@@ -142,6 +188,9 @@ func TestProdROGateRunsBeforeAnythingIsWritten(t *testing.T) {
 	for _, c := range []struct{ args, code string }{
 		{"--db prod-ro", "PROD_RO_REQUIRES_AUTH"},
 		{"--db prod-ro --auth --auth-ttl hours=2", "INVALID_AUTH_TTL"},
+		{"--db postgres,prod-ro", "PROD_RO_REQUIRES_AUTH"},
+		{"--db postgres,prod-ro --auth --auth-ttl hours=2", "INVALID_AUTH_TTL"},
+		{"--db mysql", "INVALID_ARGS"},
 	} {
 		home := t.TempDir()
 		if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"domain":"apps.example.com","prod_ro_network":"net"}`), 0644); err != nil {

@@ -43,7 +43,7 @@ var statusCmd = &cobra.Command{
 			output.Info("Started:   %s", cs.Started)
 			output.Info("Deployed:  %s", m.DeployedAt)
 			if m.DB != "" && m.DB != "none" {
-				output.Info("Database:  %s (%s)", m.DB, m.DBAccess)
+				output.Info("Database:  %s (%s)", m.DBSpec(), m.DBAccess)
 			}
 			if mcp != nil && mcp["available"] == true {
 				output.Info("MCP:       %s (%s)", mcp["url"], mcpHealth)
@@ -67,7 +67,7 @@ var statusCmd = &cobra.Command{
 			"deployed_at": m.DeployedAt,
 			"port":        m.Port,
 			"routing":     m.Routing,
-			"db":          m.DB,
+			"db":          m.DBSpec(),
 		}
 		if mcp != nil {
 			mcp["health"] = mcpHealth

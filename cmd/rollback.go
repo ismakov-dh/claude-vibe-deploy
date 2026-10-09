@@ -45,7 +45,7 @@ func rollbackProdROGate(cur, b *state.Manifest) *output.VDError {
 			"The backup carries no manifest, so vd cannot tell what access it would restore",
 			"Redeploy a fixed version instead")
 	}
-	if b.DB != "prod-ro" {
+	if !b.ReadsProd() {
 		return nil
 	}
 	refuse := func(why string) *output.VDError {
@@ -53,13 +53,13 @@ func rollbackProdROGate(cur, b *state.Manifest) *output.VDError {
 			"The previous version of "+b.Name+" read production data "+why+"; rolling back would restore that access",
 			"Redeploy a fixed version instead")
 	}
-	if cur == nil || cur.DB != "prod-ro" {
+	if cur == nil || !cur.ReadsProd() {
 		return refuse("and the current version does not")
 	}
 	if b.ProdRONetwork == "" {
 		return refuse("through the retired per-app prod user")
 	}
-	if e := prodROGate("prod-ro", b.Auth, b.AuthTTL); e != nil {
+	if e := prodROGate(true, b.Auth, b.AuthTTL); e != nil {
 		return refuse("without the login rules prod-ro now requires (" + e.Message + ")")
 	}
 	return nil

@@ -30,6 +30,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Own PostgreSQL database** | `--db postgres` | Auto-provisioned on deploy. `DATABASE_URL` injected into `.env`. Fresh DB per app. |
 | **Read-only MCP for the app's own DB** | automatic with `--db postgres` | Per-app postgres-mcp at `<name>.mcp.<apps-domain>/mcp`, SELECT-only on the whole DB, behind platform sign-in (group `mcp-vibe-<name>`, granted with `vd access <name> add <email> --mcp`). The `mcp` field carries a ready-made `claude mcp add --transport http …` — no password. Not provisioned for `prod-ro`. |
 | **Prod DB read-only access** | `--db prod-ro --auth` | Production read-only replica over a dedicated overlay, shared SELECT-only role. **Includes patient data** — agents ask the user first. `--auth` required, sign-in ≤ `hours=1`, no MCP. |
+| **Own DB + prod read-only** | `--db postgres,prod-ro --auth` | Both at once: `DATABASE_URL` is the app's own database, `PROD_RO_DATABASE_URL` the replica. Every prod-ro rule holds; the MCP is of the own database only. |
 | **Environment variables** | `--env-file` or auto-injected | Pass secrets, API keys, config. `DATABASE_URL` is auto-injected when using `--db`. |
 | **Cron jobs** | `vd cron-set` | Scheduled commands that run inside the app container. |
 | **Health checks** | Automatic | Traefik + Docker check `GET http://127.0.0.1:<port>/` every 30s. |
@@ -80,6 +81,7 @@ Do not design apps that require any of these:
 - Next.js full-stack — auto-detected, single container
 - Python FastAPI/Flask API — auto-detected, gunicorn/uvicorn handles it
 - Dashboard that reads prod data — backend queries prod DB via `DATABASE_URL`, frontend calls backend API
+- An app never reads a database through an MCP — only `DATABASE_URL` / `PROD_RO_DATABASE_URL`
 
 ### App Type Detection
 
@@ -124,6 +126,9 @@ vd deploy /opt/vibe-deploy/push/my-app --name my-api --db postgres --json
 # Dashboard reading production data
 vd deploy /opt/vibe-deploy/push/my-app --name my-dash --db prod-ro --auth --json   # patient data: ask the user first
 
+# Its own database plus production read-only: DATABASE_URL = own, PROD_RO_DATABASE_URL = prod
+vd deploy /opt/vibe-deploy/push/my-app --name my-dash --db postgres,prod-ro --auth --json   # patient data: ask the user first
+
 # With extra env vars (API keys, secrets)
 vd deploy /opt/vibe-deploy/push/my-app --name my-app --db postgres --env-file /opt/vibe-deploy/push/my-app/.env --json
 
@@ -165,9 +170,9 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--name` | directory name | App name (lowercase, a-z/0-9/hyphens, 2-63 chars) |
 | `--port` | auto-detected | Internal port the app listens on |
 | `--routing` | `subdomain` | `subdomain` or `path` |
-| `--db` | `none` | `postgres` (own DB), `prod-ro` (read-only prod), or `none` |
+| `--db` | `none` | `postgres` (own DB), `prod-ro` (read-only prod), `postgres,prod-ro` (both: `DATABASE_URL` + `PROD_RO_DATABASE_URL`), or `none` |
 | `--db-access` | `rw` | `rw` or `ro` (prod-ro always forces `ro`) |
-| `--db-name` | app name | Database name (`postgres` only; ignored for `prod-ro`) |
+| `--db-name` | app name | Database name of the own database (ignored for `prod-ro` alone) |
 | `--env-file` | none | Path to .env file to inject (merged with auto-generated DATABASE_URL) |
 | `--allow-external` | false | Silence warnings about unsupported external services (Supabase, Firebase, etc.) |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky; subdomain routing only. Needs `vd init --authentik-url … --authentik-internal …` on the server |

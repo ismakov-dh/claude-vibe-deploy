@@ -27,6 +27,7 @@ var (
 	deployPort          int
 	deployRouting       string
 	deployDB            string
+	deployProdRO        bool // --db includes prod-ro; deployDB is then "prod-ro" or "postgres"
 	deployDBAccess      string
 	deployDBName        string
 	deployEnvFile       string
@@ -43,7 +44,7 @@ func init() {
 	deployCmd.Flags().StringVar(&deployName, "name", "", "app name (default: directory name)")
 	deployCmd.Flags().IntVar(&deployPort, "port", 0, "internal app port (default: auto-detected)")
 	deployCmd.Flags().StringVar(&deployRouting, "routing", "subdomain", "routing mode: subdomain or path")
-	deployCmd.Flags().StringVar(&deployDB, "db", "none", "database: postgres, prod-ro, or none")
+	deployCmd.Flags().StringVar(&deployDB, "db", "none", "database: postgres, prod-ro, postgres,prod-ro (own database plus the replica), or none")
 	deployCmd.Flags().StringVar(&deployDBAccess, "db-access", "rw", "database access: rw or ro")
 	deployCmd.Flags().StringVar(&deployDBName, "db-name", "", "database name (default: app name)")
 	deployCmd.Flags().StringVar(&deployEnvFile, "env-file", "", "path to .env file")
@@ -90,6 +91,11 @@ func runDeploy(srcPath string) {
 		output.Fail("deploy", output.NewError("INVALID_NAME",
 			"Invalid app name: "+deployName,
 			"Must be lowercase, start with a letter, 2-63 chars, only a-z/0-9/hyphens"))
+	}
+	var dbOK bool
+	if deployDB, deployProdRO, dbOK = parseDB(deployDB); !dbOK {
+		output.Fail("deploy", output.NewError("INVALID_ARGS",
+			"Invalid --db: use postgres, prod-ro, postgres,prod-ro or none", ""))
 	}
 	// Held for the whole run (released by exit): vd mcp-oauth re-renders this
 	// app's compose file and must not interleave with a deploy.
@@ -214,35 +220,50 @@ func runDeploy(srcPath string) {
 	// MCP wiring, filled in during provisioning below.
 	needsMCP := false
 
-	// Leaving prod-ro — or an --env-file carrying its DSN — must not leave the
-	// DSN behind: detaching the network is not enough if the value survives in
-	// .env, backups and whatever the app does with it.
-	if deployDB != "prod-ro" {
-		// A fresh --env-file replaced .env already: only the value itself counts.
-		wasProdRO := prevDB(deployName) == "prod-ro" && deployEnvFile == ""
-		if dropProdRODSN(state.AppEnvPath(deployName), wasProdRO) {
-			output.Info("Removed the production read-only DATABASE_URL: this deploy is not --db prod-ro")
+	// Alone, the replica is DATABASE_URL (as it always was); beside the app's
+	// own database it is PROD_RO_DATABASE_URL, and DATABASE_URL is the own one.
+	prodROKey := "DATABASE_URL"
+	if deployDB == "postgres" {
+		prodROKey = prodROEnvKey
+	}
+	// The replica's DSN must not stay under a key this deploy does not give it
+	// — leaving prod-ro, or an --env-file carrying it: detaching the network is
+	// not enough if the value survives in .env, backups and whatever the app
+	// does with it. A key the previous deploy gave it goes unconditionally (the
+	// stored DSN may have been rotated since), unless a fresh --env-file
+	// replaced .env already: then only the value itself counts.
+	prevM0, _ := state.LoadManifest(deployName)
+	heldProd := map[string]bool{
+		"DATABASE_URL": prevM0 != nil && prevM0.DB == "prod-ro",
+		prodROEnvKey:   prevM0 != nil && prevM0.DB == "postgres" && prevM0.ProdRONetwork != "",
+	}
+	for _, key := range []string{"DATABASE_URL", prodROEnvKey} {
+		if deployProdRO && key == prodROKey {
+			continue
+		}
+		if dropProdRODSN(state.AppEnvPath(deployName), key, heldProd[key] && deployEnvFile == "") {
+			output.Info("Removed the production read-only %s: this deploy does not put the replica there", key)
 		}
 	}
 
 	// Production replica: no provisioning, the platform owns the role. The DSN
 	// goes into the app's .env (0600) and nowhere else — not the JSON, not a log.
-	if deployDB == "prod-ro" {
+	if deployProdRO {
 		dsn, err := state.LoadProdROURL()
 		if err != nil || cfg.ProdRONetwork == "" {
 			output.Fail("deploy", output.NewError("DB_NOT_FOUND",
 				"The production read-only replica is not set up on this server",
 				"A platform admin runs: vd init --prod-ro-network <overlay> and pipes the DSN into vd init --prod-ro-url-stdin"))
 		}
-		if deployDBName != "" {
+		if deployDBName != "" && deployDB == "prod-ro" {
 			output.Warn("--db-name ignored for prod-ro: the platform's DSN fixes the database")
 		}
-		if err := setEnvVar(state.AppEnvPath(deployName), "DATABASE_URL", dsn); err != nil {
+		if err := setEnvVar(state.AppEnvPath(deployName), prodROKey, dsn); err != nil {
 			output.Fail("deploy", output.NewError("DB_PROVISION_FAILED",
-				"Could not write DATABASE_URL: "+err.Error(), "Check permissions on "+state.AppDir(deployName)))
+				"Could not write "+prodROKey+": "+err.Error(), "Check permissions on "+state.AppDir(deployName)))
 		}
 		hasEnvFile = true
-		output.Info("Production read-only replica wired in (network %s). This app sees patient data.", cfg.ProdRONetwork)
+		output.Info("Production read-only replica wired in as %s (network %s). This app sees patient data.", prodROKey, cfg.ProdRONetwork)
 	}
 
 	// Provision database if requested
@@ -298,6 +319,9 @@ func runDeploy(srcPath string) {
 	if needsMCP {
 		mcpRes = ensureMCPOAuth(deployName, cfg, deployMCPOwner)
 	}
+	if needsMCP && deployProdRO {
+		output.Warn("This app reads patient data and its own database has an MCP: whatever it copies from production into its own database, everyone in mcp-vibe-%s can read", deployName)
+	}
 
 	if auth != nil {
 		if err := setEnvVar(state.AppEnvPath(deployName), ingressEnvKey, ingressSecret); err != nil {
@@ -338,7 +362,7 @@ func runDeploy(srcPath string) {
 	domain := buildDomain(deployName, cfg.Domain, deployRouting)
 
 	prodRONet := ""
-	if deployDB == "prod-ro" {
+	if deployProdRO {
 		prodRONet = cfg.ProdRONetwork
 	}
 	composeData := composeDataFor(&state.Manifest{
@@ -450,7 +474,7 @@ func runDeploy(srcPath string) {
 		"health":      "healthy",
 		"port":        deployPort,
 		"routing":     deployRouting,
-		"db":          deployDB,
+		"db":          manifest.DBSpec(),
 		"deployed_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	if needsMCP {
@@ -620,7 +644,7 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	want := deployAuth || (prev != nil && prev.Auth) || protectedOnDisk
 	bearer, bearerErr := bearerFor(want, prev, deployAuthBearerSet, deployAuthBearer)
 	if !want {
-		if e := prodROGate(deployDB, false, ""); e != nil {
+		if e := prodROGate(deployProdRO, false, ""); e != nil {
 			output.Fail("deploy", e)
 		}
 		if deployAuthTTL != "" {
@@ -648,7 +672,7 @@ func resolveAuth(cfg *state.Config) *authPlan {
 		output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
 			"Invalid --auth-ttl: "+ttl, "Use Authentik's format, e.g. hours=1, minutes=30, days=1;hours=12"))
 	}
-	if e := prodROGate(deployDB, true, ttl); e != nil {
+	if e := prodROGate(deployProdRO, true, ttl); e != nil {
 		output.Fail("deploy", e)
 	}
 	if deployRouting != "subdomain" {
@@ -773,19 +797,29 @@ func deployMCPBlock(app string, cfg *state.Config, owner string, res *authentik.
 	return mcpOAuthInfo(app, cfg, owner, res)
 }
 
-// prevDB is the database type of the running deploy, "" if none.
-func prevDB(app string) string {
-	if m, err := state.LoadManifest(app); err == nil {
-		return m.DB
+// prodROEnvKey carries the replica's DSN beside the app's own DATABASE_URL:
+// the same suffix as the own database's, and the flag's name in front.
+const prodROEnvKey = "PROD_RO_DATABASE_URL"
+
+// parseDB splits --db into the manifest's DB ("postgres" whenever the app has
+// its own database) and whether the production replica comes with it.
+func parseDB(v string) (string, bool, bool) {
+	switch v {
+	case "", "none":
+		return "none", false, true
+	case "postgres", "prod-ro":
+		return v, v == "prod-ro", true
+	case "postgres,prod-ro", "prod-ro,postgres":
+		return "postgres", true, true
 	}
-	return ""
+	return "", false, false
 }
 
-// dropProdRODSN removes DATABASE_URL from envPath when it is the stored prod-ro
-// DSN, or unconditionally when the previous deploy was prod-ro (the stored DSN
-// may have been rotated since). Reports whether it removed anything.
-func dropProdRODSN(envPath string, wasProdRO bool) bool {
-	cur := envValue(envPath, "DATABASE_URL")
+// dropProdRODSN removes key from envPath when it is the stored prod-ro DSN, or
+// unconditionally when the previous deploy put the replica there (the stored
+// DSN may have been rotated since). Reports whether it removed anything.
+func dropProdRODSN(envPath, key string, wasProdRO bool) bool {
+	cur := envValue(envPath, key)
 	if cur == "" {
 		return false
 	}
@@ -793,7 +827,7 @@ func dropProdRODSN(envPath string, wasProdRO bool) bool {
 	if !wasProdRO && (dsn == "" || cur != dsn) {
 		return false
 	}
-	return removeEnvVar(envPath, "DATABASE_URL") == nil
+	return removeEnvVar(envPath, key) == nil
 }
 
 // dockerignoreLines keep the files vd and local tooling put secrets in out of
@@ -833,8 +867,8 @@ const prodROMaxTTL = 3600
 // prodROGate holds the rules for --db prod-ro, which exposes patient data
 // (studies, reports) to the app: platform login is mandatory, and its sign-in
 // lasts at most an hour. Checked before Authentik or the host is touched.
-func prodROGate(dbType string, auth bool, ttl string) *output.VDError {
-	if dbType != "prod-ro" {
+func prodROGate(prodRO bool, auth bool, ttl string) *output.VDError {
+	if !prodRO {
 		return nil
 	}
 	if !auth {

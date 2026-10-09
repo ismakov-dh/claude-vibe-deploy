@@ -51,6 +51,19 @@ type Manifest struct {
 	MCPOAuthLive bool `json:"mcp_oauth_live,omitempty"`
 }
 
+// ReadsProd reports whether the app reads the production replica: alone
+// (DB "prod-ro") or beside its own database (DB "postgres" with the replica
+// network). Every prod-ro rule keys on this, never on DB alone.
+func (m *Manifest) ReadsProd() bool { return m.DB == "prod-ro" || m.ProdRONetwork != "" }
+
+// DBSpec is the --db value that deploys this app again.
+func (m *Manifest) DBSpec() string {
+	if m.DB == "postgres" && m.ProdRONetwork != "" {
+		return "postgres,prod-ro"
+	}
+	return m.DB
+}
+
 func LoadManifest(appName string) (*Manifest, error) {
 	data, err := os.ReadFile(AppManifestPath(appName))
 	if err != nil {
