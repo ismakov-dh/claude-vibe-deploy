@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/vibe-deploy/vd/internal/backup"
 	"github.com/vibe-deploy/vd/internal/state"
 )
 
@@ -72,13 +73,17 @@ func TestParseDB(t *testing.T) {
 
 func TestValidProdROURL(t *testing.T) {
 	for s, want := range map[string]bool{
-		"postgres://vibe_ro:pw@db-replica:5432/reporting": true,
-		"postgresql://vibe_ro:pw@db-replica/reporting":    true,
-		"postgres://vibe_ro@db-replica/reporting":         false, // no password
-		"postgres://vibe_ro:pw@db-replica":                false, // no database
-		"mysql://vibe_ro:pw@db-replica/reporting":         false,
-		"postgres://vibe_ro:pw@db-replica/reporting\nX=1": false, // .env injection
-		"postgres://vibe_ro:p$w@db-replica/reporting":     false, // compose interpolation
+		"postgres://vibe_ro:pw@db-replica:5432/reporting":    true,
+		"postgresql://vibe_ro:pw@db-replica/reporting":       true,
+		"postgres://vibe_ro@db-replica/reporting":            false, // no password
+		"postgres://vibe_ro:pw@db-replica":                   false, // no database
+		"mysql://vibe_ro:pw@db-replica/reporting":            false,
+		"postgres://vibe_ro:pw@db-replica/reporting\nX=1":    false, // .env injection
+		"postgres://vibe_ro:p$w@db-replica/reporting":        false, // compose interpolation
+		"postgres://vibe_ro:pw@a,b/reporting":                false, // several hosts
+		"postgres://vibe_ro:pw@a/reporting?host=b":           false, // host overridden
+		"postgres://vibe_ro:pw@a/reporting?hostaddr=1.2.3.4": false,
+		"postgres://vibe_ro:pw@a/reporting?sslmode=require":  true,
 		"": false,
 	} {
 		if validProdROURL(s) != want {
@@ -233,7 +238,9 @@ func TestReplicaHostCannotBeShadowed(t *testing.T) {
 		{"db", "db-mcp", true},
 		{"db", "vd-db-mcp", true},
 		{"db-replica", "", false},
-		{"db-replica", "db-replica.internal", false},
+		{"db-replica", "db-replica.", true},       // Docker's DNS answers the rooted name
+		{"db-replica", "db-replica.vd-net", true}, // and <name>.<network>
+		{"db", "db-replica.vd-db", false},
 	} {
 		if got := shadowsReplica(c.app, c.host); got != c.want {
 			t.Errorf("shadowsReplica(%q, %q) = %v", c.app, c.host, got)
@@ -251,5 +258,35 @@ func TestReplicaHostCannotBeShadowed(t *testing.T) {
 	}
 	if got := appShadowing("postgres://vibe_ro:pw@other/reporting"); got != "" {
 		t.Fatalf("false alarm: %q", got)
+	}
+}
+
+// The MCP of an app that reads, or once read, production stays strict: across
+// redeploys without prod-ro and across a rollback to a backup from before.
+func TestStrictMCPIsSticky(t *testing.T) {
+	if !mcpStrictFor(true, nil) || mcpStrictFor(false, nil) || mcpStrictFor(false, &state.Manifest{}) {
+		t.Fatal("strict must follow prod-ro on a first deploy")
+	}
+	if !mcpStrictFor(false, &state.Manifest{MCPStrict: true}) {
+		t.Fatal("leaving prod-ro loosened the MCP")
+	}
+	if g := (&state.Manifest{Name: "a", MCPStrict: true, AuthGroup: "vibe-a"}).MCPAppGroup(); g != "vibe-a" {
+		t.Fatalf("app group %q", g)
+	}
+	if g := (&state.Manifest{Name: "a", AuthGroup: "vibe-a"}).MCPAppGroup(); g != "" {
+		t.Fatalf("ordinary MCP asks for %q", g)
+	}
+
+	t.Setenv("VD_HOME", t.TempDir())
+	if err := os.MkdirAll(state.AppDir("a"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(state.AppComposePath("a"), []byte("services: {}\n"), 0600)
+	old := &state.Manifest{Name: "a", DB: "postgres", MCP: true}
+	if err := keepStrict(&state.Manifest{Name: "a", MCPStrict: true})(&backup.Metadata{Manifest: old}); err != nil {
+		t.Fatal(err)
+	}
+	if m, _ := state.LoadManifest("a"); m == nil || !m.MCPStrict {
+		t.Fatalf("rollback to a pre-prod-ro backup loosened the MCP: %+v", m)
 	}
 }

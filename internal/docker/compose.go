@@ -43,9 +43,9 @@ type ComposeData struct {
 	MCPImage string
 
 	// ProdRONetwork is the overlay to the prod read-only replica, for --db
-	// prod-ro. Such an app sees patient data: it must be behind forward auth
-	// and gets no MCP, of production or of its own database (vd-db, with
-	// --db postgres,prod-ro).
+	// prod-ro. Such an app sees patient data: it must be behind forward auth.
+	// Only the app service joins it; an MCP (of the app's own database, with
+	// --db postgres,prod-ro) does not.
 	ProdRONetwork string
 
 	// Forward auth via the Authentik embedded outpost. IngressSecret is hex, so
@@ -61,10 +61,11 @@ func GenerateComposeFile(tmplFS fs.FS, data ComposeData, destPath string) error 
 	// middleware label collides with the strip-prefix one. Failing at the lowest
 	// layer keeps a future caller from publishing an app it believes is protected.
 	// Repeated from deploy on purpose, like the checks below: a later caller
-	// must not be able to render a public or MCP-exposed production reader —
-	// not even an MCP of its own database, where it may copy what it reads.
-	if data.ProdRONetwork != "" && (!data.Auth || data.NeedsMCP) {
-		return fmt.Errorf("prod-ro needs forward auth and no MCP")
+	// must not be able to render a public production reader, or an MCP of
+	// anything but the app's own database. The MCP service never joins the
+	// replica network (the template has no way to).
+	if data.ProdRONetwork != "" && (!data.Auth || data.NeedsMCP && !data.NeedsDB) {
+		return fmt.Errorf("prod-ro needs forward auth, and an MCP only of the app's own database")
 	}
 	if data.Auth && (data.Routing != "subdomain" || data.IngressSecret == "") {
 		return fmt.Errorf("forward auth needs subdomain routing and an ingress secret")

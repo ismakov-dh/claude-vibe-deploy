@@ -144,7 +144,9 @@ var destroyCmd = &cobra.Command{
 				// The MCP's companion role holds no objects, so DROP DATABASE
 				// succeeds with it still present — but redeploying the same app name
 				// would then inherit a stale role and its old password.
-				db.DropRole(container, adminUser, db.ReadOnlyRoleName(name))
+				if err := db.DropReadOnlyRole(container, adminUser, dbName, db.ReadOnlyRoleName(name)); err != nil {
+					output.Warn("Could not drop the MCP's read-only role: %v", err)
+				}
 
 				output.Info("Dropping database %s and user %s...", dbName, user)
 				if err := db.DropPostgresDB(container, adminUser, dbName, user); err != nil {

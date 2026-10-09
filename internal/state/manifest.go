@@ -49,6 +49,22 @@ type Manifest struct {
 	// issuer fails validation for every app. (Old manifests also carry
 	// "mcp_oauth"; every MCP is behind sign-in now, so it is no longer read.)
 	MCPOAuthLive bool `json:"mcp_oauth_live,omitempty"`
+	// MCPStrict: signing in to the MCP also needs the app's login group. Set by
+	// the first deploy that reads production and kept from then on — the
+	// database may hold what the app copied from there. Only vd mcp-oauth
+	// --drop-strict, an admin's call, clears it.
+	MCPStrict bool `json:"mcp_strict,omitempty"`
+}
+
+// MCPAppGroup is the login group a strict MCP also requires, "" otherwise.
+func (m *Manifest) MCPAppGroup() string {
+	if !m.MCPStrict {
+		return ""
+	}
+	if m.AuthGroup != "" {
+		return m.AuthGroup
+	}
+	return "vibe-" + m.Name
 }
 
 // ReadsProd reports whether the app reads the production replica: alone

@@ -131,8 +131,14 @@ func SetRolePassword(container, adminUser, role, password string) error {
 		fmt.Sprintf("ALTER ROLE %s WITH LOGIN PASSWORD '%s'", role, password))
 }
 
-// DropRole removes a role, ignoring absence.
-func DropRole(container, adminUser, role string) error {
+// DropReadOnlyRole removes the MCP's companion role, ignoring absence. Its
+// grants (CONNECT, USAGE, SELECT, default privileges) make a bare DROP ROLE
+// fail, so they go first with DROP OWNED in the app's database.
+func DropReadOnlyRole(container, adminUser, dbName, role string) error {
+	if err := execSQLDB(container, adminUser, dbName, fmt.Sprintf(
+		"DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '%s') THEN EXECUTE 'DROP OWNED BY %s'; END IF; END $$", role, role)); err != nil {
+		return err
+	}
 	return execSQL(container, adminUser, fmt.Sprintf("DROP ROLE IF EXISTS %s", role))
 }
 

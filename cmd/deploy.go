@@ -295,10 +295,10 @@ func runDeploy(srcPath string) {
 			}
 			hasEnvFile = true
 
-			// Read-only MCP, for vd-managed databases only — and not beside the
-			// replica: what the app copies from production into its own database
-			// would be readable by the MCP's group, outside the app's login.
-			if deployDB == "postgres" && !deployProdRO && cfg.Domain != "" {
+			// Read-only MCP, for vd-managed databases only. Production stays
+			// reachable solely by deploying a dashboard with --db prod-ro; beside
+			// it, the own database's MCP is strict (below).
+			if deployDB == "postgres" && cfg.Domain != "" {
 				roRole := db.ReadOnlyRoleName(deployName)
 				ro, err := db.ProvisionReadOnlyCompanion(container, adminUser, connectHost, ownerRole, roRole, dbNameToUse)
 				if err != nil {
@@ -323,8 +323,25 @@ func runDeploy(srcPath string) {
 	if deployMCPOwner != "" && !needsMCP {
 		output.Warn("--mcp-owner ignored: the app has no database MCP (deploy with --db postgres)")
 	}
+	// Strict from the first deploy that reads production on: whatever the app
+	// copied from there may stay in its database. Signing in to the MCP then
+	// needs the app's login group too.
+	mcpStrict := mcpStrictFor(deployProdRO, prevM0)
+	if needsMCP && mcpStrict && auth == nil {
+		// Unreachable (prod-ro requires --auth, and --auth is sticky): no group
+		// to require means no MCP.
+		output.Warn("The database MCP needs the app's login group, and the app has none — deploying without MCP")
+		needsMCP = false
+	}
 	if needsMCP {
-		mcpRes = ensureMCPOAuth(deployName, cfg, deployMCPOwner)
+		appGroup := ""
+		if mcpStrict {
+			appGroup = auth.group
+		}
+		mcpRes = ensureMCPOAuth(deployName, cfg, deployMCPOwner, appGroup)
+	}
+	if needsMCP && mcpStrict {
+		output.Warn("This app reads, or once read, patient data, and its database MCP shows the whole database — whatever was copied there from production included. Signing in to it needs both mcp-vibe-%s and the app's group %s; grant it only to people who may see patient data", deployName, auth.group)
 	}
 
 	if auth != nil {
@@ -372,7 +389,7 @@ func runDeploy(srcPath string) {
 	composeData := composeDataFor(&state.Manifest{
 		Name: deployName, AppType: string(appType), Port: deployPort, Routing: deployRouting,
 		HasEnvFile: hasEnvFile, DB: deployDB, MCP: needsMCP, Auth: auth != nil,
-		MCPOAuthLive: mcpRes != nil, ProdRONetwork: prodRONet,
+		MCPOAuthLive: mcpRes != nil, ProdRONetwork: prodRONet, MCPStrict: mcpStrict,
 	}, cfg, ingressSecret)
 	if err := docker.GenerateComposeFile(templatesFS, composeData, state.AppComposePath(deployName)); err != nil {
 		output.Fail("deploy", output.NewError("COMPOSE_FAILED",
@@ -408,7 +425,7 @@ func runDeploy(srcPath string) {
 		// Rollback if this was a redeploy
 		// Same gate as vd rollback, against what this deploy asked for: a
 		// failed deploy that leaves prod-ro must not come back on prod.
-		cur := &state.Manifest{Name: deployName, DB: deployDB, ProdRONetwork: prodRONet, Auth: auth != nil}
+		cur := &state.Manifest{Name: deployName, DB: deployDB, ProdRONetwork: prodRONet, Auth: auth != nil, MCPStrict: mcpStrict}
 		if auth != nil {
 			cur.AuthTTL = auth.ttl
 		}
@@ -422,7 +439,7 @@ func runDeploy(srcPath string) {
 		} else if isRedeploy {
 			output.Warn("Rolling back to previous version...")
 			docker.ComposeDown(appDir, "docker-compose.vd.yml")
-			if _, err := backup.Restore(deployName, dropBasicMCP); err != nil {
+			if _, err := backup.Restore(deployName, keepStrict(cur)); err != nil {
 				output.Warn("Rollback failed, the app is down: %v", err)
 			}
 			// The restored manifest decides whether the MCP has a route.
@@ -434,21 +451,6 @@ func runDeploy(srcPath string) {
 		output.Fail("deploy", e)
 	}
 	output.Info("Container is healthy")
-
-	// Gaining the replica takes the MCP away, once this deploy is up — a failed
-	// one rolls back to the MCP as it was. The container is gone already (the
-	// compose file has no MCP, down removes orphans); its Authentik resource,
-	// its group, its read-only role and its env file go now.
-	if deployProdRO && prevM0 != nil && prevM0.MCP {
-		output.Info("This app now reads the production replica: removing its database MCP")
-		if r := removeMCPOAuth(deployName, cfg); r != "removed" && prevM0.MCPOAuthLive {
-			output.Warn("MCP sign-in cleanup %s — a platform admin should remove the application, provider and group mcp-vibe-%s by hand", r, deployName)
-		}
-		if err := db.DropRole("vd-postgres", "vd_admin", db.ReadOnlyRoleName(deployName)); err != nil {
-			output.Warn("Could not drop the MCP's read-only role: %v", err)
-		}
-		os.Remove(state.AppMCPEnvPath(deployName))
-	}
 
 	// Save manifest
 	deployCount := 1
@@ -479,6 +481,7 @@ func runDeploy(srcPath string) {
 	// MCP stays set even if Authentik failed this time, so the next deploy
 	// retries; the container and route follow only what exists (res != nil).
 	manifest.MCPOAuthLive = mcpRes != nil
+	manifest.MCPStrict = mcpStrict
 	if deployMCPOwner != "" {
 		manifest.MCPOwner = deployMCPOwner
 	} else if prevM != nil {
@@ -829,6 +832,12 @@ func deployMCPBlock(app string, cfg *state.Config, owner string, res *authentik.
 	return mcpOAuthInfo(app, cfg, owner, res)
 }
 
+// mcpStrictFor: an MCP turns strict with the first deploy that reads
+// production and stays so — leaving prod-ro does not empty the database.
+func mcpStrictFor(prodRO bool, prev *state.Manifest) bool {
+	return prodRO || (prev != nil && prev.MCPStrict)
+}
+
 // replicaHost is the host of the stored prod-ro DSN, lowercased; "" if none.
 func replicaHost() string {
 	dsn, err := state.LoadProdROURL()
@@ -847,6 +856,11 @@ func replicaHost() string {
 // replica's host: a container on both networks could resolve the host to the
 // impostor and hand it the shared prod role's password.
 func shadowsReplica(app, host string) bool {
+	// Docker's DNS also answers "<name>." and "<name>.<network>".
+	host = strings.TrimSuffix(host, ".")
+	if i := strings.IndexByte(host, '.'); i > 0 {
+		host = host[:i]
+	}
 	if host == "" {
 		return false
 	}

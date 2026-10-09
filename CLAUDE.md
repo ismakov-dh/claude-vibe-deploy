@@ -28,9 +28,9 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Path routing** | `--routing path` | App at `<apps-domain>/<name>` |
 | **TLS/HTTPS** | Automatic | Host nginx has wildcard cert. All apps are HTTPS. No config needed. |
 | **Own PostgreSQL database** | `--db postgres` | Auto-provisioned on deploy. `DATABASE_URL` injected into `.env`. Fresh DB per app. |
-| **Read-only MCP for the app's own DB** | automatic with `--db postgres` (not with prod-ro) | Per-app postgres-mcp at `<name>.mcp.<apps-domain>/mcp`, SELECT-only on the whole DB, behind platform sign-in (group `mcp-vibe-<name>`, granted with `vd access <name> add <email> --mcp`). The `mcp` field carries a ready-made `claude mcp add --transport http …` — no password. Not provisioned for `prod-ro`. |
+| **Read-only MCP for the app's own DB** | automatic with `--db postgres` | Per-app postgres-mcp at `<name>.mcp.<apps-domain>/mcp`, SELECT-only on the whole DB, behind platform sign-in (group `mcp-vibe-<name>`, granted with `vd access <name> add <email> --mcp`). The `mcp` field carries a ready-made `claude mcp add --transport http …` — no password. Not provisioned for `prod-ro`. |
 | **Prod DB read-only access** | `--db prod-ro --auth` | Production read-only replica over a dedicated overlay, shared SELECT-only role. **Includes patient data** — agents ask the user first. `--auth` required, sign-in ≤ `hours=1`, no MCP. |
-| **Own DB + prod read-only** | `--db postgres,prod-ro --auth` | Both at once: `DATABASE_URL` is the app's own database, `PROD_RO_DATABASE_URL` the replica. Every prod-ro rule holds, and there is no MCP, not even of the own database (adding prod-ro to an app removes its MCP and group). |
+| **Own DB + prod read-only** | `--db postgres,prod-ro --auth` | Both at once: `DATABASE_URL` is the app's own database, `PROD_RO_DATABASE_URL` the replica. Every prod-ro rule holds. The own database's MCP is strict: signing in needs both `mcp-vibe-<name>` and `vibe-<name>`, for good (leaving prod-ro does not loosen it). |
 | **Environment variables** | `--env-file` or auto-injected | Pass secrets, API keys, config. `DATABASE_URL` is auto-injected when using `--db`. |
 | **Cron jobs** | `vd cron-set` | Scheduled commands that run inside the app container. |
 | **Health checks** | Automatic | Traefik + Docker check `GET http://127.0.0.1:<port>/` every 30s. |
@@ -358,7 +358,13 @@ scripts/
 
 ### MCP sign-in (platform admins only)
 
-Every app's database MCP has one way in: vd-mcpgw, behind platform sign-in. There is no Basic
+Every app's database MCP has one way in: vd-mcpgw, behind platform sign-in. An app that reads, or
+once read, production has a **strict** MCP (`mcp_strict` in the manifest, set by the first deploy
+with prod-ro, kept by deploy and rollback): its Authentik application has `policy_engine_mode: all`
+and a second group binding, `vibe-<app>`. Authentik checks it when a token is issued from a
+sign-in, **not on refresh** (2026.8.2: the refresh grant runs no policy), so removing someone from
+`vibe-<app>` alone takes effect at their next sign-in; removing them from `mcp-vibe-<app>` takes
+effect within 5 minutes, as for every MCP (the gateway reads the groups in each token). There is no Basic
 route (removed in 2026-10; the `VD_MCP_USER`/`VD_MCP_PASSWORD` lines left in old `mcp.env` files
 are read by nothing and disappear on the next deploy). Fail closed: when the MCP's Authentik
 resource cannot be set up, the MCP container is not started at all, and `vd status` reports
@@ -376,6 +382,7 @@ its new labels. The app container is not rebuilt or restarted.
 |------|---------|-------------|
 | `--owner` | none | Email added to `mcp-vibe-<app>` |
 | `--check` | false | Change nothing: report whether vd can re-render the app's compose file faithfully (`faithful`, `mcp_lines_differ`, `other_lines_differ`) |
+| `--drop-strict` (hidden) | false | Stop requiring the app's group `vibe-<app>` for its MCP. Refused while the app reads production; warns that the database may still hold copied patient data. The only way to clear `mcp_strict` |
 
 Refuses with `COMPOSE_DRIFT` before any change if lines outside the MCP service differ from what vd renders from the manifest (redeploy once, then retry). Holds the app lock, which `vd deploy` takes too.
 

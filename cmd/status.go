@@ -176,7 +176,7 @@ func mcpOAuthStatus(m *state.Manifest, cfg *state.Config) map[string]any {
 		info["error"] = "Authentik is not configured on this server"
 		return info
 	}
-	h, err := authentik.New(cfg.AuthentikURL, token).CheckMCP(m.Name)
+	h, err := authentik.New(cfg.AuthentikURL, token).CheckMCP(m.Name, m.MCPAppGroup())
 	if err != nil {
 		info["state"] = "unknown"
 		info["error"] = err.Error()

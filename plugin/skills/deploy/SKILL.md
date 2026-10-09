@@ -100,10 +100,11 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing
 > - `--db-name` is ignored for the replica: the platform's DSN fixes it.
 > - **`--db postgres,prod-ro`** gives the app its own database as well: `DATABASE_URL` is the own
 >   one (read/write), `PROD_RO_DATABASE_URL` the replica. Every rule above holds — same
->   confirmation, `--auth`, `hours=1` — and the app gets **no MCP, not even of its own
->   database**: what it copies there from production must stay behind the app's login. Adding
->   prod-ro to an app that had an MCP removes the MCP and its group `mcp-vibe-<app>` on that
->   deploy.
+>   confirmation, `--auth`, `hours=1`. Its own database gets an MCP, and it is **strict**:
+>   signing in to it needs membership in both `mcp-vibe-<app>` and the app's group `vibe-<app>`.
+>   It shows the whole own database, including whatever the app copied from production — grant
+>   `--mcp` only to people who may see patient data. Strict is for good: leaving prod-ro or a
+>   rollback does not loosen it, because the copied data stays in the database.
 > - **An app never reads a database through an MCP** — its code uses `DATABASE_URL` /
 >   `PROD_RO_DATABASE_URL`. MCPs are for people and agents, not for apps.
 > - All prod-ro apps share **one** database role and one network. They can reach each other on
@@ -174,9 +175,9 @@ Notes worth knowing:
 
 - **SELECT only, whole database.** The MCP connects as a separate read-only role and runs in
   restricted mode. You cannot use it to fix data, only to look — and it looks at all of it.
-- **An app that reads production gets no MCP** — `--db prod-ro` or `--db postgres,prod-ro`, not
-  even of its own database. Production stays reachable only through the deployed dashboard.
-  Do not try to work around this.
+- **Production never gets an MCP.** With `--db postgres,prod-ro` the MCP is of the app's own
+  database, strict (both groups). Production stays reachable only through the deployed
+  dashboard. Do not try to work around this.
 - If `health` is not `healthy`, the endpoint will hang rather than answer. Check
   `vd logs-snapshot` and redeploy.
 

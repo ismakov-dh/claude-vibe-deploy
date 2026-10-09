@@ -41,6 +41,11 @@ type MCPSpec struct {
 	App      string
 	Resource string // https://<app>.mcp.<domain>/mcp
 	Owner    string // optional email; added to the group
+	// AppGroup, when set, makes the MCP strict: signing in to it needs
+	// membership in the app's own login group too (vibe-<app>). For apps whose
+	// database may hold what they copied from production. Authentik checks it
+	// when it issues a token from a sign-in, not on refresh.
+	AppGroup string
 }
 
 // MCPResult reports what EnsureMCP did.
@@ -117,7 +122,7 @@ func (c *Client) EnsureMCP(s MCPSpec) (*MCPResult, error) {
 	if err != nil {
 		return nil, err
 	}
-	mappings, err := c.mcpScopeMappings()
+	openid, offline, mcpMap, err := c.mcpScopeMappings()
 	if err != nil {
 		return nil, err
 	}
@@ -125,11 +130,20 @@ func (c *Client) EnsureMCP(s MCPSpec) (*MCPResult, error) {
 	if err != nil {
 		return nil, err
 	}
+	appGroupPK := ""
+	if s.AppGroup != "" {
+		if appGroupPK, _, err = c.findGroup(s.AppGroup); err != nil {
+			return nil, err
+		}
+		if appGroupPK == "" {
+			return nil, fmt.Errorf("group %s not found: a strict MCP needs the app's login group", s.AppGroup)
+		}
+	}
 
 	want := oauth2Provider{
 		Name: name, ClientType: "public", ClientID: name,
 		AuthorizationFlow: authz, InvalidationFlow: inval, SigningKey: key,
-		PropertyMappings: mappings, RedirectURIs: mcpRedirects,
+		PropertyMappings: []string{openid, offline, mcpMap}, RedirectURIs: mcpRedirects,
 		SubMode: "user_uuid", IncludeClaimsInToken: true, IssuerMode: "per_provider",
 		AccessTokenValidity: mcpTokenValidity, AccessCodeValidity: "minutes=1",
 		RefreshTokenValidity: "hours=12",
@@ -145,6 +159,20 @@ func (c *Client) EnsureMCP(s MCPSpec) (*MCPResult, error) {
 	// signed-in account, and that state must not exist even between two calls.
 	app, created, err := c.ensureBareApplication(name)
 	if err != nil {
+		return nil, err
+	}
+	// Strict: "all" before the second binding, or for a moment either group
+	// would do. Not strict: the second binding goes before "any" comes back.
+	if s.AppGroup != "" {
+		if err := c.setPolicyEngineMode(name, "all"); err != nil {
+			return nil, err
+		}
+		if err := c.ensureBinding(app.PK, appGroupPK); err != nil {
+			return nil, fmt.Errorf("bind %s to %s: %w", name, s.AppGroup, err)
+		}
+	} else if err := c.dropOtherBindings(app.PK, groupPK); err != nil {
+		return nil, err
+	} else if err := c.setPolicyEngineMode(name, "any"); err != nil {
 		return nil, err
 	}
 	if err := c.ensureBinding(app.PK, groupPK); err != nil {
@@ -263,12 +291,18 @@ type MCPHealth struct {
 	Provider    bool `json:"provider"`
 	Application bool `json:"application"`
 	Binding     bool `json:"binding"`
+	// AppGroup is set for a strict MCP: true when the application needs
+	// every binding ("all") and one of them guards the app's login group.
+	AppGroup *bool `json:"app_group,omitempty"`
 }
 
-func (h *MCPHealth) OK() bool { return h.Group && h.Provider && h.Application && h.Binding }
+func (h *MCPHealth) OK() bool {
+	return h.Group && h.Provider && h.Application && h.Binding && (h.AppGroup == nil || *h.AppGroup)
+}
 
-// CheckMCP reads, never writes.
-func (c *Client) CheckMCP(app string) (*MCPHealth, error) {
+// CheckMCP reads, never writes. appGroup is the login group a strict MCP
+// also requires, "" for an ordinary one.
+func (c *Client) CheckMCP(app, appGroup string) (*MCPHealth, error) {
 	name, err := MCPName(app)
 	if err != nil {
 		return nil, err
@@ -300,6 +334,23 @@ func (c *Client) CheckMCP(app string) (*MCPHealth, error) {
 				h.Binding = true
 			}
 		}
+		if appGroup != "" {
+			appGroupPK, _, err := c.findGroup(appGroup)
+			if err != nil {
+				return nil, err
+			}
+			ok := a.PolicyEngineMode == "all" && appGroupPK != ""
+			guarded := false
+			for _, b := range bs {
+				guarded = guarded || b.guards(appGroupPK)
+			}
+			ok = ok && guarded
+			h.AppGroup = &ok
+		}
+	}
+	if appGroup != "" && h.AppGroup == nil {
+		f := false
+		h.AppGroup = &f
 	}
 	return h, nil
 }
@@ -419,11 +470,10 @@ func (c *Client) keypairPK(name string) (string, error) {
 	return found, nil
 }
 
-// mcpScopeMappings returns the managed openid and offline_access mappings plus
+// mcpScopeMappings returns the managed openid and offline_access mappings and
 // stacks' mcp-groups mapping, which vd references and never creates.
-func (c *Client) mcpScopeMappings() ([]string, error) {
-	var openid, offline, mcp string
-	err := c.each("/propertymappings/provider/scope/", nil, func(raw json.RawMessage) {
+func (c *Client) mcpScopeMappings() (openid, offline, mcp string, err error) {
+	err = c.each("/propertymappings/provider/scope/", nil, func(raw json.RawMessage) {
 		var m struct {
 			PK        string `json:"pk"`
 			Name      string `json:"name"`
@@ -443,16 +493,49 @@ func (c *Client) mcpScopeMappings() ([]string, error) {
 		}
 	})
 	if err != nil {
-		return nil, err
+		return "", "", "", err
 	}
 	if openid == "" || offline == "" {
-		return nil, fmt.Errorf("managed openid/offline_access scope mappings not found")
+		return "", "", "", fmt.Errorf("managed openid/offline_access scope mappings not found")
 	}
 	if mcp == "" {
-		return nil, fmt.Errorf("scope mapping %q (scope %q) not found — it is created by the platform admins, not vd",
+		return "", "", "", fmt.Errorf("scope mapping %q (scope %q) not found — it is created by the platform admins, not vd",
 			mcpScopeMapping, mcpScopeName)
 	}
-	return []string{openid, offline, mcp}, nil
+	return openid, offline, mcp, nil
+}
+
+// setPolicyEngineMode sets whether one ("any") or every ("all") binding of the
+// application must pass, and reads it back.
+func (c *Client) setPolicyEngineMode(slug, mode string) error {
+	if _, err := c.do("PATCH", "/core/applications/"+slug+"/", map[string]any{"policy_engine_mode": mode}, nil); err != nil {
+		return fmt.Errorf("set policy_engine_mode=%s on %s: %w", mode, slug, err)
+	}
+	var back application
+	if _, err := c.do("GET", "/core/applications/"+slug+"/", nil, &back); err != nil {
+		return err
+	}
+	if back.PolicyEngineMode != mode {
+		return fmt.Errorf("application %s has policy_engine_mode=%q after write, want %q", slug, back.PolicyEngineMode, mode)
+	}
+	return nil
+}
+
+// dropOtherBindings removes the application's group bindings other than
+// keepGroup's: under "any", each of them would be a way in on its own.
+func (c *Client) dropOtherBindings(appPK, keepGroup string) error {
+	bs, err := c.bindingsFor(appPK)
+	if err != nil {
+		return err
+	}
+	for _, b := range bs {
+		if b.Group != "" && b.Group != keepGroup {
+			if _, err := c.do("DELETE", "/policies/bindings/"+b.PK+"/", nil, nil); err != nil {
+				return fmt.Errorf("remove binding %s: %w", b.PK, err)
+			}
+		}
+	}
+	return nil
 }
 
 // userPKByEmail finds exactly one account by exact email and returns only its

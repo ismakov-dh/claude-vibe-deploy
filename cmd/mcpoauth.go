@@ -91,7 +91,7 @@ func mcpOAuthInfo(app string, cfg *state.Config, owner string, res *authentik.MC
 // ensureMCPOAuth provisions the app's MCP resource in Authentik. Failure leaves
 // the MCP unavailable to agents — still protected — and says so; it never publishes a
 // gateway route for a resource that does not exist.
-func ensureMCPOAuth(app string, cfg *state.Config, owner string) *authentik.MCPResult {
+func ensureMCPOAuth(app string, cfg *state.Config, owner, appGroup string) *authentik.MCPResult {
 	if err := cfg.AuthentikReady(); err != nil {
 		output.Warn("The database MCP is unavailable: platform login is not set up on this server (%v)", err)
 		return nil
@@ -103,7 +103,7 @@ func ensureMCPOAuth(app string, cfg *state.Config, owner string) *authentik.MCPR
 		return nil
 	}
 	res, err := authentik.New(cfg.AuthentikURL, token).EnsureMCP(authentik.MCPSpec{
-		App: app, Resource: "https://" + mcpHost(app, cfg) + "/mcp", Owner: owner,
+		App: app, Resource: "https://" + mcpHost(app, cfg) + "/mcp", Owner: owner, AppGroup: appGroup,
 	})
 	unlock()
 	if err == nil && res.OwnerError != "" {

@@ -102,7 +102,7 @@ var rollbackCmd = &cobra.Command{
 		}
 
 		output.Info("Rolling back %s...", name)
-		meta, err := backup.Restore(name, dropBasicMCP)
+		meta, err := backup.Restore(name, keepStrict(cur))
 		if err != nil {
 			output.Fail("rollback", output.NewError("ROLLBACK_FAILED", err.Error(), "Check backup integrity with: vd backups "+name))
 		}
@@ -214,7 +214,7 @@ func dropBasicMCP(meta *backup.Metadata) error {
 	}
 	m := meta.Manifest
 	// No owner: the backup's may since have been removed with vd access.
-	m.MCPOAuthLive = m.MCP && ensureMCPOAuth(name, cfg, "") != nil
+	m.MCPOAuthLive = m.MCP && ensureMCPOAuth(name, cfg, "", m.MCPAppGroup()) != nil
 	ingress := ""
 	if m.Auth {
 		if ingress = envValue(state.AppEnvPath(name), ingressEnvKey); ingress == "" {
@@ -232,4 +232,19 @@ func dropBasicMCP(meta *backup.Metadata) error {
 // MCP's Basic route.
 func hasBasicMCP(compose []byte) bool {
 	return bytes.Contains(compose, []byte("mcp-basic")) || bytes.Contains(compose, []byte("basicauth.users"))
+}
+
+// keepStrict is Restore's hook for an app that is now cur: a backup from
+// before its MCP turned strict does not loosen it (the database may hold what
+// the app copied from production), then dropBasicMCP.
+func keepStrict(cur *state.Manifest) func(*backup.Metadata) error {
+	return func(meta *backup.Metadata) error {
+		if cur != nil && cur.MCPStrict && meta.Manifest != nil && !meta.Manifest.MCPStrict {
+			meta.Manifest.MCPStrict = true
+			if err := state.SaveManifest(meta.Manifest); err != nil {
+				return err
+			}
+		}
+		return dropBasicMCP(meta)
+	}
 }

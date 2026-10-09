@@ -154,6 +154,8 @@ type application struct {
 	// LaunchURL is what the Authentik portal's tile opens, and what
 	// application.get_launch_url() returns — the post-logout redirect reads it.
 	LaunchURL string `json:"meta_launch_url"`
+	// PolicyEngineMode: "any" (one binding passes) or "all".
+	PolicyEngineMode string `json:"policy_engine_mode,omitempty"`
 }
 
 type binding struct {

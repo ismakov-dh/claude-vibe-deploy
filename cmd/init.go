@@ -323,6 +323,11 @@ func validProdROURL(s string) bool {
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" || u.User == nil {
 		return false
 	}
+	// One host, in the URL: libpq reads "a,b" as several and ?host= overrides
+	// it, and vd checks the host against app names (shadowsReplica).
+	if strings.Contains(u.Host, ",") || u.Query().Has("host") || u.Query().Has("hostaddr") {
+		return false
+	}
 	pw, ok := u.User.Password()
 	return u.User.Username() != "" && ok && pw != "" && strings.Trim(u.Path, "/") != ""
 }
