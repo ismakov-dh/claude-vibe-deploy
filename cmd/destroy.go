@@ -98,28 +98,7 @@ var destroyCmd = &cobra.Command{
 		// Skip quietly where nothing could have been created: no platform login
 		// on this server and no route ever went live.
 		if dcfg, _ := state.LoadConfig(); m.MCP && (m.MCPOAuthLive || (dcfg != nil && dcfg.AuthentikURL != "")) {
-			mcpRemoved = "removed"
-			cfg := dcfg
-			token, terr := state.LoadAuthentikToken()
-			switch {
-			case cfg == nil || cfg.AuthentikURL == "":
-				mcpRemoved = "failed: Authentik is not configured on this server"
-			case terr != nil:
-				mcpRemoved = "failed: " + terr.Error()
-			default:
-				if unlock, lerr := state.LockAuthentik(); lerr != nil {
-					mcpRemoved = "failed: " + lerr.Error()
-				} else {
-					permsLeft, err := authentik.New(cfg.AuthentikURL, token).RemoveMCP(name)
-					if err != nil {
-						mcpRemoved = "failed: " + err.Error()
-					} else if permsLeft != nil {
-						// Everything that grants access is gone; only inert rows remain.
-						output.Warn("MCP OAuth removed; its permission rows on the deleted group were not (%v) — harmless, a platform admin can sweep them", permsLeft)
-					}
-					unlock()
-				}
-			}
+			mcpRemoved = removeMCPOAuth(name, dcfg)
 			if mcpRemoved != "removed" {
 				output.Warn("MCP OAuth cleanup %s — a platform admin should remove the application, provider and group mcp-vibe-%s by hand", mcpRemoved, name)
 			}
@@ -239,4 +218,30 @@ func manifestForDestroy(name string) (*state.Manifest, *output.VDError) {
 		m.AuthGroup = "vibe-" + name
 	}
 	return m, nil
+}
+
+// removeMCPOAuth deletes the MCP's application, provider and group
+// mcp-vibe-<app> from Authentik: "removed", or "failed: <why>".
+func removeMCPOAuth(name string, cfg *state.Config) string {
+	token, terr := state.LoadAuthentikToken()
+	switch {
+	case cfg == nil || cfg.AuthentikURL == "":
+		return "failed: Authentik is not configured on this server"
+	case terr != nil:
+		return "failed: " + terr.Error()
+	}
+	unlock, err := state.LockAuthentik()
+	if err != nil {
+		return "failed: " + err.Error()
+	}
+	defer unlock()
+	permsLeft, err := authentik.New(cfg.AuthentikURL, token).RemoveMCP(name)
+	if err != nil {
+		return "failed: " + err.Error()
+	}
+	if permsLeft != nil {
+		// Everything that grants access is gone; only inert rows remain.
+		output.Warn("MCP OAuth removed; its permission rows on the deleted group were not (%v) — harmless, a platform admin can sweep them", permsLeft)
+	}
+	return "removed"
 }

@@ -43,7 +43,7 @@ For each issue found, explain what needs to change and why. Then propose a plan 
 - Read-only access to existing production databases for dashboards.
 - SELECT-only permissions. Never assume write access.
 - Use `DATABASE_URL` — it points to the prod DB.
-- **Both at once** — the app's own database plus the prod replica: `--db postgres,prod-ro`. Then `DATABASE_URL` is the app's own database (read/write) and `PROD_RO_DATABASE_URL` the prod replica (read-only). All prod-ro rules still apply.
+- **Both at once** — the app's own database plus the prod replica: `--db postgres,prod-ro`. Then `DATABASE_URL` is the app's own database (read/write) and `PROD_RO_DATABASE_URL` the prod replica (read-only). All prod-ro rules still apply, and such an app has no MCP at all — not even of its own database.
 - **The app never talks to a database through an MCP** — not its own, not prod. MCP is for people and agents looking at data; the app's code connects with `DATABASE_URL` / `PROD_RO_DATABASE_URL` only.
 
 ### Environment Variables
@@ -131,7 +131,7 @@ public/
 ```
 Deploy with `--db prod-ro --auth` (the platform's DSN picks the database). If the dashboard also stores its own data (settings, saved views, notes), deploy with `--db postgres,prod-ro --auth`: its own database is `DATABASE_URL`, the prod replica `PROD_RO_DATABASE_URL`.
 
-**It sees patient data.** The read-only role reads every table, `studies` and `reports` included (unhashed patient id, report text, findings). Ask the user to confirm before building on it; show aggregates rather than rows; never copy patient fields into the app's own database (with `--db postgres,prod-ro` everyone in the MCP group `mcp-vibe-<name>` can read that database), logs or error messages. `/deploy` has the full rule.
+**It sees patient data.** The read-only role reads every table, `studies` and `reports` included (unhashed patient id, report text, findings). Ask the user to confirm before building on it; show aggregates rather than rows; never copy patient fields into logs or error messages, and into the app's own database (`--db postgres,prod-ro`) only what the app itself needs to show. `/deploy` has the full rule.
 
 **A `--db prod-ro` app reads production data and must not ship without login.** Load `/auth` and deploy it with `--auth` (sign-in at most `hours=1` — vd refuses longer) — membership in `vibe-<name>` is the access control, and "it's just an internal dashboard" is not one.
 

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -91,6 +92,11 @@ func runDeploy(srcPath string) {
 		output.Fail("deploy", output.NewError("INVALID_NAME",
 			"Invalid app name: "+deployName,
 			"Must be lowercase, start with a letter, 2-63 chars, only a-z/0-9/hyphens"))
+	}
+	if shadowsReplica(deployName, replicaHost()) {
+		output.Fail("deploy", output.NewError("INVALID_NAME",
+			"The name "+deployName+" would answer, on vd's networks, for the production replica's host",
+			"Choose another name"))
 	}
 	var dbOK bool
 	if deployDB, deployProdRO, dbOK = parseDB(deployDB); !dbOK {
@@ -289,9 +295,10 @@ func runDeploy(srcPath string) {
 			}
 			hasEnvFile = true
 
-			// Read-only MCP, for vd-managed databases only. Production stays
-			// reachable solely by deploying a dashboard with --db prod-ro.
-			if deployDB == "postgres" && cfg.Domain != "" {
+			// Read-only MCP, for vd-managed databases only — and not beside the
+			// replica: what the app copies from production into its own database
+			// would be readable by the MCP's group, outside the app's login.
+			if deployDB == "postgres" && !deployProdRO && cfg.Domain != "" {
 				roRole := db.ReadOnlyRoleName(deployName)
 				ro, err := db.ProvisionReadOnlyCompanion(container, adminUser, connectHost, ownerRole, roRole, dbNameToUse)
 				if err != nil {
@@ -318,9 +325,6 @@ func runDeploy(srcPath string) {
 	}
 	if needsMCP {
 		mcpRes = ensureMCPOAuth(deployName, cfg, deployMCPOwner)
-	}
-	if needsMCP && deployProdRO {
-		output.Warn("This app reads patient data and its own database has an MCP: whatever it copies from production into its own database, everyone in mcp-vibe-%s can read", deployName)
 	}
 
 	if auth != nil {
@@ -430,6 +434,21 @@ func runDeploy(srcPath string) {
 		output.Fail("deploy", e)
 	}
 	output.Info("Container is healthy")
+
+	// Gaining the replica takes the MCP away, once this deploy is up — a failed
+	// one rolls back to the MCP as it was. The container is gone already (the
+	// compose file has no MCP, down removes orphans); its Authentik resource,
+	// its group, its read-only role and its env file go now.
+	if deployProdRO && prevM0 != nil && prevM0.MCP {
+		output.Info("This app now reads the production replica: removing its database MCP")
+		if r := removeMCPOAuth(deployName, cfg); r != "removed" && prevM0.MCPOAuthLive {
+			output.Warn("MCP sign-in cleanup %s — a platform admin should remove the application, provider and group mcp-vibe-%s by hand", r, deployName)
+		}
+		if err := db.DropRole("vd-postgres", "vd_admin", db.ReadOnlyRoleName(deployName)); err != nil {
+			output.Warn("Could not drop the MCP's read-only role: %v", err)
+		}
+		os.Remove(state.AppMCPEnvPath(deployName))
+	}
 
 	// Save manifest
 	deployCount := 1
@@ -808,6 +827,35 @@ func deployMCPBlock(app string, cfg *state.Config, owner string, res *authentik.
 		return map[string]any{"available": false, "hint": "see warnings — the MCP could not be put behind platform sign-in"}
 	}
 	return mcpOAuthInfo(app, cfg, owner, res)
+}
+
+// replicaHost is the host of the stored prod-ro DSN, lowercased; "" if none.
+func replicaHost() string {
+	dsn, err := state.LoadProdROURL()
+	if err != nil {
+		return ""
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// shadowsReplica reports whether one of the DNS names compose gives the app on
+// vd-net and vd-db — its service and container names, and its MCP's — is the
+// replica's host: a container on both networks could resolve the host to the
+// impostor and hand it the shared prod role's password.
+func shadowsReplica(app, host string) bool {
+	if host == "" {
+		return false
+	}
+	for _, n := range []string{app, "vd-" + app, app + "-mcp", "vd-" + app + "-mcp"} {
+		if n == host {
+			return true
+		}
+	}
+	return false
 }
 
 // prodROEnvKey carries the replica's DSN beside the app's own DATABASE_URL:

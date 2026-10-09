@@ -191,6 +191,7 @@ func TestProdROGateRunsBeforeAnythingIsWritten(t *testing.T) {
 		{"--db postgres,prod-ro", "PROD_RO_REQUIRES_AUTH"},
 		{"--db postgres,prod-ro --auth --auth-ttl hours=2", "INVALID_AUTH_TTL"},
 		{"--db mysql", "INVALID_ARGS"},
+		{"--name db-replica", "INVALID_NAME"}, // the DSN's host
 	} {
 		home := t.TempDir()
 		if err := os.WriteFile(filepath.Join(home, "config.json"), []byte(`{"domain":"apps.example.com","prod_ro_network":"net"}`), 0644); err != nil {
@@ -216,5 +217,39 @@ func TestProdROGateRunsBeforeAnythingIsWritten(t *testing.T) {
 		if _, err := os.Stat(filepath.Join(home, "apps", "probe")); !os.IsNotExist(err) {
 			t.Fatalf("%s: app directory created before the gate", c.args)
 		}
+	}
+}
+
+// No app may answer on vd's networks for the replica's host: not by its name,
+// its container's, or its MCP's — checked at deploy and at vd init.
+func TestReplicaHostCannotBeShadowed(t *testing.T) {
+	for _, c := range []struct {
+		app, host string
+		want      bool
+	}{
+		{"db-replica", "db-replica", true},
+		{"db", "db-replica", false},
+		{"replica", "vd-replica", true},
+		{"db", "db-mcp", true},
+		{"db", "vd-db-mcp", true},
+		{"db-replica", "", false},
+		{"db-replica", "db-replica.internal", false},
+	} {
+		if got := shadowsReplica(c.app, c.host); got != c.want {
+			t.Errorf("shadowsReplica(%q, %q) = %v", c.app, c.host, got)
+		}
+	}
+	t.Setenv("VD_HOME", t.TempDir())
+	if err := os.MkdirAll(state.AppDir("db-replica"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if err := state.SaveManifest(&state.Manifest{Name: "db-replica"}); err != nil {
+		t.Fatal(err)
+	}
+	if got := appShadowing("postgres://vibe_ro:pw@DB-Replica:5432/reporting"); got != "db-replica" {
+		t.Fatalf("vd init would store a DSN whose host an app answers for (got %q)", got)
+	}
+	if got := appShadowing("postgres://vibe_ro:pw@other/reporting"); got != "" {
+		t.Fatalf("false alarm: %q", got)
 	}
 }

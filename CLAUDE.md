@@ -28,9 +28,9 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Path routing** | `--routing path` | App at `<apps-domain>/<name>` |
 | **TLS/HTTPS** | Automatic | Host nginx has wildcard cert. All apps are HTTPS. No config needed. |
 | **Own PostgreSQL database** | `--db postgres` | Auto-provisioned on deploy. `DATABASE_URL` injected into `.env`. Fresh DB per app. |
-| **Read-only MCP for the app's own DB** | automatic with `--db postgres` | Per-app postgres-mcp at `<name>.mcp.<apps-domain>/mcp`, SELECT-only on the whole DB, behind platform sign-in (group `mcp-vibe-<name>`, granted with `vd access <name> add <email> --mcp`). The `mcp` field carries a ready-made `claude mcp add --transport http …` — no password. Not provisioned for `prod-ro`. |
+| **Read-only MCP for the app's own DB** | automatic with `--db postgres` (not with prod-ro) | Per-app postgres-mcp at `<name>.mcp.<apps-domain>/mcp`, SELECT-only on the whole DB, behind platform sign-in (group `mcp-vibe-<name>`, granted with `vd access <name> add <email> --mcp`). The `mcp` field carries a ready-made `claude mcp add --transport http …` — no password. Not provisioned for `prod-ro`. |
 | **Prod DB read-only access** | `--db prod-ro --auth` | Production read-only replica over a dedicated overlay, shared SELECT-only role. **Includes patient data** — agents ask the user first. `--auth` required, sign-in ≤ `hours=1`, no MCP. |
-| **Own DB + prod read-only** | `--db postgres,prod-ro --auth` | Both at once: `DATABASE_URL` is the app's own database, `PROD_RO_DATABASE_URL` the replica. Every prod-ro rule holds; the MCP is of the own database only. |
+| **Own DB + prod read-only** | `--db postgres,prod-ro --auth` | Both at once: `DATABASE_URL` is the app's own database, `PROD_RO_DATABASE_URL` the replica. Every prod-ro rule holds, and there is no MCP, not even of the own database (adding prod-ro to an app removes its MCP and group). |
 | **Environment variables** | `--env-file` or auto-injected | Pass secrets, API keys, config. `DATABASE_URL` is auto-injected when using `--db`. |
 | **Cron jobs** | `vd cron-set` | Scheduled commands that run inside the app container. |
 | **Health checks** | Automatic | Traefik + Docker check `GET http://127.0.0.1:<port>/` every 30s. |
@@ -293,7 +293,7 @@ Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, 
 
 ### Constraints Summary
 
-- **Naming**: lowercase, starts with letter, 2-63 chars, a-z/0-9/hyphens only
+- **Naming**: lowercase, starts with letter, 2-63 chars, a-z/0-9/hyphens only; not the production replica's host name (`INVALID_NAME`)
 - **Persistence**: PostgreSQL only. No filesystem persistence.
 - **Networking**: HTTP only. No raw TCP, no UDP, no inter-container networking.
 - **Resources**: No CPU/memory limits yet. Don't deploy crypto miners.

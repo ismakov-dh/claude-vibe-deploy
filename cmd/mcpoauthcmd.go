@@ -164,6 +164,9 @@ func mcpOAuthPreflight(name string) (*state.Manifest, *state.Config, string) {
 	if err != nil {
 		output.Fail("mcp-oauth", output.NewError("NOT_FOUND", "App not found: "+name, "Check app name with: vd list"))
 	}
+	if m.ReadsProd() {
+		output.Fail("mcp-oauth", output.NewError("NO_MCP", name+" reads the production replica: it gets no database MCP", ""))
+	}
 	if !m.MCP || m.DB != "postgres" {
 		output.Fail("mcp-oauth", output.NewError("NO_MCP", name+" has no database MCP", "Only --db postgres apps have one"))
 	}
