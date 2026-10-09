@@ -51,7 +51,8 @@ For each issue found, explain what needs to change and why. Then propose a plan 
 
 ### Cron Jobs
 - Scheduled commands that run inside the app container.
-- Standard cron syntax (e.g. `"0 * * * *"` = hourly, `"*/5 * * * *"` = every 5 min).
+- Standard cron syntax (e.g. `"0 * * * *"` = hourly, `"*/5 * * * *"` = every 5 min), or `@hourly`/`@daily`/….
+- One job per app, run without a shell: a script in the repo (e.g. `python jobs/refresh.py`) is simplest; `sh -c '…'` if it needs pipes or `&&`.
 - Use for periodic tasks: cleanup, reports, data sync.
 
 ### Routing

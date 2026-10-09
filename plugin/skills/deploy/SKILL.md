@@ -261,7 +261,7 @@ grants them), `INVALID_ARGS`, `ACCESS_FAILED`.
 Stop and remove app. `--drop-db` also drops the database and user. Database is automatically backed up before dropping. For `--auth` apps it also removes the app's Authentik application and provider; the access group `vibe-<app>` is kept, so redeploying under the same name restores access for the same people. For apps with a database MCP it removes the MCP's application, provider **and** group `mcp-vibe-<app>`. After a **failed first deploy** vd stops the container, but the app's files — its `.env`, with the prod DSN for `--db prod-ro` — stay for the next attempt: fix and deploy again, or run `vd destroy <app> --yes`, which works without a manifest too.
 
 ### `vd cron-set <app-name> --schedule "..." --command "..."`
-Add a scheduled task. Runs inside the container.
+Add a scheduled task (one per app; setting again replaces it). Runs inside the container. Quote the schedule and the command as in a shell — `--schedule '0 2,14 * * *' --command 'python refresh.py'`. The schedule is 5 fields or `@hourly`/`@daily`/`@weekly`/`@monthly`/`@yearly`. The command runs **without a shell**: for pipes, `&&` or env variables, write `--command "sh -c 'cd /app && python refresh.py'"`. Output goes to the app's `cron.log` on the server. A malformed command line gets `INVALID_ARGS` with the reason, never a bare exit code.
 
 ### `vd cron-rm <app-name>`
 Remove all cron jobs for an app.

@@ -230,12 +230,12 @@ Provision a database user independently (usually not needed — `vd deploy --db`
 
 #### `vd cron-set <app-name>`
 
-Schedule a recurring command inside the app container.
+Schedule a recurring command inside the app container — one per app, setting it again replaces it. The command runs without a shell (`sh -c '…'` for pipes or `&&`); the schedule is 5 fields or `@hourly`/`@daily`/….
 
 | Flag | Required | Description |
 |------|----------|-------------|
 | `--schedule` | yes | Cron expression (e.g. `"0 * * * *"` = hourly, `"*/5 * * * *"` = every 5 min) |
-| `--command` | yes | Command to run inside container (e.g. `"node jobs/cleanup.js"`) |
+| `--command` | yes | Command to run inside container (e.g. `"node jobs/cleanup.js"`), quoted as in a shell |
 
 #### `vd cron-rm <app-name>`
 
@@ -272,7 +272,7 @@ would print as `[vd warning]` in human mode. `ok: true` with a warning such as `
 failed … deploying without DB` means the app runs without that piece; agents must read and relay
 `warnings`, not just `ok`.
 
-Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `PROD_RO_REQUIRES_AUTH`, `NO_MCP`, `MCP_OAUTH_FAILED`, `COMPOSE_DRIFT`, `INVALID_ARGS`, `ACCESS_NOT_ENABLED`, `NO_ACCOUNT`, `ACCESS_FORBIDDEN`, `ACCESS_FAILED`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`
+Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `PROD_RO_REQUIRES_AUTH`, `NO_MCP`, `MCP_OAUTH_FAILED`, `COMPOSE_DRIFT`, `INVALID_ARGS`, `ACCESS_NOT_ENABLED`, `NO_ACCOUNT`, `ACCESS_FORBIDDEN`, `ACCESS_FAILED`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`, `CRON_FAILED`, `FORBIDDEN` (`vd exec` and `db-backup-all` over SSH)
 
 ### Troubleshooting
 
