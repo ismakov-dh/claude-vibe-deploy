@@ -255,7 +255,7 @@ func removeMCPOAuth(name string, cfg *state.Config) string {
 // database. A kept one would come back, under a fresh manifest, with an
 // ordinary MCP over what the app copied from production.
 func strictKeepsNoDB(m *state.Manifest, dropDB bool) *output.VDError {
-	if m.MCPStrict && m.DB == "postgres" && !dropDB {
+	if m.MCPAppGroup() != "" && m.DB == "postgres" && !dropDB {
 		return output.NewError("INVALID_ARGS",
 			m.Name+" read production data: its database may hold copies, so it is destroyed with it",
 			"Add --drop-db (a backup of the database is taken first)")

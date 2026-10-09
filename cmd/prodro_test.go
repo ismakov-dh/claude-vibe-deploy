@@ -310,14 +310,15 @@ func TestDBNameAllowed(t *testing.T) {
 		prev    *state.Manifest
 		ok      bool
 	}{
-		{"bb", "bb", nil, true},                               // its own name
-		{"bb", "aa", nil, false},                              // another app's (default name)
-		{"bb", "custom", nil, false},                          // another app's (--db-name)
-		{"bb", "orphan", nil, false},                          // exists, nobody's
-		{"bb", "fresh", nil, true},                            // new
-		{"bb", "kept", &state.Manifest{DBName: "kept"}, true}, // its previous deploy's
+		{"bb", "bb", nil, true},      // its own name
+		{"bb", "aa", nil, false},     // another app's (default name)
+		{"bb", "custom", nil, false}, // another app's (--db-name)
+		{"bb", "orphan", nil, false}, // exists, nobody's
+		{"bb", "fresh", nil, true},   // new
+		{"bb", "kept", &state.Manifest{DB: "postgres", DBName: "kept"}, true}, // its previous deploy's
 		{"bb", "Bad;name", nil, false},
-		{"cc", "custom", &state.Manifest{DBName: "custom"}, true},
+		{"bb", "aa", &state.Manifest{DB: "postgres", DBName: "aa"}, true}, // already shared before this rule
+		{"cc", "custom", &state.Manifest{DB: "postgres", DBName: "custom"}, true},
 	} {
 		if got := dbNameAllowed(c.app, c.db, c.prev, exists) == nil; got != c.ok {
 			t.Errorf("app %s db %s: allowed=%v", c.app, c.db, got)

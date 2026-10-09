@@ -87,7 +87,7 @@ var accessCmd = &cobra.Command{
 			// runs no policy on refresh — so leaving the app leaves its MCP too:
 			// the gateway then refuses the next 5-minute token.
 			mcpRemoved := false
-			if m, _ := state.LoadManifest(name); err == nil && action == "remove" && !accessMCP && m != nil && m.MCPStrict && m.MCPOAuthLive {
+			if m, _ := state.LoadManifest(name); err == nil && action == "remove" && !accessMCP && m != nil && m.MCPAppGroup() != "" && m.MCPOAuthLive {
 				mg, _ := authentik.MCPName(name)
 				if mcpRemoved, err = c.RemoveMember(mg, email); err == nil {
 					data["mcp_removed"] = mcpRemoved

@@ -111,6 +111,26 @@ func runDeploy(srcPath string) {
 	}
 	defer unlockApp()
 
+	// Before anything changes (.env, backups): which database, and whether
+	// this app may have it.
+	prevDeploy, err := state.LoadManifest(deployName)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		output.Fail("deploy", output.NewError("MANIFEST_UNREADABLE", "Cannot read the manifest of "+deployName+": "+err.Error(), ""))
+	}
+	ownDBName := ""
+	if deployDB == "postgres" {
+		if ownDBName = deployDBName; ownDBName == "" {
+			ownDBName = deployName
+		}
+		if e := dbNameAllowed(deployName, ownDBName, prevDeploy, vdDatabaseExists); e != nil {
+			output.Fail("deploy", e)
+		}
+	} else if prevDeploy != nil && prevDeploy.MCPStrict && prevDeploy.DB == "postgres" {
+		output.Fail("deploy", output.NewError("INVALID_ARGS",
+			deployName+" read production data, and its database may hold copies: it keeps its own database",
+			"Deploy with --db postgres or --db postgres,prod-ro; vd destroy --drop-db removes both"))
+	}
+
 	// Load global config
 	cfg, err := state.LoadConfig()
 	if err != nil {
@@ -278,13 +298,7 @@ func runDeploy(srcPath string) {
 		connectHost := "vd-postgres"
 		adminUser := "vd_admin"
 		access := deployDBAccess
-		dbNameToUse := deployDBName
-		if dbNameToUse == "" {
-			dbNameToUse = deployName
-		}
-		if e := dbNameAllowed(deployName, dbNameToUse, prevM0, vdDatabaseExists); e != nil {
-			output.Fail("deploy", e)
-		}
+		dbNameToUse := ownDBName
 
 		output.Info("Provisioning database (%s)...", deployDB)
 		ownerRole := db.RoleName(deployName)
@@ -470,7 +484,7 @@ func runDeploy(srcPath string) {
 		Routing:       deployRouting,
 		DB:            deployDB,
 		DBAccess:      deployDBAccess,
-		DBName:        deployDBName,
+		DBName:        ownDBName,
 		Domain:        domain,
 		ContainerName: containerName,
 		DeployCount:   deployCount,
@@ -848,16 +862,26 @@ func dbNameAllowed(app, dbName string, prev *state.Manifest, exists func(string)
 	if !dbNameRegex.MatchString(dbName) {
 		return output.NewError("INVALID_ARGS", "Invalid database name: "+dbName, "Lowercase, starts with a letter, a-z/0-9/_/-")
 	}
-	apps, _ := state.ListApps()
+	if prev != nil && prev.DB == "postgres" && (prev.DBName == dbName || prev.DBName == "" && dbName == app) {
+		return nil // what this app already has
+	}
+	apps, err := state.ListApps()
+	if err != nil {
+		return output.NewError("DB_PROVISION_FAILED", "Cannot list apps to check who holds "+dbName+": "+err.Error(), "")
+	}
 	for _, a := range apps {
 		if a == app {
 			continue
 		}
-		if m, err := state.LoadManifest(a); err == nil && m.DB == "postgres" && (m.DBName == dbName || m.DBName == "" && a == dbName) {
+		m, err := state.LoadManifest(a)
+		if err != nil {
+			return output.NewError("MANIFEST_UNREADABLE", "Cannot read the manifest of "+a+" to check who holds "+dbName, "")
+		}
+		if m.DB == "postgres" && (m.DBName == dbName || m.DBName == "" && a == dbName) {
 			return output.NewError("INVALID_ARGS", "Database "+dbName+" belongs to the app "+a, "Leave --db-name out")
 		}
 	}
-	if dbName == app || prev != nil && prev.DBName == dbName {
+	if dbName == app {
 		return nil
 	}
 	ok, err := exists(dbName)
