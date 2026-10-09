@@ -402,7 +402,20 @@ func runDeploy(srcPath string) {
 			"Check logs with: vd logs "+deployName)
 		e.Details = logs
 		// Rollback if this was a redeploy
-		if isRedeploy {
+		// Same gate as vd rollback, against what this deploy asked for: a
+		// failed deploy that leaves prod-ro must not come back on prod.
+		cur := &state.Manifest{Name: deployName, DB: deployDB, ProdRONetwork: prodRONet, Auth: auth != nil}
+		if auth != nil {
+			cur.AuthTTL = auth.ttl
+		}
+		var gate *output.VDError
+		if _, meta, err := backup.Latest(deployName); err == nil {
+			gate = rollbackProdROGate(cur, meta.Manifest)
+		}
+		if isRedeploy && gate != nil {
+			output.Warn("Not rolling back, the app is down: %s", gate.Message)
+			docker.ComposeDown(appDir, "docker-compose.vd.yml")
+		} else if isRedeploy {
 			output.Warn("Rolling back to previous version...")
 			docker.ComposeDown(appDir, "docker-compose.vd.yml")
 			if _, err := backup.Restore(deployName, dropBasicMCP); err != nil {
