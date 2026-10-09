@@ -36,6 +36,15 @@ var dbCreateCmd = &cobra.Command{
 			output.Fail("db-create", output.NewError("NOT_INITIALIZED", "Run vd init first", ""))
 		}
 
+		// A prod-ro app's .env holds the replica's DSN under DATABASE_URL; a
+		// manifest rewritten to "postgres" here would read as the replica beside
+		// an own database and keep that DSN. Deploy is the way in.
+		if m, err := state.LoadManifest(name); err == nil && m.ReadsProd() {
+			output.Fail("db-create", output.NewError("INVALID_TYPE",
+				name+" reads the production replica; give it its own database by deploying it",
+				"vd deploy <dir> --name "+name+" --db postgres,prod-ro --auth"))
+		}
+
 		var container, adminUser, connectHost, access string
 
 		switch dbType {
@@ -53,6 +62,10 @@ var dbCreateCmd = &cobra.Command{
 			access = dbAccess
 			if dbName == "" {
 				dbName = name
+			}
+			prev, _ := state.LoadManifest(name)
+			if e := dbNameAllowed(name, dbName, prev, vdDatabaseExists); e != nil {
+				output.Fail("db-create", e)
 			}
 
 		default:

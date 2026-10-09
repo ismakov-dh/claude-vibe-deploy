@@ -16,6 +16,7 @@ import (
 var (
 	mcpOAuthOwner string
 	mcpOAuthCheck bool
+	mcpDropStrict bool
 
 	// Replaced in tests: the docker calls on the revert path.
 	composeUpService = docker.ComposeUpService
@@ -25,6 +26,8 @@ var (
 func init() {
 	mcpOAuthCmd.Flags().StringVar(&mcpOAuthOwner, "owner", "", "email of a person to add to the MCP's access group")
 	mcpOAuthCmd.Flags().BoolVar(&mcpOAuthCheck, "check", false, "change nothing: report whether vd can re-render this app's compose file faithfully")
+	mcpOAuthCmd.Flags().BoolVar(&mcpDropStrict, "drop-strict", false, "platform admin: stop requiring the app's login group for its MCP (an app that no longer reads production)")
+	mcpOAuthCmd.Flags().MarkHidden("drop-strict")
 	rootCmd.AddCommand(mcpOAuthCmd)
 }
 
@@ -69,9 +72,22 @@ var mcpOAuthCmd = &cobra.Command{
 				"Redeploy the app once (vd deploy), then retry"))
 		}
 
+		if mcpDropStrict {
+			if m.ReadsProd() {
+				output.Fail("mcp-oauth", output.NewError("INVALID_ARGS",
+					name+" reads the production replica: its MCP stays strict", ""))
+			}
+			output.Warn("Dropping the strict MCP of %s: its database may still hold what it copied from production, and everyone in mcp-vibe-%s will see it without being in the app's group", name, name)
+			m.MCPStrict = false
+		}
+		if m.MCPStrict && !m.Auth {
+			output.Fail("mcp-oauth", output.NewError("AUTH_FAILED",
+				"The strict MCP of "+name+" needs the app's login group, and the app has none", ""))
+		}
+
 		// Authentik first, the route second, the labels last: traffic reaches the
 		// gateway only once the resource and the route exist.
-		res := ensureMCPOAuth(name, cfg, mcpOAuthOwner)
+		res := ensureMCPOAuth(name, cfg, mcpOAuthOwner, m.MCPAppGroup())
 		if res == nil {
 			output.Fail("mcp-oauth", output.NewError("AUTH_FAILED",
 				"Could not set up the MCP's sign-in in Authentik — nothing changed",

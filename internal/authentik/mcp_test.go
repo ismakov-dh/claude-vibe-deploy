@@ -160,11 +160,11 @@ func TestRemoveAndCheckMCP(t *testing.T) {
 	if _, err := c.EnsureMCP(mcpSpec()); err != nil {
 		t.Fatal(err)
 	}
-	if h, err := c.CheckMCP("demo"); err != nil || !h.OK() {
+	if h, err := c.CheckMCP("demo", ""); err != nil || !h.OK() {
 		t.Fatalf("check after ensure: %+v %v", h, err)
 	}
 	f.bindings = nil
-	if h, _ := c.CheckMCP("demo"); h.Binding || h.OK() {
+	if h, _ := c.CheckMCP("demo", ""); h.Binding || h.OK() {
 		t.Fatalf("unbound MCP reported OK: %+v", h)
 	}
 	if permsLeft, err := c.RemoveMCP("demo"); err != nil || permsLeft != nil {
@@ -193,7 +193,7 @@ func TestRemoveMCPTouchesNothingElseWhenTheApplicationStays(t *testing.T) {
 	if _, err := c.RemoveMCP("demo"); err == nil {
 		t.Fatal("failed application delete reported as success")
 	}
-	if h, _ := c.CheckMCP("demo"); !h.OK() {
+	if h, _ := c.CheckMCP("demo", ""); !h.OK() {
 		t.Fatalf("partial removal left a half-open resource: %+v", h)
 	}
 }
@@ -289,5 +289,73 @@ func TestRemoveMCPReportsLeftPermsSeparately(t *testing.T) {
 	}
 	if _, ok := f.groups["mcp-vibe-demo"]; ok {
 		t.Fatal("group kept")
+	}
+}
+
+// Strict: the application needs every binding, and one of them is the app's
+// login group; "all" is set before that binding exists, so there is no moment
+// where either group alone would do. Loosening drops the binding before "any".
+func TestEnsureMCPStrictNeedsBothGroups(t *testing.T) {
+	f, c := setup(t)
+	f.groups["vibe-demo"] = "g-app"
+	s := mcpSpec()
+	s.AppGroup = "vibe-demo"
+	if _, err := c.EnsureMCP(s); err != nil {
+		t.Fatal(err)
+	}
+	if f.apps["mcp-vibe-demo"]["policy_engine_mode"] != "all" {
+		t.Fatalf("mode %v", f.apps["mcp-vibe-demo"]["policy_engine_mode"])
+	}
+	groups := map[any]bool{}
+	for _, b := range f.bindings {
+		groups[b["group"]] = true
+	}
+	if !groups["g-app"] || len(groups) != 2 {
+		t.Fatalf("bindings %v", f.bindings)
+	}
+	mode, bindApp := -1, -1
+	for i, call := range f.calls {
+		if call == "PATCH /core/applications/mcp-vibe-demo/" && mode < 0 {
+			mode = i
+		}
+		if call == "POST /policies/bindings/" && bindApp < 0 {
+			bindApp = i
+		}
+	}
+	if !(mode >= 0 && mode < bindApp) {
+		t.Fatalf("app-group binding before mode=all: %v", f.calls)
+	}
+	if h, err := c.CheckMCP("demo", "vibe-demo"); err != nil || !h.OK() {
+		t.Fatalf("strict health %+v %v", h, err)
+	}
+
+	// Loosened (vd mcp-oauth --drop-strict): back to one group, mode any.
+	f.calls = nil
+	if _, err := c.EnsureMCP(mcpSpec()); err != nil {
+		t.Fatal(err)
+	}
+	if f.apps["mcp-vibe-demo"]["policy_engine_mode"] != "any" || len(f.bindings) != 1 || f.bindings[0]["group"] == "g-app" {
+		t.Fatalf("not loosened: mode %v bindings %v", f.apps["mcp-vibe-demo"]["policy_engine_mode"], f.bindings)
+	}
+	del, any := -1, -1
+	for i, call := range f.calls {
+		if strings.HasPrefix(call, "DELETE /policies/bindings/") {
+			del = i
+		}
+		if call == "PATCH /core/applications/mcp-vibe-demo/" && any < 0 {
+			any = i
+		}
+	}
+	if !(del >= 0 && del < any) {
+		t.Fatalf("mode=any before the app-group binding went: %v", f.calls)
+	}
+	if h, _ := c.CheckMCP("demo", "vibe-demo"); h.OK() {
+		t.Fatal("a loosened MCP passes the strict health check")
+	}
+
+	// No login group, no strict MCP.
+	s.AppGroup = "vibe-missing"
+	if _, err := c.EnsureMCP(s); err == nil {
+		t.Fatal("strict MCP without the app's group")
 	}
 }

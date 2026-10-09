@@ -130,6 +130,11 @@ func runInit() {
 				"--prod-ro-url-stdin: stdin is not a postgres:// URL with user, password, host and database",
 				"Pipe the DSN in: ... | vd init --prod-ro-url-stdin"))
 		}
+		if a := appShadowing(dsn); a != "" {
+			output.Fail("init", output.NewError("INIT_FAILED",
+				"--prod-ro-url-stdin: the app "+a+" answers on vd's networks for the replica's host",
+				"Destroy "+a+" first, or use the replica's full host name in the DSN"))
+		}
 		if err := os.WriteFile(state.ProdROURLPath(), []byte(dsn+"\n"), 0600); err != nil {
 			output.Fail("init", output.NewError("INIT_FAILED", "Failed to write prod-ro.url", "Check permissions"))
 		}
@@ -318,6 +323,27 @@ func validProdROURL(s string) bool {
 	if err != nil || (u.Scheme != "postgres" && u.Scheme != "postgresql") || u.Host == "" || u.User == nil {
 		return false
 	}
+	// One host, in the URL: libpq reads "a,b" as several and ?host= overrides
+	// it, and vd checks the host against app names (shadowsReplica).
+	if strings.Contains(u.Host, ",") || u.Query().Has("host") || u.Query().Has("hostaddr") {
+		return false
+	}
 	pw, ok := u.User.Password()
 	return u.User.Username() != "" && ok && pw != "" && strings.Trim(u.Path, "/") != ""
+}
+
+// appShadowing names a deployed app whose DNS names on vd's networks include
+// the DSN's host, or "".
+func appShadowing(dsn string) string {
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return ""
+	}
+	apps, _ := state.ListApps()
+	for _, a := range apps {
+		if shadowsReplica(a, strings.ToLower(u.Hostname())) {
+			return a
+		}
+	}
+	return ""
 }

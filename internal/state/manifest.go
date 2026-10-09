@@ -49,6 +49,35 @@ type Manifest struct {
 	// issuer fails validation for every app. (Old manifests also carry
 	// "mcp_oauth"; every MCP is behind sign-in now, so it is no longer read.)
 	MCPOAuthLive bool `json:"mcp_oauth_live,omitempty"`
+	// MCPStrict: signing in to the MCP also needs the app's login group. Set by
+	// the first deploy that reads production and kept from then on — the
+	// database may hold what the app copied from there. Only vd mcp-oauth
+	// --drop-strict, an admin's call, clears it.
+	MCPStrict bool `json:"mcp_strict,omitempty"`
+}
+
+// MCPAppGroup is the login group a strict MCP also requires, "" otherwise.
+func (m *Manifest) MCPAppGroup() string {
+	if !m.MCPStrict && !m.ReadsProd() {
+		return ""
+	}
+	if m.AuthGroup != "" {
+		return m.AuthGroup
+	}
+	return "vibe-" + m.Name
+}
+
+// ReadsProd reports whether the app reads the production replica: alone
+// (DB "prod-ro") or beside its own database (DB "postgres" with the replica
+// network). Every prod-ro rule keys on this, never on DB alone.
+func (m *Manifest) ReadsProd() bool { return m.DB == "prod-ro" || m.ProdRONetwork != "" }
+
+// DBSpec is the --db value that deploys this app again.
+func (m *Manifest) DBSpec() string {
+	if m.DB == "postgres" && m.ProdRONetwork != "" {
+		return "postgres,prod-ro"
+	}
+	return m.DB
 }
 
 func LoadManifest(appName string) (*Manifest, error) {

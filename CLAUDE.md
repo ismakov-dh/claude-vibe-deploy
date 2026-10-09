@@ -30,6 +30,7 @@ A deployment CLI for vibecoded apps on bare metal Linux servers. Single Go binar
 | **Own PostgreSQL database** | `--db postgres` | Auto-provisioned on deploy. `DATABASE_URL` injected into `.env`. Fresh DB per app. |
 | **Read-only MCP for the app's own DB** | automatic with `--db postgres` | Per-app postgres-mcp at `<name>.mcp.<apps-domain>/mcp`, SELECT-only on the whole DB, behind platform sign-in (group `mcp-vibe-<name>`, granted with `vd access <name> add <email> --mcp`). The `mcp` field carries a ready-made `claude mcp add --transport http …` — no password. Not provisioned for `prod-ro`. |
 | **Prod DB read-only access** | `--db prod-ro --auth` | Production read-only replica over a dedicated overlay, shared SELECT-only role. **Includes patient data** — agents ask the user first. `--auth` required, sign-in ≤ `hours=1`, no MCP. |
+| **Own DB + prod read-only** | `--db postgres,prod-ro --auth` | Both at once: `DATABASE_URL` is the app's own database, `PROD_RO_DATABASE_URL` the replica. Every prod-ro rule holds. The own database's MCP is strict: signing in needs both `mcp-vibe-<name>` and `vibe-<name>`, for good (leaving prod-ro does not loosen it). |
 | **Environment variables** | `--env-file` or auto-injected | Pass secrets, API keys, config. `DATABASE_URL` is auto-injected when using `--db`. |
 | **Cron jobs** | `vd cron-set` | Scheduled commands that run inside the app container. |
 | **Health checks** | Automatic | Traefik + Docker check `GET http://127.0.0.1:<port>/` every 30s. |
@@ -80,6 +81,7 @@ Do not design apps that require any of these:
 - Next.js full-stack — auto-detected, single container
 - Python FastAPI/Flask API — auto-detected, gunicorn/uvicorn handles it
 - Dashboard that reads prod data — backend queries prod DB via `DATABASE_URL`, frontend calls backend API
+- An app never reads a database through an MCP — only `DATABASE_URL` / `PROD_RO_DATABASE_URL`
 
 ### App Type Detection
 
@@ -124,6 +126,9 @@ vd deploy /opt/vibe-deploy/push/my-app --name my-api --db postgres --json
 # Dashboard reading production data
 vd deploy /opt/vibe-deploy/push/my-app --name my-dash --db prod-ro --auth --json   # patient data: ask the user first
 
+# Its own database plus production read-only: DATABASE_URL = own, PROD_RO_DATABASE_URL = prod
+vd deploy /opt/vibe-deploy/push/my-app --name my-dash --db postgres,prod-ro --auth --json   # patient data: ask the user first
+
 # With extra env vars (API keys, secrets)
 vd deploy /opt/vibe-deploy/push/my-app --name my-app --db postgres --env-file /opt/vibe-deploy/push/my-app/.env --json
 
@@ -165,9 +170,9 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--name` | directory name | App name (lowercase, a-z/0-9/hyphens, 2-63 chars) |
 | `--port` | auto-detected | Internal port the app listens on |
 | `--routing` | `subdomain` | `subdomain` or `path` |
-| `--db` | `none` | `postgres` (own DB), `prod-ro` (read-only prod), or `none` |
+| `--db` | `none` | `postgres` (own DB), `prod-ro` (read-only prod), `postgres,prod-ro` (both: `DATABASE_URL` + `PROD_RO_DATABASE_URL`), or `none` |
 | `--db-access` | `rw` | `rw` or `ro` (prod-ro always forces `ro`) |
-| `--db-name` | app name | Database name (`postgres` only; ignored for `prod-ro`) |
+| `--db-name` | app name | Database name of the own database (ignored for `prod-ro` alone). Only the app's own: a name another app holds, or an existing database that is not this app's, is refused |
 | `--env-file` | none | Path to .env file to inject (merged with auto-generated DATABASE_URL) |
 | `--allow-external` | false | Silence warnings about unsupported external services (Supabase, Firebase, etc.) |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky; subdomain routing only. Needs `vd init --authentik-url … --authentik-internal …` on the server |
@@ -206,7 +211,7 @@ Stop container, remove app files.
 | Flag | Default | Description |
 |------|---------|-------------|
 | `--yes` | false | Skip confirmation (always use in automation) |
-| `--drop-db` | false | Also drop the database, its user and the MCP read-only role (vd-managed only, never drops prod) |
+| `--drop-db` | false | Also drop the database, its user and the MCP read-only role (vd-managed only, never drops prod). Required for an app whose MCP is strict (it read production) |
 
 For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept. For apps with a database MCP, destroy removes the MCP application, provider and the group `mcp-vibe-<app>`, and vd's own permission rows on that group (if Authentik refuses, a warning: the rows grant nothing). It also works on the leftovers of a failed first deploy (no manifest): container, Authentik objects and files, including a `.env` with the prod DSN.
 
@@ -288,7 +293,7 @@ Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, 
 
 ### Constraints Summary
 
-- **Naming**: lowercase, starts with letter, 2-63 chars, a-z/0-9/hyphens only
+- **Naming**: lowercase, starts with letter, 2-63 chars, a-z/0-9/hyphens only; not the production replica's host name (`INVALID_NAME`)
 - **Persistence**: PostgreSQL only. No filesystem persistence.
 - **Networking**: HTTP only. No raw TCP, no UDP, no inter-container networking.
 - **Resources**: No CPU/memory limits yet. Don't deploy crypto miners.
@@ -353,7 +358,15 @@ scripts/
 
 ### MCP sign-in (platform admins only)
 
-Every app's database MCP has one way in: vd-mcpgw, behind platform sign-in. There is no Basic
+Every app's database MCP has one way in: vd-mcpgw, behind platform sign-in. An app that reads, or
+once read, production has a **strict** MCP (`mcp_strict` in the manifest, set by the first deploy
+with prod-ro, kept by deploy and rollback): its Authentik application has `policy_engine_mode: all`
+and a second group binding, `vibe-<app>`. Authentik checks it when a token is issued from a
+sign-in, **not on refresh** (2026.8.2: the refresh grant runs no policy), so removing someone from
+`vibe-<app>` alone takes effect at their next sign-in; removing them from `mcp-vibe-<app>` takes
+effect within 5 minutes, as for every MCP (the gateway reads the groups in each token). So `vd access
+<app> remove <email>` on a strict app removes them from both groups. `--drop-strict` is refused
+over the SSH wrapper. There is no Basic
 route (removed in 2026-10; the `VD_MCP_USER`/`VD_MCP_PASSWORD` lines left in old `mcp.env` files
 are read by nothing and disappear on the next deploy). Fail closed: when the MCP's Authentik
 resource cannot be set up, the MCP container is not started at all, and `vd status` reports
@@ -371,6 +384,7 @@ its new labels. The app container is not rebuilt or restarted.
 |------|---------|-------------|
 | `--owner` | none | Email added to `mcp-vibe-<app>` |
 | `--check` | false | Change nothing: report whether vd can re-render the app's compose file faithfully (`faithful`, `mcp_lines_differ`, `other_lines_differ`) |
+| `--drop-strict` (hidden) | false | Stop requiring the app's group `vibe-<app>` for its MCP. Refused while the app reads production; warns that the database may still hold copied patient data. The only way to clear `mcp_strict` |
 
 Refuses with `COMPOSE_DRIFT` before any change if lines outside the MCP service differ from what vd renders from the manifest (redeploy once, then retry). Holds the app lock, which `vd deploy` takes too.
 

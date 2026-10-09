@@ -85,6 +85,12 @@ func forbiddenOverSSH(args []string) *output.VDError {
 			return output.NewError("FORBIDDEN", "vd exec is disabled", "")
 		case "db-backup-all":
 			return output.NewError("FORBIDDEN", "vd db-backup-all is disabled via SSH", "")
+		case "mcp-oauth":
+			for _, a := range args {
+				if strings.HasPrefix(a, "--drop-strict") {
+					return output.NewError("FORBIDDEN", "vd mcp-oauth --drop-strict is for platform admins, not via SSH", "")
+				}
+			}
 		}
 	}
 	return nil

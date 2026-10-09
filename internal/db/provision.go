@@ -131,8 +131,14 @@ func SetRolePassword(container, adminUser, role, password string) error {
 		fmt.Sprintf("ALTER ROLE %s WITH LOGIN PASSWORD '%s'", role, password))
 }
 
-// DropRole removes a role, ignoring absence.
-func DropRole(container, adminUser, role string) error {
+// DropReadOnlyRole removes the MCP's companion role, ignoring absence. Its
+// grants (CONNECT, USAGE, SELECT, default privileges) make a bare DROP ROLE
+// fail, so they go first with DROP OWNED in the app's database.
+func DropReadOnlyRole(container, adminUser, dbName, role string) error {
+	if err := execSQLDB(container, adminUser, dbName, fmt.Sprintf(
+		"DO $$ BEGIN IF EXISTS (SELECT 1 FROM pg_roles WHERE rolname = '%s') THEN EXECUTE 'DROP OWNED BY %s'; END IF; END $$", role, role)); err != nil {
+		return err
+	}
 	return execSQL(container, adminUser, fmt.Sprintf("DROP ROLE IF EXISTS %s", role))
 }
 
@@ -146,6 +152,18 @@ func DropPostgresDB(container, adminUser, dbName, user string) error {
 	execSQL(container, adminUser, fmt.Sprintf("DROP DATABASE IF EXISTS %q", dbName))
 	execSQL(container, adminUser, fmt.Sprintf("DROP ROLE IF EXISTS %s", user))
 	return nil
+}
+
+// DatabaseExists reports whether the vd-postgres instance has the database.
+// The name must already have passed vd's database-name rule.
+func DatabaseExists(container, adminUser, dbName string) (bool, error) {
+	r, err := shell.Run(30*time.Second, "docker", "exec", container,
+		"psql", "-U", adminUser, "-d", "postgres", "-Atc",
+		fmt.Sprintf("SELECT 1 FROM pg_database WHERE datname = '%s'", dbName))
+	if err != nil {
+		return false, err
+	}
+	return strings.TrimSpace(r.Stdout) == "1", nil
 }
 
 func execSQL(container, adminUser, sql string) error {

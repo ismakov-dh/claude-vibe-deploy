@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io/fs"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -27,6 +28,7 @@ var (
 	deployPort          int
 	deployRouting       string
 	deployDB            string
+	deployProdRO        bool // --db includes prod-ro; deployDB is then "prod-ro" or "postgres"
 	deployDBAccess      string
 	deployDBName        string
 	deployEnvFile       string
@@ -43,7 +45,7 @@ func init() {
 	deployCmd.Flags().StringVar(&deployName, "name", "", "app name (default: directory name)")
 	deployCmd.Flags().IntVar(&deployPort, "port", 0, "internal app port (default: auto-detected)")
 	deployCmd.Flags().StringVar(&deployRouting, "routing", "subdomain", "routing mode: subdomain or path")
-	deployCmd.Flags().StringVar(&deployDB, "db", "none", "database: postgres, prod-ro, or none")
+	deployCmd.Flags().StringVar(&deployDB, "db", "none", "database: postgres, prod-ro, postgres,prod-ro (own database plus the replica), or none")
 	deployCmd.Flags().StringVar(&deployDBAccess, "db-access", "rw", "database access: rw or ro")
 	deployCmd.Flags().StringVar(&deployDBName, "db-name", "", "database name (default: app name)")
 	deployCmd.Flags().StringVar(&deployEnvFile, "env-file", "", "path to .env file")
@@ -91,6 +93,16 @@ func runDeploy(srcPath string) {
 			"Invalid app name: "+deployName,
 			"Must be lowercase, start with a letter, 2-63 chars, only a-z/0-9/hyphens"))
 	}
+	if shadowsReplica(deployName, replicaHost()) {
+		output.Fail("deploy", output.NewError("INVALID_NAME",
+			"The name "+deployName+" would answer, on vd's networks, for the production replica's host",
+			"Choose another name"))
+	}
+	var dbOK bool
+	if deployDB, deployProdRO, dbOK = parseDB(deployDB); !dbOK {
+		output.Fail("deploy", output.NewError("INVALID_ARGS",
+			"Invalid --db: use postgres, prod-ro, postgres,prod-ro or none", ""))
+	}
 	// Held for the whole run (released by exit): vd mcp-oauth re-renders this
 	// app's compose file and must not interleave with a deploy.
 	unlockApp, err := state.LockApp(deployName)
@@ -98,6 +110,26 @@ func runDeploy(srcPath string) {
 		output.Fail("deploy", output.NewError("DEPLOY_FAILED", "Could not take the app lock: "+err.Error(), ""))
 	}
 	defer unlockApp()
+
+	// Before anything changes (.env, backups): which database, and whether
+	// this app may have it.
+	prevDeploy, err := state.LoadManifest(deployName)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		output.Fail("deploy", output.NewError("MANIFEST_UNREADABLE", "Cannot read the manifest of "+deployName+": "+err.Error(), ""))
+	}
+	ownDBName := ""
+	if deployDB == "postgres" {
+		if ownDBName = deployDBName; ownDBName == "" {
+			ownDBName = deployName
+		}
+		if e := dbNameAllowed(deployName, ownDBName, prevDeploy, vdDatabaseExists); e != nil {
+			output.Fail("deploy", e)
+		}
+	} else if prevDeploy != nil && prevDeploy.MCPStrict && prevDeploy.DB == "postgres" {
+		output.Fail("deploy", output.NewError("INVALID_ARGS",
+			deployName+" read production data, and its database may hold copies: it keeps its own database",
+			"Deploy with --db postgres or --db postgres,prod-ro; vd destroy --drop-db removes both"))
+	}
 
 	// Load global config
 	cfg, err := state.LoadConfig()
@@ -214,35 +246,50 @@ func runDeploy(srcPath string) {
 	// MCP wiring, filled in during provisioning below.
 	needsMCP := false
 
-	// Leaving prod-ro — or an --env-file carrying its DSN — must not leave the
-	// DSN behind: detaching the network is not enough if the value survives in
-	// .env, backups and whatever the app does with it.
-	if deployDB != "prod-ro" {
-		// A fresh --env-file replaced .env already: only the value itself counts.
-		wasProdRO := prevDB(deployName) == "prod-ro" && deployEnvFile == ""
-		if dropProdRODSN(state.AppEnvPath(deployName), wasProdRO) {
-			output.Info("Removed the production read-only DATABASE_URL: this deploy is not --db prod-ro")
+	// Alone, the replica is DATABASE_URL (as it always was); beside the app's
+	// own database it is PROD_RO_DATABASE_URL, and DATABASE_URL is the own one.
+	prodROKey := "DATABASE_URL"
+	if deployDB == "postgres" {
+		prodROKey = prodROEnvKey
+	}
+	// The replica's DSN must not stay under a key this deploy does not give it
+	// — leaving prod-ro, or an --env-file carrying it: detaching the network is
+	// not enough if the value survives in .env, backups and whatever the app
+	// does with it. A key the previous deploy gave it goes unconditionally (the
+	// stored DSN may have been rotated since), unless a fresh --env-file
+	// replaced .env already: then only the value itself counts.
+	prevM0, _ := state.LoadManifest(deployName)
+	heldProd := map[string]bool{
+		"DATABASE_URL": prevM0 != nil && prevM0.DB == "prod-ro",
+		prodROEnvKey:   prevM0 != nil && prevM0.DB == "postgres" && prevM0.ProdRONetwork != "",
+	}
+	for _, key := range []string{"DATABASE_URL", prodROEnvKey} {
+		if deployProdRO && key == prodROKey {
+			continue
+		}
+		if dropProdRODSN(state.AppEnvPath(deployName), key, heldProd[key] && deployEnvFile == "") {
+			output.Info("Removed the production read-only %s: this deploy does not put the replica there", key)
 		}
 	}
 
 	// Production replica: no provisioning, the platform owns the role. The DSN
 	// goes into the app's .env (0600) and nowhere else — not the JSON, not a log.
-	if deployDB == "prod-ro" {
+	if deployProdRO {
 		dsn, err := state.LoadProdROURL()
 		if err != nil || cfg.ProdRONetwork == "" {
 			output.Fail("deploy", output.NewError("DB_NOT_FOUND",
 				"The production read-only replica is not set up on this server",
 				"A platform admin runs: vd init --prod-ro-network <overlay> and pipes the DSN into vd init --prod-ro-url-stdin"))
 		}
-		if deployDBName != "" {
+		if deployDBName != "" && deployDB == "prod-ro" {
 			output.Warn("--db-name ignored for prod-ro: the platform's DSN fixes the database")
 		}
-		if err := setEnvVar(state.AppEnvPath(deployName), "DATABASE_URL", dsn); err != nil {
+		if err := setEnvVar(state.AppEnvPath(deployName), prodROKey, dsn); err != nil {
 			output.Fail("deploy", output.NewError("DB_PROVISION_FAILED",
-				"Could not write DATABASE_URL: "+err.Error(), "Check permissions on "+state.AppDir(deployName)))
+				"Could not write "+prodROKey+": "+err.Error(), "Check permissions on "+state.AppDir(deployName)))
 		}
 		hasEnvFile = true
-		output.Info("Production read-only replica wired in (network %s). This app sees patient data.", cfg.ProdRONetwork)
+		output.Info("Production read-only replica wired in as %s (network %s). This app sees patient data.", prodROKey, cfg.ProdRONetwork)
 	}
 
 	// Provision database if requested
@@ -251,10 +298,7 @@ func runDeploy(srcPath string) {
 		connectHost := "vd-postgres"
 		adminUser := "vd_admin"
 		access := deployDBAccess
-		dbNameToUse := deployDBName
-		if dbNameToUse == "" {
-			dbNameToUse = deployName
-		}
+		dbNameToUse := ownDBName
 
 		output.Info("Provisioning database (%s)...", deployDB)
 		ownerRole := db.RoleName(deployName)
@@ -269,7 +313,8 @@ func runDeploy(srcPath string) {
 			hasEnvFile = true
 
 			// Read-only MCP, for vd-managed databases only. Production stays
-			// reachable solely by deploying a dashboard with --db prod-ro.
+			// reachable solely by deploying a dashboard with --db prod-ro; beside
+			// it, the own database's MCP is strict (below).
 			if deployDB == "postgres" && cfg.Domain != "" {
 				roRole := db.ReadOnlyRoleName(deployName)
 				ro, err := db.ProvisionReadOnlyCompanion(container, adminUser, connectHost, ownerRole, roRole, dbNameToUse)
@@ -295,8 +340,25 @@ func runDeploy(srcPath string) {
 	if deployMCPOwner != "" && !needsMCP {
 		output.Warn("--mcp-owner ignored: the app has no database MCP (deploy with --db postgres)")
 	}
+	// Strict from the first deploy that reads production on: whatever the app
+	// copied from there may stay in its database. Signing in to the MCP then
+	// needs the app's login group too.
+	mcpStrict := mcpStrictFor(deployProdRO, prevM0)
+	if needsMCP && mcpStrict && auth == nil {
+		// Unreachable (prod-ro requires --auth, and --auth is sticky): no group
+		// to require means no MCP.
+		output.Warn("The database MCP needs the app's login group, and the app has none — deploying without MCP")
+		needsMCP = false
+	}
 	if needsMCP {
-		mcpRes = ensureMCPOAuth(deployName, cfg, deployMCPOwner)
+		appGroup := ""
+		if mcpStrict {
+			appGroup = auth.group
+		}
+		mcpRes = ensureMCPOAuth(deployName, cfg, deployMCPOwner, appGroup)
+	}
+	if needsMCP && mcpStrict {
+		output.Warn("This app reads, or once read, patient data, and its database MCP shows the whole database — whatever was copied there from production included. Signing in to it needs both mcp-vibe-%s and the app's group %s; grant it only to people who may see patient data", deployName, auth.group)
 	}
 
 	if auth != nil {
@@ -338,13 +400,13 @@ func runDeploy(srcPath string) {
 	domain := buildDomain(deployName, cfg.Domain, deployRouting)
 
 	prodRONet := ""
-	if deployDB == "prod-ro" {
+	if deployProdRO {
 		prodRONet = cfg.ProdRONetwork
 	}
 	composeData := composeDataFor(&state.Manifest{
 		Name: deployName, AppType: string(appType), Port: deployPort, Routing: deployRouting,
 		HasEnvFile: hasEnvFile, DB: deployDB, MCP: needsMCP, Auth: auth != nil,
-		MCPOAuthLive: mcpRes != nil, ProdRONetwork: prodRONet,
+		MCPOAuthLive: mcpRes != nil, ProdRONetwork: prodRONet, MCPStrict: mcpStrict,
 	}, cfg, ingressSecret)
 	if err := docker.GenerateComposeFile(templatesFS, composeData, state.AppComposePath(deployName)); err != nil {
 		output.Fail("deploy", output.NewError("COMPOSE_FAILED",
@@ -378,10 +440,26 @@ func runDeploy(srcPath string) {
 			"Check logs with: vd logs "+deployName)
 		e.Details = logs
 		// Rollback if this was a redeploy
-		if isRedeploy {
+		// Same gate as vd rollback, against what this deploy asked for: a
+		// failed deploy that leaves prod-ro must not come back on prod.
+		cur := &state.Manifest{Name: deployName, DB: deployDB, ProdRONetwork: prodRONet, Auth: auth != nil, MCPStrict: mcpStrict}
+		if auth != nil {
+			cur.AuthTTL = auth.ttl
+		}
+		var gate *output.VDError
+		if _, meta, err := backup.Latest(deployName); err == nil {
+			gate = rollbackProdROGate(cur, meta.Manifest)
+			if gate == nil && cur.Auth && (meta.Manifest == nil || !meta.Manifest.Auth) {
+				gate = output.NewError("ROLLBACK_WOULD_UNPROTECT", "the previous version was deployed without platform login", "")
+			}
+		}
+		if isRedeploy && gate != nil {
+			output.Warn("Not rolling back, the app is down: %s", gate.Message)
+			docker.ComposeDown(appDir, "docker-compose.vd.yml")
+		} else if isRedeploy {
 			output.Warn("Rolling back to previous version...")
 			docker.ComposeDown(appDir, "docker-compose.vd.yml")
-			if _, err := backup.Restore(deployName, dropBasicMCP); err != nil {
+			if _, err := backup.Restore(deployName, keepStrict(cur)); err != nil {
 				output.Warn("Rollback failed, the app is down: %v", err)
 			}
 			// The restored manifest decides whether the MCP has a route.
@@ -406,7 +484,7 @@ func runDeploy(srcPath string) {
 		Routing:       deployRouting,
 		DB:            deployDB,
 		DBAccess:      deployDBAccess,
-		DBName:        deployDBName,
+		DBName:        ownDBName,
 		Domain:        domain,
 		ContainerName: containerName,
 		DeployCount:   deployCount,
@@ -423,6 +501,7 @@ func runDeploy(srcPath string) {
 	// MCP stays set even if Authentik failed this time, so the next deploy
 	// retries; the container and route follow only what exists (res != nil).
 	manifest.MCPOAuthLive = mcpRes != nil
+	manifest.MCPStrict = mcpStrict
 	if deployMCPOwner != "" {
 		manifest.MCPOwner = deployMCPOwner
 	} else if prevM != nil {
@@ -450,7 +529,7 @@ func runDeploy(srcPath string) {
 		"health":      "healthy",
 		"port":        deployPort,
 		"routing":     deployRouting,
-		"db":          deployDB,
+		"db":          manifest.DBSpec(),
 		"deployed_at": time.Now().UTC().Format(time.RFC3339),
 	}
 	if needsMCP {
@@ -620,7 +699,7 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	want := deployAuth || (prev != nil && prev.Auth) || protectedOnDisk
 	bearer, bearerErr := bearerFor(want, prev, deployAuthBearerSet, deployAuthBearer)
 	if !want {
-		if e := prodROGate(deployDB, false, ""); e != nil {
+		if e := prodROGate(deployProdRO, false, ""); e != nil {
 			output.Fail("deploy", e)
 		}
 		if deployAuthTTL != "" {
@@ -648,7 +727,7 @@ func resolveAuth(cfg *state.Config) *authPlan {
 		output.Fail("deploy", output.NewError("INVALID_AUTH_TTL",
 			"Invalid --auth-ttl: "+ttl, "Use Authentik's format, e.g. hours=1, minutes=30, days=1;hours=12"))
 	}
-	if e := prodROGate(deployDB, true, ttl); e != nil {
+	if e := prodROGate(deployProdRO, true, ttl); e != nil {
 		output.Fail("deploy", e)
 	}
 	if deployRouting != "subdomain" {
@@ -773,19 +852,115 @@ func deployMCPBlock(app string, cfg *state.Config, owner string, res *authentik.
 	return mcpOAuthInfo(app, cfg, owner, res)
 }
 
-// prevDB is the database type of the running deploy, "" if none.
-func prevDB(app string) string {
-	if m, err := state.LoadManifest(app); err == nil {
-		return m.DB
+var dbNameRegex = regexp.MustCompile(`^[a-z][a-z0-9_-]{1,62}$`)
+
+// dbNameAllowed decides whether app may be given the database dbName: its own
+// name or its previous deploy's, else only a name no other app holds and no
+// database has. Otherwise --db-name would hand one app another's database —
+// a strict app's, with what it copied from production, included.
+func dbNameAllowed(app, dbName string, prev *state.Manifest, exists func(string) (bool, error)) *output.VDError {
+	if !dbNameRegex.MatchString(dbName) {
+		return output.NewError("INVALID_ARGS", "Invalid database name: "+dbName, "Lowercase, starts with a letter, a-z/0-9/_/-")
 	}
-	return ""
+	if prev != nil && prev.DB == "postgres" && (prev.DBName == dbName || prev.DBName == "" && dbName == app) {
+		return nil // what this app already has
+	}
+	apps, err := state.ListApps()
+	if err != nil {
+		return output.NewError("DB_PROVISION_FAILED", "Cannot list apps to check who holds "+dbName+": "+err.Error(), "")
+	}
+	for _, a := range apps {
+		if a == app {
+			continue
+		}
+		m, err := state.LoadManifest(a)
+		if err != nil {
+			return output.NewError("MANIFEST_UNREADABLE", "Cannot read the manifest of "+a+" to check who holds "+dbName, "")
+		}
+		if m.DB == "postgres" && (m.DBName == dbName || m.DBName == "" && a == dbName) {
+			return output.NewError("INVALID_ARGS", "Database "+dbName+" belongs to the app "+a, "Leave --db-name out")
+		}
+	}
+	if dbName == app {
+		return nil
+	}
+	ok, err := exists(dbName)
+	if err != nil {
+		return output.NewError("DB_PROVISION_FAILED", "Cannot check whether database "+dbName+" exists: "+err.Error(), "")
+	}
+	if ok {
+		return output.NewError("INVALID_ARGS", "Database "+dbName+" already exists and is not this app's", "Leave --db-name out")
+	}
+	return nil
 }
 
-// dropProdRODSN removes DATABASE_URL from envPath when it is the stored prod-ro
-// DSN, or unconditionally when the previous deploy was prod-ro (the stored DSN
-// may have been rotated since). Reports whether it removed anything.
-func dropProdRODSN(envPath string, wasProdRO bool) bool {
-	cur := envValue(envPath, "DATABASE_URL")
+func vdDatabaseExists(name string) (bool, error) {
+	return db.DatabaseExists("vd-postgres", "vd_admin", name)
+}
+
+// mcpStrictFor: an MCP turns strict with the first deploy that reads
+// production and stays so — leaving prod-ro does not empty the database.
+func mcpStrictFor(prodRO bool, prev *state.Manifest) bool {
+	return prodRO || (prev != nil && prev.MCPStrict)
+}
+
+// replicaHost is the host of the stored prod-ro DSN, lowercased; "" if none.
+func replicaHost() string {
+	dsn, err := state.LoadProdROURL()
+	if err != nil {
+		return ""
+	}
+	u, err := url.Parse(dsn)
+	if err != nil {
+		return ""
+	}
+	return strings.ToLower(u.Hostname())
+}
+
+// shadowsReplica reports whether one of the DNS names compose gives the app on
+// vd-net and vd-db — its service and container names, and its MCP's — is the
+// replica's host: a container on both networks could resolve the host to the
+// impostor and hand it the shared prod role's password.
+func shadowsReplica(app, host string) bool {
+	// Docker's DNS also answers "<name>." and "<name>.<network>".
+	host = strings.TrimSuffix(host, ".")
+	if i := strings.IndexByte(host, '.'); i > 0 {
+		host = host[:i]
+	}
+	if host == "" {
+		return false
+	}
+	for _, n := range []string{app, "vd-" + app, app + "-mcp", "vd-" + app + "-mcp"} {
+		if n == host {
+			return true
+		}
+	}
+	return false
+}
+
+// prodROEnvKey carries the replica's DSN beside the app's own DATABASE_URL:
+// the same suffix as the own database's, and the flag's name in front.
+const prodROEnvKey = "PROD_RO_DATABASE_URL"
+
+// parseDB splits --db into the manifest's DB ("postgres" whenever the app has
+// its own database) and whether the production replica comes with it.
+func parseDB(v string) (string, bool, bool) {
+	switch v {
+	case "", "none":
+		return "none", false, true
+	case "postgres", "prod-ro":
+		return v, v == "prod-ro", true
+	case "postgres,prod-ro", "prod-ro,postgres":
+		return "postgres", true, true
+	}
+	return "", false, false
+}
+
+// dropProdRODSN removes key from envPath when it is the stored prod-ro DSN, or
+// unconditionally when the previous deploy put the replica there (the stored
+// DSN may have been rotated since). Reports whether it removed anything.
+func dropProdRODSN(envPath, key string, wasProdRO bool) bool {
+	cur := envValue(envPath, key)
 	if cur == "" {
 		return false
 	}
@@ -793,7 +968,7 @@ func dropProdRODSN(envPath string, wasProdRO bool) bool {
 	if !wasProdRO && (dsn == "" || cur != dsn) {
 		return false
 	}
-	return removeEnvVar(envPath, "DATABASE_URL") == nil
+	return removeEnvVar(envPath, key) == nil
 }
 
 // dockerignoreLines keep the files vd and local tooling put secrets in out of
@@ -833,8 +1008,8 @@ const prodROMaxTTL = 3600
 // prodROGate holds the rules for --db prod-ro, which exposes patient data
 // (studies, reports) to the app: platform login is mandatory, and its sign-in
 // lasts at most an hour. Checked before Authentik or the host is touched.
-func prodROGate(dbType string, auth bool, ttl string) *output.VDError {
-	if dbType != "prod-ro" {
+func prodROGate(prodRO bool, auth bool, ttl string) *output.VDError {
+	if !prodRO {
 		return nil
 	}
 	if !auth {

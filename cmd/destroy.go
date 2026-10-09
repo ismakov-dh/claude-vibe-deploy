@@ -45,6 +45,9 @@ var destroyCmd = &cobra.Command{
 		if err != nil {
 			output.Fail("destroy", err)
 		}
+		if e := strictKeepsNoDB(m, destroyDropDB); e != nil {
+			output.Fail("destroy", e)
+		}
 
 		if !destroyYes && !output.IsJSON() {
 			msg := fmt.Sprintf("Destroy app %q? This will stop the container and remove all files.", name)
@@ -98,28 +101,7 @@ var destroyCmd = &cobra.Command{
 		// Skip quietly where nothing could have been created: no platform login
 		// on this server and no route ever went live.
 		if dcfg, _ := state.LoadConfig(); m.MCP && (m.MCPOAuthLive || (dcfg != nil && dcfg.AuthentikURL != "")) {
-			mcpRemoved = "removed"
-			cfg := dcfg
-			token, terr := state.LoadAuthentikToken()
-			switch {
-			case cfg == nil || cfg.AuthentikURL == "":
-				mcpRemoved = "failed: Authentik is not configured on this server"
-			case terr != nil:
-				mcpRemoved = "failed: " + terr.Error()
-			default:
-				if unlock, lerr := state.LockAuthentik(); lerr != nil {
-					mcpRemoved = "failed: " + lerr.Error()
-				} else {
-					permsLeft, err := authentik.New(cfg.AuthentikURL, token).RemoveMCP(name)
-					if err != nil {
-						mcpRemoved = "failed: " + err.Error()
-					} else if permsLeft != nil {
-						// Everything that grants access is gone; only inert rows remain.
-						output.Warn("MCP OAuth removed; its permission rows on the deleted group were not (%v) — harmless, a platform admin can sweep them", permsLeft)
-					}
-					unlock()
-				}
-			}
+			mcpRemoved = removeMCPOAuth(name, dcfg)
 			if mcpRemoved != "removed" {
 				output.Warn("MCP OAuth cleanup %s — a platform admin should remove the application, provider and group mcp-vibe-%s by hand", mcpRemoved, name)
 			}
@@ -165,7 +147,9 @@ var destroyCmd = &cobra.Command{
 				// The MCP's companion role holds no objects, so DROP DATABASE
 				// succeeds with it still present — but redeploying the same app name
 				// would then inherit a stale role and its old password.
-				db.DropRole(container, adminUser, db.ReadOnlyRoleName(name))
+				if err := db.DropReadOnlyRole(container, adminUser, dbName, db.ReadOnlyRoleName(name)); err != nil {
+					output.Warn("Could not drop the MCP's read-only role: %v", err)
+				}
 
 				output.Info("Dropping database %s and user %s...", dbName, user)
 				if err := db.DropPostgresDB(container, adminUser, dbName, user); err != nil {
@@ -239,4 +223,42 @@ func manifestForDestroy(name string) (*state.Manifest, *output.VDError) {
 		m.AuthGroup = "vibe-" + name
 	}
 	return m, nil
+}
+
+// removeMCPOAuth deletes the MCP's application, provider and group
+// mcp-vibe-<app> from Authentik: "removed", or "failed: <why>".
+func removeMCPOAuth(name string, cfg *state.Config) string {
+	token, terr := state.LoadAuthentikToken()
+	switch {
+	case cfg == nil || cfg.AuthentikURL == "":
+		return "failed: Authentik is not configured on this server"
+	case terr != nil:
+		return "failed: " + terr.Error()
+	}
+	unlock, err := state.LockAuthentik()
+	if err != nil {
+		return "failed: " + err.Error()
+	}
+	defer unlock()
+	permsLeft, err := authentik.New(cfg.AuthentikURL, token).RemoveMCP(name)
+	if err != nil {
+		return "failed: " + err.Error()
+	}
+	if permsLeft != nil {
+		// Everything that grants access is gone; only inert rows remain.
+		output.Warn("MCP OAuth removed; its permission rows on the deleted group were not (%v) — harmless, a platform admin can sweep them", permsLeft)
+	}
+	return "removed"
+}
+
+// strictKeepsNoDB: an app that read production is destroyed with its
+// database. A kept one would come back, under a fresh manifest, with an
+// ordinary MCP over what the app copied from production.
+func strictKeepsNoDB(m *state.Manifest, dropDB bool) *output.VDError {
+	if m.MCPAppGroup() != "" && m.DB == "postgres" && !dropDB {
+		return output.NewError("INVALID_ARGS",
+			m.Name+" read production data: its database may hold copies, so it is destroyed with it",
+			"Add --drop-db (a backup of the database is taken first)")
+	}
+	return nil
 }

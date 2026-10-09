@@ -70,6 +70,9 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db post
 # Dashboard reading production data (read-only replica) — ONLY after the confirmation below
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db prod-ro --auth --json"
 
+# Its own database AND the production replica — same confirmation; DATABASE_URL = own, PROD_RO_DATABASE_URL = prod
+$SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db postgres,prod-ro --auth --json"
+
 # With extra environment variables (.env is pushed with app files, NEVER commit .env to git)
 $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --db postgres --env-file /opt/vibe-deploy/push/<app-name>/.env --json"
 
@@ -94,7 +97,18 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing
 >   appears in the JSON, `vd status` or vd's output.
 > - The app must not copy patient fields into its own storage, logs, error messages or the browser
 >   beyond what the page shows. Never log `DATABASE_URL` or query results.
-> - `--db-name` is ignored: the platform's DSN fixes the database.
+> - `--db-name` is ignored for the replica: the platform's DSN fixes it.
+> - **`--db postgres,prod-ro`** gives the app its own database as well: `DATABASE_URL` is the own
+>   one (read/write), `PROD_RO_DATABASE_URL` the replica. Every rule above holds — same
+>   confirmation, `--auth`, `hours=1`. Its own database gets an MCP, and it is **strict**:
+>   signing in to it needs membership in both `mcp-vibe-<app>` and the app's group `vibe-<app>`.
+>   It shows the whole own database, including whatever the app copied from production — grant
+>   `--mcp` only to people who may see patient data. Strict is for good: leaving prod-ro or a
+>   rollback does not loosen it, because the copied data stays in the database. `vd access
+>   <app> remove <email>` (the app's group) takes them off the MCP group too, and `vd destroy`
+>   of such an app needs `--drop-db`.
+> - **An app never reads a database through an MCP** — its code uses `DATABASE_URL` /
+>   `PROD_RO_DATABASE_URL`. MCPs are for people and agents, not for apps.
 > - All prod-ro apps share **one** database role and one network. They can reach each other on
 >   that network, and the credentials in any one app are the credentials of all of them.
 > - Revoking one app: a platform admin runs `docker network disconnect <prod-ro network> vd-<app>`.
@@ -102,7 +116,7 @@ $SSH_CMD "vd deploy /opt/vibe-deploy/push/<app-name> --name <app-name> --routing
 >   redeploy reconnects it — destroy the app to make it stick. The app still holds the shared
 >   credentials. Revoking for real, for everyone: the platform admins rotate `vibe_ro` (or set it
 >   `NOLOGIN`), then redeploy the prod-ro apps that should keep access.
-> - Redeploying without `--db prod-ro` removes the DSN from the app's `.env` and detaches it.
+> - Redeploying without prod-ro in `--db` removes the DSN from the app's `.env` and detaches it.
 >   Rollback refuses to bring prod-ro back onto an app that left it, from a backup that predates
 >   the replica, or from one without login or with a sign-in over `hours=1`.
 
@@ -163,8 +177,9 @@ Notes worth knowing:
 
 - **SELECT only, whole database.** The MCP connects as a separate read-only role and runs in
   restricted mode. You cannot use it to fix data, only to look — and it looks at all of it.
-- **`--db prod-ro` apps get no MCP.** The production database stays reachable only
-  through the deployed dashboard. Do not try to work around this.
+- **Production never gets an MCP.** With `--db postgres,prod-ro` the MCP is of the app's own
+  database, strict (both groups). Production stays reachable only through the deployed
+  dashboard. Do not try to work around this.
 - If `health` is not `healthy`, the endpoint will hang rather than answer. Check
   `vd logs-snapshot` and redeploy.
 
@@ -218,7 +233,7 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--name` | dir name | App name (lowercase, a-z/0-9/hyphens, 2-63 chars) |
 | `--port` | auto | Internal port |
 | `--routing` | `subdomain` | `subdomain` or `path` |
-| `--db` | `none` | `postgres` (own DB), `prod-ro` (read-only prod), `none` |
+| `--db` | `none` | `postgres` (own DB), `prod-ro` (read-only prod), `postgres,prod-ro` (both: `DATABASE_URL` + `PROD_RO_DATABASE_URL`), `none` |
 | `--db-access` | `rw` | `rw` or `ro` |
 | `--db-name` | app name | Database name (`postgres` only; ignored for `prod-ro`) |
 | `--env-file` | none | Path to .env file on server |
@@ -319,7 +334,7 @@ report the deploy as fully done while one of them describes a missing piece.
 | `AUTH_NOT_CONFIGURED` | Server not set up for `--auth` — use the fallback in `/auth` until a platform admin runs `vd init --authentik-…` |
 | `AUTH_FAILED` | Authentik rejected the setup; nothing was deployed on the server. If the group binding failed, vd also unpublished the app (`404`, never open) — see `details`. Retry once, then pass `details` to the platform admin |
 | `AUTH_REQUIRES_SUBDOMAIN` | Drop `--routing path` |
-| `PROD_RO_REQUIRES_AUTH` | `--db prod-ro` only behind `--auth` — and only after the user confirmed patient-data access |
+| `PROD_RO_REQUIRES_AUTH` | `--db prod-ro` (alone or with `postgres`) only behind `--auth` — and only after the user confirmed patient-data access |
 | `INVALID_AUTH_TTL` | Use `hours=1`, `minutes=30`, …; `--auth-ttl` needs `--auth` |
 | `AUTH_BEARER_REQUIRES_AUTH` | `--auth-bearer` needs `--auth` |
 | `NO_ACCOUNT` | `vd access add`: the person needs a platform account first (admin invites) |

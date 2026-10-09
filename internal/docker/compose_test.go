@@ -292,9 +292,8 @@ func TestComposeProdROJoinsOnlyTheReplicaNetwork(t *testing.T) {
 func TestComposeRefusesUnsafeProdRO(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "c.yml")
 	for name, mut := range map[string]func(*ComposeData){
-		"no auth":  func(d *ComposeData) { d.Auth = false; d.IngressSecret = "" },
-		"with MCP": func(d *ComposeData) { d.NeedsMCP = true; d.MCPImage = "x" },
-		"on vd-db": func(d *ComposeData) { d.NeedsDB = true },
+		"no auth":                  func(d *ComposeData) { d.Auth = false; d.IngressSecret = "" },
+		"MCP without own database": func(d *ComposeData) { d.NeedsMCP = true; d.MCPImage = "x" },
 	} {
 		d := authData()
 		d.ProdRONetwork = "stack_vd-prod-ro"
@@ -302,6 +301,23 @@ func TestComposeRefusesUnsafeProdRO(t *testing.T) {
 		if err := GenerateComposeFile(os.DirFS("../.."), d, out); err == nil {
 			t.Errorf("%s: rendered", name)
 		}
+	}
+}
+
+// --db postgres,prod-ro: the app joins vd-db and the replica network; the MCP
+// of its own database joins vd-db only, never the replica.
+func TestComposeOwnDatabaseBesideTheReplica(t *testing.T) {
+	d := authData()
+	d.ProdRONetwork = "stack_vd-prod-ro"
+	d.NeedsDB, d.NeedsMCP, d.MCPImage = true, true, "x"
+	body := renderMCP(t, d)
+	app, mcp, _ := strings.Cut(body, "  myapp-mcp:")
+	if !strings.Contains(app, "      - vd-db\n") || !strings.Contains(app, "      - vd-prod-ro\n") {
+		t.Fatalf("app not on both database networks:\n%s", app)
+	}
+	mcp, _, _ = strings.Cut(mcp, "\nnetworks:")
+	if mcp == "" || strings.Contains(mcp, "prod-ro") {
+		t.Fatalf("MCP missing or on the replica network:\n%s", mcp)
 	}
 }
 
