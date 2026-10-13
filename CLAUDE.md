@@ -235,7 +235,7 @@ Provision a database user independently (usually not needed — `vd deploy --db`
 
 #### `vd cron-set <app-name>`
 
-Schedule a recurring command inside the app container — one per app, setting it again replaces it. The command runs without a shell (`sh -c '…'` for pipes or `&&`); the schedule is 5 fields or `@hourly`/`@daily`/….
+Schedule a recurring command inside the app container — one per app, setting it again replaces it. The command runs without a shell (`sh -c '…'` for pipes or `&&`); the schedule is 5 fields or `@hourly`/`@daily`/…, in the server's local time (the response's `timezone` field), not UTC.
 
 | Flag | Required | Description |
 |------|----------|-------------|

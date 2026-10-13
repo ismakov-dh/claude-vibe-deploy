@@ -2,6 +2,7 @@ package cron
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"regexp"
 	"strings"
@@ -75,6 +76,11 @@ func Set(app, schedule, command string) error {
 	entry, err := Entry(app, schedule, command)
 	if err != nil {
 		return err
+	}
+	// The job appends to a file in this directory: without it the host shell
+	// fails the redirect and the command never runs, on every run, silently.
+	if err := os.MkdirAll(state.AppLogsDir(app), 0755); err != nil {
+		return fmt.Errorf("log directory: %w", err)
 	}
 	current, _ := shell.RunSimple("crontab", "-l")
 	return writeCrontab(append(withoutJob(current, app), entry))

@@ -2,6 +2,7 @@ package cmd
 
 import (
 	"fmt"
+	"time"
 
 	"github.com/spf13/cobra"
 	"github.com/vibe-deploy/vd/internal/cron"
@@ -42,10 +43,13 @@ var cronSetCmd = &cobra.Command{
 			output.Fail("cron-set", output.NewError("CRON_FAILED", err.Error(), ""))
 		}
 
-		output.Info("Cron job set for %s: %s — %s", name, cronSchedule, cronCommand)
+		// cron reads the schedule in the server's local time, not UTC.
+		tz := time.Now().Format("MST -07:00")
+		output.Info("Cron job set for %s: %s (server time, %s) — %s", name, cronSchedule, tz, cronCommand)
 		output.Success("cron-set", map[string]any{
 			"app":      name,
 			"schedule": cronSchedule,
+			"timezone": tz,
 			"command":  cronCommand,
 		})
 	},
