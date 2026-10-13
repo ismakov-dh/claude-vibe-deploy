@@ -107,7 +107,7 @@ var rollbackCmd = &cobra.Command{
 			output.Fail("rollback", output.NewError("ROLLBACK_FAILED", err.Error(), "Check backup integrity with: vd backups "+name))
 		}
 		if meta.RebuiltFromSource {
-			output.Warn("The backup %s holds no image (made by an older vd): the app was rebuilt from its current source, so its code is NOT the previous version's — only compose, .env and manifest are", meta.Timestamp)
+			output.Warn("The backup %s holds no image (made by an older vd, or while the app's container was missing): the app was rebuilt from its current source, so its code is NOT the previous version's — only compose, .env and manifest are", meta.Timestamp)
 		}
 
 		// Rollback restores code, not Authentik: the provider keeps its header

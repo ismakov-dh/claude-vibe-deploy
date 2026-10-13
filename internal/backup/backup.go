@@ -38,8 +38,8 @@ type Metadata struct {
 	// until the backup is pruned; ComposeImage is the name compose runs it as.
 	BackupImage  string `json:"backup_image,omitempty"`
 	ComposeImage string `json:"compose_image,omitempty"`
-	// RebuiltFromSource is set by Restore when the backup had no image (every
-	// backup made before backup_image existed): the app was rebuilt from its
+	// RebuiltFromSource is set by Restore when the backup had no image (made
+	// by an older vd, or with the container gone): the app was rebuilt from its
 	// current src, which is not the previous version's code.
 	RebuiltFromSource bool            `json:"-"`
 	Created           string          `json:"created"`
@@ -56,6 +56,14 @@ func Create(appName string) error {
 	if err := os.MkdirAll(backupDir, 0755); err != nil {
 		return fmt.Errorf("create backup dir: %w", err)
 	}
+	// A backup that failed must not be left behind: Latest would pick the
+	// half-made directory, and the auto-rollback of this very deploy fail on it.
+	ok := false
+	defer func() {
+		if !ok {
+			os.RemoveAll(backupDir)
+		}
+	}()
 
 	// Keep the running image under a tag of its own: the next build re-points
 	// the compose name at the new image, and a rollback needs the old one.
@@ -64,8 +72,11 @@ func Create(appName string) error {
 	imageID, err := imageIDOf(containerName)
 	var backupImage, composeImage string
 	if err == nil && imageID != "" {
-		if composeImage, err = imageRefOf(containerName); err != nil || composeImage == "" {
-			return fmt.Errorf("image name of %s: %v", containerName, err)
+		if composeImage, err = imageRefOf(containerName); err != nil {
+			return fmt.Errorf("image name of %s: %w", containerName, err)
+		}
+		if composeImage == "" {
+			return fmt.Errorf("container %s reports no image name", containerName)
 		}
 		backupImage = "vd-backup-" + appName + ":" + ts
 		if err := tagImage(imageID, backupImage); err != nil {
@@ -115,6 +126,7 @@ func Create(appName string) error {
 	// Prune old backups
 	prune(appName)
 
+	ok = true
 	return nil
 }
 

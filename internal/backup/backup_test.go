@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/vibe-deploy/vd/internal/state"
 )
@@ -112,4 +113,23 @@ func TestPruneDropsTheImageTag(t *testing.T) {
 	if strings.Join(f.calls, "; ") != "untag vd-backup-demo:0" {
 		t.Fatalf("calls %v", f.calls)
 	}
+}
+
+// A backup that fails leaves nothing behind: Latest must still find the
+// previous, complete one (the auto-rollback of this deploy depends on it).
+func TestFailedBackupLeavesNoDirectory(t *testing.T) {
+	f := stubDocker(t)
+	if err := Create("demo"); err != nil {
+		t.Fatal(err)
+	}
+	_, good, _ := Latest("demo")
+	tagImage = func(string, string) error { return os.ErrPermission }
+	time.Sleep(1100 * time.Millisecond) // a new timestamp directory
+	if err := Create("demo"); err == nil {
+		t.Fatal("failed tag not reported")
+	}
+	if _, meta, err := Latest("demo"); err != nil || meta.Timestamp != good.Timestamp {
+		t.Fatalf("Latest after a failed backup: %+v %v", meta, err)
+	}
+	_ = f
 }

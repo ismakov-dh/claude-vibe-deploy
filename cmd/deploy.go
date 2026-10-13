@@ -466,7 +466,7 @@ func runDeploy(srcPath string) {
 			if meta, err := backup.Restore(deployName, keepStrict(cur)); err != nil {
 				output.Warn("Rollback failed, the app is down: %v", err)
 			} else if meta.RebuiltFromSource {
-				output.Warn("The backup held no image (made by an older vd): the restored app was rebuilt from the new source, so it runs the code that just failed")
+				output.Warn("The backup held no image (made by an older vd, or while the container was missing): the restored app was rebuilt from the new source, so it runs the code that just failed")
 			}
 			// The restored manifest decides whether the MCP has a route.
 			if err := syncMCPGateway(cfg); err != nil {
