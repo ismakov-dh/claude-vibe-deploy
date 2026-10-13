@@ -1,8 +1,11 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -60,5 +63,44 @@ func TestMirrorDirRefusesOverlap(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(src, "app.py")); err != nil {
 		t.Fatal("source deleted")
+	}
+}
+
+// A link in the source is refused before src is touched: following it would
+// copy a host file into the image, and a half-emptied src breaks rollback.
+func TestMirrorDirRefusesLinksAndKeepsSrc(t *testing.T) {
+	root := t.TempDir()
+	push, src := filepath.Join(root, "push"), filepath.Join(root, "apps", "x", "src")
+	os.MkdirAll(filepath.Join(push, "conf"), 0755)
+	os.MkdirAll(src, 0755)
+	os.WriteFile(filepath.Join(push, "app.py"), []byte("new"), 0644)
+	os.WriteFile(filepath.Join(root, "secret"), []byte("host file"), 0600)
+	if err := os.Symlink(filepath.Join(root, "secret"), filepath.Join(push, "conf", "key")); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(src, "Dockerfile.vd"), []byte("keep"), 0644)
+
+	err := mirrorDir(push, src)
+	if err == nil || !strings.Contains(err.Error(), "conf/key is a link") {
+		t.Fatalf("want a refusal naming the link, got %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(src, "Dockerfile.vd")); string(b) != "keep" {
+		t.Fatal("src changed although the source was refused")
+	}
+}
+
+// A FIFO in the source would block the copy forever, holding the app lock.
+func TestMirrorDirRefusesFIFO(t *testing.T) {
+	root := t.TempDir()
+	push, src := filepath.Join(root, "push"), filepath.Join(root, "src")
+	os.MkdirAll(push, 0755)
+	os.MkdirAll(src, 0755)
+	if err := syscall.Mkfifo(filepath.Join(push, "pipe"), 0644); err != nil {
+		t.Skip("no mkfifo here:", err)
+	}
+	err := mirrorDir(push, src)
+	var se sourceError
+	if !errors.As(err, &se) || !strings.Contains(err.Error(), "pipe is not a regular file") {
+		t.Fatalf("want a sourceError naming the FIFO, got %v", err)
 	}
 }

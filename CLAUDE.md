@@ -159,7 +159,7 @@ Receive app files via tar stream on stdin. Use before deploy.
 tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./my-app | ssh vd-server "vd push myapp --json"
 ```
 
-Files stored at `/opt/vibe-deploy/push/<app-name>`, replacing the previous push. Always exclude build artifacts — they are rebuilt inside Docker. `vd deploy` builds exactly the pushed tree: a file left out of the push is gone from the app, so push the whole project every time, never a part of it.
+Files stored at `/opt/vibe-deploy/push/<app-name>`, replacing the previous push. Always exclude build artifacts — they are rebuilt inside Docker. `vd deploy` builds exactly the pushed tree: a file left out of the push is gone from the app, so push the whole project every time, never a part of it. Only regular files and directories are taken — links (symbolic or hard), FIFOs and devices are refused with `INVALID_SOURCE` (`tar -h` stores what links point to). A push is at most 4 GiB.
 
 #### `vd deploy <source-dir>`
 
@@ -277,7 +277,7 @@ would print as `[vd warning]` in human mode. `ok: true` with a warning such as `
 failed … deploying without DB` means the app runs without that piece; agents must read and relay
 `warnings`, not just `ok`.
 
-Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `PROD_RO_REQUIRES_AUTH`, `NO_MCP`, `MCP_OAUTH_FAILED`, `COMPOSE_DRIFT`, `INVALID_ARGS`, `ACCESS_NOT_ENABLED`, `NO_ACCOUNT`, `ACCESS_FORBIDDEN`, `ACCESS_FAILED`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`, `CRON_FAILED`, `FORBIDDEN` (`vd exec` and `db-backup-all` over SSH)
+Error codes: `NOT_FOUND`, `INVALID_NAME`, `INVALID_SOURCE`, `DETECTION_FAILED`, `BUILD_FAILED`, `START_FAILED`, `UNHEALTHY`, `HEALTH_TIMEOUT`, `DB_NOT_FOUND`, `DB_PROVISION_FAILED`, `MISSING_DB_NAME`, `NO_BACKUPS`, `ROLLBACK_FAILED`, `POLICY_VIOLATION`, `AUTH_NOT_CONFIGURED`, `AUTH_FAILED`, `AUTH_REQUIRES_SUBDOMAIN`, `INVALID_AUTH_TTL`, `AUTH_BEARER_REQUIRES_AUTH`, `PROD_RO_REQUIRES_AUTH`, `NO_MCP`, `MCP_OAUTH_FAILED`, `COMPOSE_DRIFT`, `INVALID_ARGS`, `ACCESS_NOT_ENABLED`, `NO_ACCOUNT`, `ACCESS_FORBIDDEN`, `ACCESS_FAILED`, `ROLLBACK_WOULD_UNPROTECT`, `MANIFEST_UNREADABLE`, `MANIFEST_WRITE_FAILED`, `CRON_FAILED`, `COPY_FAILED`, `PUSH_FAILED`, `FORBIDDEN` (`vd exec` and `db-backup-all` over SSH)
 
 ### Troubleshooting
 
