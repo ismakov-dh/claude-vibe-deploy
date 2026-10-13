@@ -463,8 +463,10 @@ func runDeploy(srcPath string) {
 		} else if isRedeploy {
 			output.Warn("Rolling back to previous version...")
 			docker.ComposeDown(appDir, "docker-compose.vd.yml")
-			if _, err := backup.Restore(deployName, keepStrict(cur)); err != nil {
+			if meta, err := backup.Restore(deployName, keepStrict(cur)); err != nil {
 				output.Warn("Rollback failed, the app is down: %v", err)
+			} else if meta.RebuiltFromSource {
+				output.Warn("The backup held no image (made by an older vd, or while the container was missing): the restored app was rebuilt from the new source, so it runs the code that just failed")
 			}
 			// The restored manifest decides whether the MCP has a route.
 			if err := syncMCPGateway(cfg); err != nil {

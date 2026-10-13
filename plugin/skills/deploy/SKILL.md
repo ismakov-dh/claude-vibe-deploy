@@ -260,7 +260,7 @@ All deployed apps.
 One-shot log dump. Default 100 lines. **Always use this, not `vd logs`** (which streams forever).
 
 ### `vd rollback <app-name> [--restore-db]`
-Revert to previous deployment. Last 5 backups kept. Refused with `ROLLBACK_WOULD_UNPROTECT` when the app now has platform login and the previous version did not — it would come back public. If the app has a vd-managed database, **ask the user if they want to also restore the database** — if yes, add `--restore-db`. This restores the database to the state at the time of the previous deploy. Without this flag, only the container is rolled back.
+Revert to previous deployment: the previous image runs again, no rebuild. Last 5 backups kept. `image_restored: false` with a warning means the backup had no image (made by an older vd) and the app was rebuilt from its current source — the code is NOT the previous version's; tell the user and fix forward instead. Refused with `ROLLBACK_WOULD_UNPROTECT` when the app now has platform login and the previous version did not — it would come back public. If the app has a vd-managed database, **ask the user if they want to also restore the database** — if yes, add `--restore-db`. This restores the database to the state at the time of the previous deploy. Without this flag, only the container is rolled back.
 
 ### `vd access <app-name> list | add <email\|svc> | remove <email\|svc> [--mcp]`
 

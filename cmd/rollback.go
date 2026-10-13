@@ -106,6 +106,9 @@ var rollbackCmd = &cobra.Command{
 		if err != nil {
 			output.Fail("rollback", output.NewError("ROLLBACK_FAILED", err.Error(), "Check backup integrity with: vd backups "+name))
 		}
+		if meta.RebuiltFromSource {
+			output.Warn("The backup %s holds no image (made by an older vd, or while the app's container was missing): the app was rebuilt from its current source, so its code is NOT the previous version's — only compose, .env and manifest are", meta.Timestamp)
+		}
 
 		// Rollback restores code, not Authentik: the provider keeps its header
 		// auth, so the manifest must keep saying so, or the next plain redeploy
@@ -157,6 +160,7 @@ var rollbackCmd = &cobra.Command{
 		output.Success("rollback", map[string]any{
 			"name":                name,
 			"rolled_back_to":      meta.Timestamp,
+			"image_restored":      !meta.RebuiltFromSource,
 			"status":              "running",
 			"health":              health,
 			"db_restored":         dbRestored,
