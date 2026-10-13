@@ -197,25 +197,52 @@ func WaitHealthy(name string, timeout time.Duration) error {
 	return fmt.Errorf("container %s did not become healthy within %s", name, timeout)
 }
 
-// SaveImage saves a Docker image to a tar.gz file.
-func SaveImage(image, destPath string) error {
-	_, err := shell.Run(5*time.Minute, "sh", "-c",
-		fmt.Sprintf("docker save %s | gzip > %s", image, destPath))
+// ComposeUpNoBuild starts the services from the images that exist, never
+// building: a rollback must run the previous image, not rebuild today's source.
+func ComposeUpNoBuild(dir, composefile string) error {
+	r, err := shell.Run(defaultTimeout, "docker", "compose", "-f", dir+"/"+composefile, "up", "-d", "--no-build", "--force-recreate")
+	if err != nil {
+		return fmt.Errorf("docker compose up failed: %s", r.Stderr)
+	}
+	return nil
+}
+
+// ContainerImageRef is the image name a container was created from (for a
+// compose-built app, "<project>-<service>").
+func ContainerImageRef(containerName string) (string, error) {
+	r, err := shell.Run(30*time.Second, "docker", "inspect", "--format", "{{.Config.Image}}", containerName)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(r.Stdout), nil
+}
+
+// TagImage points tag at the image src (an ID or a name).
+func TagImage(src, tag string) error {
+	if r, err := shell.Run(30*time.Second, "docker", "tag", src, tag); err != nil {
+		return fmt.Errorf("docker tag %s %s: %s", src, tag, strings.TrimSpace(r.Stderr))
+	}
+	return nil
+}
+
+// RemoveImageTag drops a tag; the image itself goes only when nothing else
+// (another tag, a container) still uses it.
+func RemoveImageTag(tag string) error {
+	_, err := shell.Run(30*time.Second, "docker", "image", "rm", tag)
 	return err
 }
 
-// LoadImage loads a Docker image from a tar.gz file.
+// ImageExists reports whether ref names an image on this host.
+func ImageExists(ref string) bool {
+	_, err := shell.Run(30*time.Second, "docker", "image", "inspect", ref)
+	return err == nil
+}
+
 // PullImage fetches an image ahead of time. Used by vd init so an unreachable
 // private registry surfaces at initialisation rather than in the middle of
 // somebody's app deploy — a compose up that cannot pull takes the app with it.
 func PullImage(image string) error {
 	_, err := shell.Run(5*time.Minute, "docker", "pull", image)
-	return err
-}
-
-func LoadImage(srcPath string) error {
-	_, err := shell.Run(5*time.Minute, "sh", "-c",
-		fmt.Sprintf("gunzip -c %s | docker load", srcPath))
 	return err
 }
 

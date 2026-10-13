@@ -17,14 +17,34 @@ import (
 
 const maxBackups = 5
 
+// The docker calls, replaced in tests.
+var (
+	imageIDOf        = docker.GetImageID
+	imageRefOf       = docker.ContainerImageRef
+	tagImage         = docker.TagImage
+	untagImage       = docker.RemoveImageTag
+	imageExists      = docker.ImageExists
+	composeDown      = docker.ComposeDown
+	composeUp        = docker.ComposeUp
+	composeUpNoBuild = docker.ComposeUpNoBuild
+)
+
 // Metadata describes a single backup.
 type Metadata struct {
-	App          string          `json:"app"`
-	Timestamp    string          `json:"timestamp"`
-	ImageID      string          `json:"image_id"`
-	Created      string          `json:"created"`
-	Manifest     *state.Manifest `json:"manifest"`
-	DBBackupFile string          `json:"db_backup_file,omitempty"`
+	App       string `json:"app"`
+	Timestamp string `json:"timestamp"`
+	ImageID   string `json:"image_id"`
+	// BackupImage is a tag vd keeps on the running image (vd-backup-<app>:<ts>)
+	// until the backup is pruned; ComposeImage is the name compose runs it as.
+	BackupImage  string `json:"backup_image,omitempty"`
+	ComposeImage string `json:"compose_image,omitempty"`
+	// RebuiltFromSource is set by Restore when the backup had no image (every
+	// backup made before backup_image existed): the app was rebuilt from its
+	// current src, which is not the previous version's code.
+	RebuiltFromSource bool            `json:"-"`
+	Created           string          `json:"created"`
+	Manifest          *state.Manifest `json:"manifest"`
+	DBBackupFile      string          `json:"db_backup_file,omitempty"`
 }
 
 // Create backs up the current deployment before a new deploy.
@@ -37,12 +57,19 @@ func Create(appName string) error {
 		return fmt.Errorf("create backup dir: %w", err)
 	}
 
-	// Save Docker image
-	imageID, err := docker.GetImageID(containerName)
+	// Keep the running image under a tag of its own: the next build re-points
+	// the compose name at the new image, and a rollback needs the old one.
+	// (This used to be docker save of the container name, which docker refuses
+	// — and the pipe into gzip hid it: every backup held an empty archive.)
+	imageID, err := imageIDOf(containerName)
+	var backupImage, composeImage string
 	if err == nil && imageID != "" {
-		imgPath := filepath.Join(backupDir, "image.tar.gz")
-		if err := docker.SaveImage(containerName, imgPath); err != nil {
-			return fmt.Errorf("save image: %w", err)
+		if composeImage, err = imageRefOf(containerName); err != nil || composeImage == "" {
+			return fmt.Errorf("image name of %s: %v", containerName, err)
+		}
+		backupImage = "vd-backup-" + appName + ":" + ts
+		if err := tagImage(imageID, backupImage); err != nil {
+			return fmt.Errorf("keep image: %w", err)
 		}
 	}
 
@@ -76,6 +103,8 @@ func Create(appName string) error {
 		App:          appName,
 		Timestamp:    ts,
 		ImageID:      imageID,
+		BackupImage:  backupImage,
+		ComposeImage: composeImage,
 		Created:      time.Now().UTC().Format(time.RFC3339),
 		Manifest:     manifest,
 		DBBackupFile: dbBackupFile,
@@ -99,16 +128,14 @@ func Restore(appName string, beforeStart func(*Metadata) error) (*Metadata, erro
 
 	appDir := state.AppDir(appName)
 
-	// Stop current container
-	docker.ComposeDown(appDir, "docker-compose.vd.yml")
-
-	// Load image
-	imgPath := filepath.Join(backupDir, "image.tar.gz")
-	if fileExists(imgPath) {
-		if err := docker.LoadImage(imgPath); err != nil {
-			return nil, fmt.Errorf("load image: %w", err)
-		}
+	// The previous image, if the backup kept one. Checked before anything stops.
+	withImage := meta.BackupImage != "" && meta.ComposeImage != ""
+	if withImage && !imageExists(meta.BackupImage) {
+		return nil, fmt.Errorf("the backup's image %s is gone from this host — nothing changed", meta.BackupImage)
 	}
+
+	// Stop current container
+	composeDown(appDir, "docker-compose.vd.yml")
 
 	// Restore compose file
 	copyFile(filepath.Join(backupDir, "docker-compose.vd.yml"), state.AppComposePath(appName))
@@ -135,8 +162,20 @@ func Restore(appName string, beforeStart func(*Metadata) error) (*Metadata, erro
 		return nil, fmt.Errorf("before start: %w", err)
 	}
 
-	// Start restored container
-	if err := docker.ComposeUp(appDir, "docker-compose.vd.yml"); err != nil {
+	// Start restored container: the previous image under the name compose runs.
+	if withImage {
+		if err := tagImage(meta.BackupImage, meta.ComposeImage); err != nil {
+			return nil, fmt.Errorf("restore image: %w", err)
+		}
+		if err := composeUpNoBuild(appDir, "docker-compose.vd.yml"); err != nil {
+			return nil, fmt.Errorf("start restored container: %w", err)
+		}
+		return meta, nil
+	}
+	// shortcut: a backup from before backup_image has no image to restore;
+	// rebuilding the current src is all there is. Gone once those age out (5 deploys).
+	meta.RebuiltFromSource = true
+	if err := composeUp(appDir, "docker-compose.vd.yml"); err != nil {
 		return nil, fmt.Errorf("start restored container: %w", err)
 	}
 
@@ -196,6 +235,9 @@ func prune(appName string) {
 		return
 	}
 	for _, d := range dirs[:len(dirs)-maxBackups] {
+		if m, err := loadMetadata(d); err == nil && m.BackupImage != "" {
+			untagImage(m.BackupImage)
+		}
 		os.RemoveAll(d)
 	}
 }
@@ -269,9 +311,4 @@ func copyFile(src, dst string) {
 		return
 	}
 	os.WriteFile(dst, data, info.Mode().Perm())
-}
-
-func fileExists(path string) bool {
-	_, err := os.Stat(path)
-	return err == nil
 }
