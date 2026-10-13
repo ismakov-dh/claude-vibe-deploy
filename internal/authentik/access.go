@@ -19,15 +19,16 @@ var accessGroupRe = regexp.MustCompile(`^(mcp-)?vibe-[a-z][a-z0-9-]{1,62}$`)
 
 var (
 	ErrNoGroup   = errors.New("group not found")
-	ErrNoAccount = errors.New("no platform account with that email")
+	ErrNoAccount = errors.New("no platform account with that email, nor service account with that username")
 	ErrForbidden = errors.New("Authentik refused: vd may not change this group")
 )
 
 // Member is what vd access list shows: enough to recognise a person.
 type Member struct {
-	Email  string `json:"email"`
-	Name   string `json:"name"`
-	Active bool   `json:"active"`
+	Email    string `json:"email"`
+	Username string `json:"username"` // how a service account (no email) is named in vd access
+	Name     string `json:"name"`
+	Active   bool   `json:"active"`
 }
 
 // groupUsers finds the group by exact name and returns its pk and member pks.
@@ -87,6 +88,7 @@ func (c *Client) Members(group string) (members []Member, unreadable int, err er
 	for _, pk := range pks {
 		var u struct {
 			Email    string `json:"email"`
+			Username string `json:"username"`
 			Name     string `json:"name"`
 			IsActive bool   `json:"is_active"`
 		}
@@ -98,12 +100,13 @@ func (c *Client) Members(group string) (members []Member, unreadable int, err er
 		if err != nil {
 			return nil, 0, err
 		}
-		members = append(members, Member{Email: u.Email, Name: u.Name, Active: u.IsActive})
+		members = append(members, Member{Email: u.Email, Username: u.Username, Name: u.Name, Active: u.IsActive})
 	}
 	return members, unreadable, nil
 }
 
-// AddMember puts the account with this email into the group. changed is false
+// AddMember puts the account with this email (or the service account with this
+// username) into the group. changed is false
 // when it already was a member.
 func (c *Client) AddMember(group, email string) (changed bool, err error) {
 	return c.setMember(group, email, true)
@@ -114,12 +117,17 @@ func (c *Client) RemoveMember(group, email string) (changed bool, err error) {
 	return c.setMember(group, email, false)
 }
 
-func (c *Client) setMember(group, email string, in bool) (bool, error) {
+func (c *Client) setMember(group, who string, in bool) (bool, error) {
 	gpk, members, err := c.groupUsers(group)
 	if err != nil {
 		return false, err
 	}
-	upk, err := c.userPKByEmail(email)
+	var upk int
+	if strings.Contains(who, "@") {
+		upk, err = c.userPKByEmail(who)
+	} else {
+		upk, err = c.serviceAccountPK(who)
+	}
 	if err != nil {
 		if strings.Contains(err.Error(), "HTTP 403") {
 			return false, ErrForbidden
@@ -164,4 +172,37 @@ func (c *Client) setMember(group, email string, in bool) (bool, error) {
 		return false, fmt.Errorf("%s: Authentik accepted the change but the group does not show it", group)
 	}
 	return true, nil
+}
+
+// serviceAccountPK finds a service account by its exact username. People are
+// found by email only: a username is not something their owner can verify,
+// and a service account has no email.
+func (c *Client) serviceAccountPK(username string) (int, error) {
+	username = strings.TrimSpace(username)
+	if username == "" {
+		return 0, nil
+	}
+	var pks []int
+	// search matches substrings; the exact comparison below decides.
+	err := c.each("/core/users/", url.Values{"search": {username}}, func(raw json.RawMessage) {
+		var u struct {
+			PK       int    `json:"pk"`
+			Username string `json:"username"`
+			Type     string `json:"type"`
+		}
+		// Not internal_service_account: those are Authentik's own (outposts).
+		if json.Unmarshal(raw, &u) == nil && u.Username == username && u.Type == "service_account" {
+			pks = append(pks, u.PK)
+		}
+	})
+	if err != nil {
+		return 0, fmt.Errorf("look up service account: %w", err)
+	}
+	if len(pks) > 1 {
+		return 0, fmt.Errorf("username matches %d service accounts — refusing to guess; ask a platform admin", len(pks))
+	}
+	if len(pks) == 0 {
+		return 0, nil
+	}
+	return pks[0], nil
 }

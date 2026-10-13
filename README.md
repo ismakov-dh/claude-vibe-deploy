@@ -106,7 +106,7 @@ vd list
 vd logs-snapshot <name> [--lines N]
 vd rollback <name>
 vd mcp-oauth <name> [--owner <email>] [--check]   # admin: sign-in for an app deployed before it was default
-vd access <name> list|add|remove [email] [--mcp]   # the owner grants/revokes access
+vd access <name> list|add|remove [email|service-account] [--mcp]   # the owner grants/revokes access
 vd destroy <name> --yes [--drop-db]
 vd cron-set <name> --schedule "..." --command "..."
 vd cron-rm <name>

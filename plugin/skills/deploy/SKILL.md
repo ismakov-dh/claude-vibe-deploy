@@ -240,7 +240,7 @@ Files stored at `/opt/vibe-deploy/push/<app-name>`.
 | `--allow-external` | false | Silence warnings about unsupported external services |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky. Subdomain routing only |
 | `--mcp-owner` | none | Email of one person to add to `mcp-vibe-<app>`, the database MCP's group (with `--db postgres`) |
-| `--auth-bearer` | false | With `--auth`: the outpost also accepts `Authorization: Bearer` (service accounts' client_credentials tokens) and `Basic` with an app password from **any** group member. The app must restrict service accounts' routes itself — see `/auth`. Sticky; `--auth-bearer=false` turns it off |
+| `--auth-bearer` | false | With `--auth`: the outpost also accepts `Authorization: Bearer` (service accounts' client_credentials tokens) and `Basic` with an app password from **any** group member. A service account is an ordinary member (read-only when in the platform group `readonly`, which the app enforces — see `/auth`). Warns on a `--db prod-ro` app: keep it off there unless the user asks. Sticky; `--auth-bearer=false` turns it off |
 | `--auth-ttl` | `hours=1` | How long a sign-in lasts before Authentik is asked again (`hours=`, `minutes=`, `days=`). Longer than a day produces a warning: group removal then takes that long to bite |
 
 `--db postgres` additionally provisions a read-only MCP for the app's database and
@@ -262,14 +262,16 @@ One-shot log dump. Default 100 lines. **Always use this, not `vd logs`** (which 
 ### `vd rollback <app-name> [--restore-db]`
 Revert to previous deployment. Last 5 backups kept. Refused with `ROLLBACK_WOULD_UNPROTECT` when the app now has platform login and the previous version did not — it would come back public. If the app has a vd-managed database, **ask the user if they want to also restore the database** — if yes, add `--restore-db`. This restores the database to the state at the time of the previous deploy. Without this flag, only the container is rolled back.
 
-### `vd access <app-name> list | add <email> | remove <email> [--mcp]`
+### `vd access <app-name> list | add <email\|svc> | remove <email\|svc> [--mcp]`
 
 Who may use an `--auth` app (group `vibe-<app>`), or with `--mcp` its database MCP (group
 `mcp-vibe-<app>`, every `--db postgres` app). The group comes from the app name only. `add` and
 `remove` are safe to repeat (`changed: false`); `remove` returns `takes_effect` — the app's
-sign-in lifetime, or 5 minutes for the MCP. Only for emails the user gave you. Errors:
+sign-in lifetime, or 5 minutes for the MCP. Only for emails the user gave you. A service account
+(a script, `/auth` §8) has no email: give its username (`vd access <app> add svc-export`); a
+person is always named by email. Errors:
 `ACCESS_NOT_ENABLED` (no `--auth` / no MCP behind sign-in yet), `NO_ACCOUNT` (no platform account — an admin
-invites first), `ACCESS_FORBIDDEN` (vd has no rights on that group — older apps; an admin
+invites first; no service account with that username — an admin creates it), `ACCESS_FORBIDDEN` (vd has no rights on that group — older apps; an admin
 grants them), `INVALID_ARGS`, `ACCESS_FAILED`.
 
 ### `vd destroy <app-name> --yes [--drop-db]`

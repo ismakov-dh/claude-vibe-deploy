@@ -50,7 +50,7 @@ type fake struct {
 	// MCP resources.
 	oauth2     map[int]map[string]any
 	noMCPScope bool             // stacks' mcp-groups mapping absent
-	users      map[int]string   // pk -> email
+	users      map[int]string   // pk -> email; without "@", a service account's username
 	addedUsers map[string][]int // group pk -> user pks added
 	dropOAuth2 string           // field the fake silently fails to store
 	// forbidGroups answers 403 to membership changes, as Authentik does on
@@ -362,10 +362,13 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			if v := q.Get("email"); v != "" && v != e {
 				continue
 			}
-			if v := q.Get("search"); v != "" && !strings.Contains(strings.ToLower(e), strings.ToLower(v)) {
+			if v := q.Get("search"); v != "" && !strings.Contains(strings.ToLower(e), strings.ToLower(v)) &&
+				!strings.Contains(strings.ToLower(fakeUser(pk, e)["username"].(string)), strings.ToLower(v)) {
 				continue
 			}
-			res = append(res, map[string]any{"pk": pk, "email": e, "name": "must not be kept"})
+			u := fakeUser(pk, e)
+			u["name"] = "must not be kept"
+			res = append(res, u)
 		}
 		out(200, page(res, 0))
 	case strings.HasPrefix(p, "/core/users/") && r.Method == "GET":
@@ -375,7 +378,9 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			out(404, map[string]any{"detail": "Not found."})
 			return
 		}
-		out(200, map[string]any{"pk": pk, "email": e, "name": "Name " + strconv.Itoa(pk), "is_active": pk != 8, "password": "must never be read"})
+		u := fakeUser(pk, e)
+		u["name"], u["is_active"], u["password"] = "Name "+strconv.Itoa(pk), pk != 8, "must never be read"
+		out(200, u)
 	case strings.HasPrefix(p, "/core/groups/") && (strings.HasSuffix(p, "/add_user/") || strings.HasSuffix(p, "/remove_user/")):
 		add := strings.HasSuffix(p, "/add_user/")
 		g := strings.TrimSuffix(strings.TrimSuffix(strings.TrimPrefix(p, "/core/groups/"), "/add_user/"), "/remove_user/")
@@ -882,4 +887,13 @@ func TestEnsureBearerSetsAndClearsHeaderAuth(t *testing.T) {
 	if h, _ := c.Check("demo"); h.HeaderAuth {
 		t.Fatal("Check reports header auth that is off")
 	}
+}
+
+// fakeUser is a person (username user<pk>) for an email, or a service account
+// (no email) for a bare username.
+func fakeUser(pk int, e string) map[string]any {
+	if !strings.Contains(e, "@") {
+		return map[string]any{"pk": pk, "email": "", "username": e, "type": "service_account"}
+	}
+	return map[string]any{"pk": pk, "email": e, "username": "user" + strconv.Itoa(pk), "type": "internal"}
 }

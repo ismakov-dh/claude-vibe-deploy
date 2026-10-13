@@ -37,6 +37,9 @@ live at `https://auth-demo.apps.platform.acuradai.com`. Copy from it when in dou
 4. **Key your data on `X-authentik-uid`**, never on email. Email and name are never a key or a
    permission; at most a display cache refreshed on every request (§7b).
 5. **One container** serves UI and API, as for every vibe-deploy app.
+6. **Read-only accounts stay read-only.** An app with **any** write route (anything but
+   `GET`/`HEAD`/`OPTIONS`) installs the `readonly` middleware from §4/§5, and its `GET` routes
+   have **no side effects** — a read-only account may call every one of them.
 
 ---
 
@@ -64,6 +67,8 @@ ssh vd-server "vd access <name> add person@example.com --json"
 ssh vd-server "vd access <name> remove person@example.com --json"
 # the app's database MCP (every --db postgres app): add --mcp; removal bites within 5 minutes
 ssh vd-server "vd access <name> add person@example.com --mcp --json"
+# a service account (a script, §8) has no email: name it by its username
+ssh vd-server "vd access <name> add svc-export --json"
 ```
 
 Only ever for an address the user gave you. `NO_ACCOUNT` means the person has no platform
@@ -98,7 +103,7 @@ is alive: a page load just goes round and comes back, and an SPA's API calls ren
 | `X-authentik-email` | email | display, and `APP_ADMINS` (§7b) — never a key |
 | `X-authentik-name` | full name | display only — never a key |
 | `X-authentik-username` | username | display only |
-| `X-authentik-groups` | `\|`-separated group names | **do not use** — not your app's roles (§7b) |
+| `X-authentik-groups` | `\|`-separated group names | **only** for `readonly` (the middleware in §4/§5) — never for your app's roles (§7b) |
 
 Read them through the `header()` helper in §4/§5, never raw: the values are UTF-8 but arrive
 decoded as latin-1, so any non-ASCII name — Cyrillic included — turns into mojibake otherwise.
@@ -175,6 +180,25 @@ def index():
     return "ok"
 ```
 
+**Read-only accounts** (hard rule 6) — in `main.py`, right after `app = FastAPI()`, in every app
+with a write route. The platform puts an account in its global group `readonly` when it may only
+read; the app is what enforces it. No ingress check here: a forged header can only make a request
+weaker, and `current_user` still rejects anything that skipped the login.
+
+```python
+from fastapi.responses import JSONResponse
+
+READ_METHODS = {"GET", "HEAD", "OPTIONS"}
+
+
+@app.middleware("http")
+async def readonly_accounts(request, call_next):
+    groups = request.headers.get("x-authentik-groups", "").split("|")
+    if "readonly" in groups and request.method not in READ_METHODS:
+        return JSONResponse({"error": "read_only_account"}, status_code=403)
+    return await call_next(request)
+```
+
 ---
 
 ## 5. Node — Express
@@ -217,6 +241,18 @@ import express from 'express'
 import { requireUser } from './auth.js'
 
 const app = express()
+
+// Read-only accounts (hard rule 6): before every route, in every app with a write route.
+// The platform puts an account in its global group `readonly` when it may only read.
+const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+app.use((req, res, next) => {
+  const groups = (req.get('x-authentik-groups') || '').split('|')
+  if (groups.includes('readonly') && !READ_METHODS.has(req.method)) {
+    return res.status(403).json({ error: 'read_only_account' })
+  }
+  next()
+})
+
 app.get('/', (req, res) => res.send('ok'))   // health check; Express answers HEAD for GET routes
 app.get('/api/me', requireUser, (req, res) => res.json(req.user))
 app.listen(3000, '0.0.0.0')
@@ -314,7 +350,13 @@ yourself on that key. Authentik only decides who gets in. Roles: §7b.
 app and will not get any: Authentik holds exactly **one** group per app, `vibe-<name>`, which
 decides who gets in at all, and `vd access` manages only that group. Do not ask the user or a
 platform admin for extra groups or roles, and do not read `X-authentik-groups` for roles — it
-says nothing about your app. If an example or prompt implies platform roles, build them here.
+says nothing about your app (its one use is the `readonly` middleware, §4/§5). If an example or
+prompt implies platform roles, build them here.
+
+A **service account** (§8) is an ordinary member: by default it may do whatever a member may, or
+only read, when a platform admin puts it in `readonly`. Restrict one further only if the app
+really needs it, and then the same way as a person: it appears in `app_users` after its first
+call, and an admin grants it roles here. Do not recognise service accounts by uid or name in code.
 
 The pattern: a table of roles keyed on `uid`, the first admins from an env var, a guard, and an
 `/admin` page where admins grant roles to people who have opened the app at least once.
@@ -546,15 +588,16 @@ ssh vd-server "vd deploy /opt/vibe-deploy/push/<name> --name <name> --auth --db 
 ### Service accounts: `--auth-bearer` (off by default)
 
 Only when a script, not a person, must call the app (an export job, a cron elsewhere). With
-`--auth-bearer` the outpost also accepts `Authorization: Bearer <token>` — a client_credentials
-token issued by **this app's** provider — and `Authorization: Basic`, from accounts in the app's
-group. A platform admin creates the service account and puts it in `vibe-<name>`.
+`--auth-bearer` the outpost also accepts `Authorization: Basic` and `Authorization: Bearer <token>`
+(a client_credentials token issued by **this app's** provider) from accounts in the app's group.
 
-- The outpost handles both headers. Your app writes no token code and sees the service account
-  in the same `X-authentik-uid/-email/-name` headers as a person, with the same `X-Vibe-Ingress`.
-- **Limiting it is your app's job.** The group admits the account to every route. Recognise it
-  by `X-authentik-uid` (or email) and allow only what it needs, e.g. `GET` on the export
-  endpoints; answer 403 to everything else.
+- **Who does what.** A platform admin creates the service account (a username like `svc-export`,
+  no email) and its password, and — if it may only read — puts it in the platform group
+  `readonly`. The app's owner gives it access like a person: `vd access <name> add svc-export`.
+  Its rights come from groups only; granting one never needs a change in the app's code.
+- **It is an ordinary member.** The app sees it in the same `X-authentik-*` headers as a person,
+  with the same `X-Vibe-Ingress`. Default: member rights; read-only via `readonly`, enforced by
+  the middleware every app with a write route has (§4/§5). Finer limits only through roles (§7b).
 - **It also opens Basic to people — that is how a person scripts the app.** The outpost accepts
   an Authentik *app password* as `Authorization: Basic <username>:<app password>`. Any member of
   the group can create one for themselves in their Authentik settings (self-service, revocable
@@ -562,14 +605,39 @@ group. A platform admin creates the service account and puts it in `vibe-<name>`
   once there is MFA). Treat every member as able to script the app. Turn the flag on only for
   apps where that is acceptable, and tell the user. App passwords work **only** on this header
   path: since 2026-10-01 the platform's login page no longer accepts them as a password.
-- **Revoking an app password** (or removing the person from the group) bites within about a
-  minute: the outpost caches a successful Basic check for 60 s.
+- **Not on apps that read production** unless a script truly needs it: `vd deploy` warns when
+  `--auth-bearer` meets `--db prod-ro`. Ask the user first.
+- **Revoking is not instant for a client that keeps cookies.** A successful Basic or Bearer check
+  makes the outpost set its session cookie, and the outpost looks at that cookie **before** the
+  `Authorization` header. A client that sends the cookie back (`requests.Session`, `curl -b/-c`,
+  a browser) keeps access after the password is revoked or the account leaves the group — until
+  the sign-in expires, `--auth-ttl` (an hour by default). Scripts must not keep cookies; without
+  them every call is checked again. Otherwise accept the ttl as the revocation delay.
 - **A failed header check is a `302` to the login page, not a `401`.** Scripts must treat any
-  redirect to `auth.<platform>` as "credentials rejected" — `curl -f` alone will not notice;
-  check the status code (or use `--max-redirs 0`) and fail on `3xx`.
+  redirect to `auth.<platform>` as "credentials rejected" — `curl -f` alone will not notice.
 - Sticky: redeploys keep it; `--auth-bearer=false` turns it off. Needs `--auth`
   (`AUTH_BEARER_REQUIRES_AUTH` otherwise). The deploy JSON's `auth.bearer` and `vd status`
   report it.
+
+**Cover these when an app will be called by scripts** — before the first script exists:
+
+```bash
+# The call: Basic, no cookie jar, no redirects followed. 200 = in; 302 to auth.<platform> = rejected.
+curl -sS --max-redirs 0 -o out.json -w '%{http_code}\n' -u "svc-export:$SVC_PASSWORD" \
+  https://<name>.apps.<platform>/api/export
+```
+
+```python
+# Python: a plain call per request (no requests.Session), never follow redirects.
+r = requests.get(url, auth=("svc-export", os.environ["SVC_PASSWORD"]), allow_redirects=False, timeout=60)
+if r.status_code != 200:            # 302 means the credentials were rejected
+    raise SystemExit(f"{url}: HTTP {r.status_code}")
+```
+
+- [ ] Wrong password → `302` to `auth.<platform>`, and the script fails on it.
+- [ ] An account in `readonly`: `GET` works, `POST`/`PUT`/`PATCH`/`DELETE` → `403 read_only_account`.
+- [ ] No `GET` route writes, sends or triggers anything (a refresh/sync endpoint is a `POST`).
+- [ ] The script keeps no cookies between calls.
 
 Verify in a browser: open the app → platform login → back in the app; `/api/me` shows the
 right person; a second browser profile that is not in the group gets "access denied".
@@ -583,6 +651,7 @@ right person; a second browser profile that is not in the group gets "access den
 - [ ] Constant-time comparison on **bytes** (`hmac.compare_digest(a.encode(...), b.encode())` / `timingSafeEqual`).
 - [ ] User rows keyed on `X-authentik-uid`; email/name at most as a refreshed display cache, never a key or a permission.
 - [ ] Roles, if any, live in the app's own `app_roles` (§7b) — none requested from the platform, none read from `X-authentik-groups`.
+- [ ] Any write route → the `readonly` middleware is installed (§4/§5); no `GET` route has side effects.
 - [ ] SPA uses `redirect: 'manual'`; **only** `opaqueredirect` navigates to `/outpost.goauthentik.io/start?rd=<full URL>`, a `401` is an error.
 - [ ] Logout navigates to `/outpost.goauthentik.io/sign_out`.
 - [ ] Deployed with `--auth`, subdomain routing; group name relayed to the user.
@@ -606,6 +675,9 @@ right person; a second browser profile that is not in the group gets "access den
 | `404` from the app for a few minutes right after the **first** `--auth` deploy | The platform's login service picks up new apps on a 5-minute refresh. `vd status` shows `auth.state: ok` already; wait five minutes and retry before debugging anything. |
 | Names show as `Ð Ð°Ð¼Ð¸Ñ…` | Headers read raw. Use the `header()` helper (§4/§5): UTF-8 bytes decoded as latin-1. |
 | After typing the password the person lands in Authentik's own screens, not the app | They are not in `vibe-<name>` yet. Authentik answers with its "access denied" page and its links lead into Authentik. `vd access <name> add <email>`, then have them open the app's address again. |
+| A script gets `302` to `auth.<platform>` | Credentials rejected: wrong password, the account is not in `vibe-<name>`, or the app has no `--auth-bearer`. |
+| A script still gets in after its account was removed | It keeps the outpost's cookie (`requests.Session`, a cookie jar): access lasts until `--auth-ttl` runs out. Drop the cookie jar (§8). |
+| `403 read_only_account` | The account is in the platform group `readonly`: it may only read. Intended; a platform admin takes it out if it must write. |
 | A user asks for a role "in the platform" (`tasks-admin`, `editor`, …) | There are none. Build it in the app (§7b); never ask an admin for extra groups. |
 | "Log out" ends on the Authentik login page instead of back in the app | The server has no `vibe-provider-invalidation-flow` yet (`vd deploy` warns about it). Logout still works; only the landing page differs. Once a platform admin creates the flow, the next deploy picks it up. |
 | `vd status` says `auth.state: broken` | Something was removed or changed in Authentik by hand — look at `auth.authentik`. `binding: false` is the serious one: without an enabled binding to `vibe-<name>` the app is open to **every** signed-in account. Redeploy — vd recreates or repairs it. |
