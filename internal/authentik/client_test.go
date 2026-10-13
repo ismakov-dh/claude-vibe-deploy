@@ -44,6 +44,9 @@ type fake struct {
 
 	// failBindings makes creating or patching a policy binding fail.
 	failBindings bool
+	// forbidBindings answers 403 to changing or deleting these binding pks, as
+	// Authentik does for bindings vd did not create.
+	forbidBindings map[string]bool
 	// failAppDelete makes deleting an application fail.
 	failAppDelete bool
 
@@ -267,6 +270,15 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		pk := strings.Trim(strings.TrimPrefix(p, "/policies/bindings/"), "/")
+		if f.forbidBindings[pk] {
+			out(403, map[string]any{"detail": "You do not have permission to perform this action."})
+			return
+		}
+		// As 2026.8.2: PolicyBindingSerializer.validate needs target on PATCH.
+		if _, ok := body["target"]; !ok {
+			out(500, map[string]any{"detail": "fake: partial PATCH without target"})
+			return
+		}
 		for _, b := range f.bindings {
 			if b["pk"] == pk {
 				for k, v := range body {
@@ -279,6 +291,10 @@ func (f *fake) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		out(404, map[string]any{"detail": "Not found."})
 	case strings.HasPrefix(p, "/policies/bindings/") && r.Method == "DELETE":
 		pk := strings.Trim(strings.TrimPrefix(p, "/policies/bindings/"), "/")
+		if f.forbidBindings[pk] {
+			out(403, map[string]any{"detail": "You do not have permission to perform this action."})
+			return
+		}
 		for i, b := range f.bindings {
 			if b["pk"] == pk {
 				f.bindings = append(f.bindings[:i], f.bindings[i+1:]...)
@@ -627,6 +643,10 @@ func TestRemoveKeepsGroupAndOtherOutpostMembers(t *testing.T) {
 	if len(f.bindings) != 0 {
 		t.Fatalf("bindings left: %v", f.bindings)
 	}
+	// They go with the application (cascade); vd deletes none itself.
+	if n := f.count("DELETE /policies/bindings/"); n != 0 {
+		t.Fatalf("%d binding deletes", n)
+	}
 	if _, ok := f.groups["vibe-demo"]; !ok {
 		t.Fatal("group deleted — vd must never delete groups")
 	}
@@ -899,4 +919,28 @@ func fakeUser(pk int, e string) map[string]any {
 		return map[string]any{"pk": pk, "email": "", "username": e, "type": "service_account"}
 	}
 	return map[string]any{"pk": pk, "email": e, "username": "user" + strconv.Itoa(pk), "type": "internal"}
+}
+
+// A weak binding vd may not change: fail closed, name it, no retry, no second
+// binding next to it.
+func TestBindingVdMayNotChangeFailsClosed(t *testing.T) {
+	f, c := setup(t)
+	res, err := c.Ensure(spec())
+	if err != nil {
+		t.Fatal(err)
+	}
+	pk := f.bindings[0]["pk"].(string)
+	f.bindings[0]["enabled"] = false
+	f.forbidBindings = map[string]bool{pk: true}
+	f.calls = nil
+	_, err = c.Ensure(spec())
+	if err == nil || !strings.Contains(err.Error(), pk) || !strings.Contains(err.Error(), "Authentik admin") {
+		t.Fatalf("want a named refusal, got %v", err)
+	}
+	if f.count("PATCH /policies/bindings/") != 1 || f.count("POST /policies/bindings/") != 0 {
+		t.Fatalf("retried or worked around: %v", f.calls)
+	}
+	if slices.Contains(f.outpost, res.ProviderPK) {
+		t.Fatal("unguarded app left on the outpost")
+	}
 }
