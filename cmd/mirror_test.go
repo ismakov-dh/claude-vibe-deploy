@@ -1,9 +1,11 @@
 package cmd
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"testing"
 )
 
@@ -84,5 +86,21 @@ func TestMirrorDirRefusesLinksAndKeepsSrc(t *testing.T) {
 	}
 	if b, _ := os.ReadFile(filepath.Join(src, "Dockerfile.vd")); string(b) != "keep" {
 		t.Fatal("src changed although the source was refused")
+	}
+}
+
+// A FIFO in the source would block the copy forever, holding the app lock.
+func TestMirrorDirRefusesFIFO(t *testing.T) {
+	root := t.TempDir()
+	push, src := filepath.Join(root, "push"), filepath.Join(root, "src")
+	os.MkdirAll(push, 0755)
+	os.MkdirAll(src, 0755)
+	if err := syscall.Mkfifo(filepath.Join(push, "pipe"), 0644); err != nil {
+		t.Skip("no mkfifo here:", err)
+	}
+	err := mirrorDir(push, src)
+	var se sourceError
+	if !errors.As(err, &se) || !strings.Contains(err.Error(), "pipe is not a regular file") {
+		t.Fatalf("want a sourceError naming the FIFO, got %v", err)
 	}
 }

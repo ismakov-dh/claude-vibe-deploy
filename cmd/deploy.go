@@ -226,6 +226,10 @@ func runDeploy(srcPath string) {
 	// previous push had (scripts with passwords, dumps, logs) is built in again.
 	output.Info("Copying source files...")
 	if err := mirrorDir(srcPath, appSrcDir); err != nil {
+		var se sourceError
+		if errors.As(err, &se) {
+			output.Fail("deploy", output.NewError("INVALID_SOURCE", se.Error(), sourceHint))
+		}
 		output.Fail("deploy", output.NewError("COPY_FAILED",
 			"Failed to copy source: "+err.Error(), "Check permissions and disk space"))
 	}
@@ -670,7 +674,7 @@ func mirrorDir(src, dst string) error {
 		return fmt.Errorf("source %s and the app's src %s overlap; deploy from a pushed directory", src, dst)
 	}
 	// Before anything in dst goes: a refused source must leave the app's src as it was.
-	if err := noLinks(src); err != nil {
+	if err := onlyFiles(src); err != nil {
 		return err
 	}
 	entries, err := os.ReadDir(dst)
@@ -687,8 +691,12 @@ func mirrorDir(src, dst string) error {
 	return copyDir(src, dst)
 }
 
-// noLinks walks dir as copyDir does and refuses the first symbolic link.
-func noLinks(dir string) error {
+// sourceError is a source vd refuses to copy (as opposed to a failed copy).
+type sourceError struct{ error }
+
+// onlyFiles walks dir as copyDir does and refuses anything but regular files
+// and directories: a link copies a host file in, a FIFO hangs the copy.
+func onlyFiles(dir string) error {
 	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
 		if err != nil {
 			return err
@@ -696,9 +704,12 @@ func noLinks(dir string) error {
 		if info.IsDir() && skippedDirs[info.Name()] {
 			return filepath.SkipDir
 		}
-		if info.Mode()&os.ModeSymlink != 0 {
+		if !info.IsDir() && !info.Mode().IsRegular() {
 			rel, _ := filepath.Rel(dir, path)
-			return fmt.Errorf("%s is a link: vd does not follow links in the source; push real files", rel)
+			if info.Mode()&os.ModeSymlink != 0 {
+				return sourceError{fmt.Errorf("%s is a link: vd does not follow links in the source", rel)}
+			}
+			return sourceError{fmt.Errorf("%s is not a regular file or directory", rel)}
 		}
 		return nil
 	})
@@ -727,8 +738,8 @@ func copyDir(src, dst string) error {
 		dstPath := filepath.Join(dst, relPath)
 		// Walk does not follow links, ReadFile would: a link to a host file
 		// would put that file in the image.
-		if info.Mode()&os.ModeSymlink != 0 {
-			return fmt.Errorf("%s is a link: vd does not follow links in the source; push real files", relPath)
+		if !info.IsDir() && !info.Mode().IsRegular() {
+			return sourceError{fmt.Errorf("%s is not a regular file or directory", relPath)}
 		}
 
 		if info.IsDir() {

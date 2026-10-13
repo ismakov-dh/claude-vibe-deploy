@@ -46,6 +46,16 @@ func TestCheckTarRefusesLinks(t *testing.T) {
 			t.Errorf("%s: %v", link.Name, err)
 		}
 	}
+	// A FIFO would hang the deploy that reads it; devices have no place here.
+	for _, odd := range []*tar.Header{
+		{Name: "app/pipe", Typeflag: tar.TypeFifo, Mode: 0644},
+		{Name: "app/dev", Typeflag: tar.TypeChar, Mode: 0644},
+	} {
+		err := checkTar(writeTar(t, dir, file, odd))
+		if err == nil || !strings.Contains(err.Error(), odd.Name+" is not a regular file") {
+			t.Errorf("%s: %v", odd.Name, err)
+		}
+	}
 	if err := checkTar(filepath.Join(t.TempDir(), "none")); err == nil {
 		t.Error("missing archive accepted")
 	}

@@ -32,33 +32,53 @@ var pushCmd = &cobra.Command{
 				"Lowercase letters, digits and hyphens, 2-63 chars, starting with a letter"))
 		}
 
-		// The stream goes to a file first: its links are refused before tar
-		// writes anything, since extracting through one writes outside the push.
-		archive := "/tmp/vd-push-" + name + ".tar"
-		defer os.Remove(archive)
-		if err := saveStdin(archive); err != nil {
-			output.Fail("push", output.NewError("PUSH_FAILED", "Failed to receive the tar stream: "+err.Error(), ""))
+		// Everything lands in the push root vd-user owns, under names nobody can
+		// predict: not /tmp, where another local user could plant the path first.
+		finalDir := state.PushDir(name)
+		root := filepath.Dir(finalDir)
+		if err := os.MkdirAll(root, 0755); err != nil {
+			output.Fail("push", output.NewError("PUSH_FAILED",
+				"Failed to create push directory: "+err.Error(),
+				"Ensure the vd-user owns "+root+" and that the SSH session runs as vd-user via the agent key."))
+		}
+		archive, destDir := "", ""
+		// output.Fail exits: deferred cleanup would never run.
+		fail := func(e *output.VDError) {
+			if archive != "" {
+				os.Remove(archive)
+			}
+			if destDir != "" {
+				os.RemoveAll(destDir)
+			}
+			output.Fail("push", e)
+		}
+
+		// The stream goes to a file first and is checked before tar writes
+		// anything: extracting through a link writes outside the push.
+		f, err := os.CreateTemp(root, ".incoming-"+name+"-*.tar")
+		if err != nil {
+			fail(output.NewError("PUSH_FAILED", "Failed to receive the tar stream: "+err.Error(), ""))
+		}
+		archive = f.Name()
+		if err := saveStream(f, os.Stdin); err != nil {
+			fail(output.NewError("PUSH_FAILED", "Failed to receive the tar stream: "+err.Error(), ""))
 		}
 		if err := checkTar(archive); err != nil {
-			output.Fail("push", output.NewError("INVALID_SOURCE", err.Error(),
-				"Push real files: replace links with what they point to (or exclude them) and push again"))
+			fail(output.NewError("INVALID_SOURCE", err.Error(), sourceHint))
 		}
 
-		destDir := "/tmp/vd-push-" + name
-		os.RemoveAll(destDir)
-		if err := os.MkdirAll(destDir, 0755); err != nil {
-			output.Fail("push", output.NewError("PUSH_FAILED",
-				"Failed to create directory: "+err.Error(), ""))
+		if destDir, err = os.MkdirTemp(root, ".incoming-"+name+"-"); err != nil {
+			fail(output.NewError("PUSH_FAILED", "Failed to create directory: "+err.Error(), ""))
 		}
-
-		// Extract tar from stdin
+		os.Chmod(destDir, 0755) // MkdirTemp makes 0700; the push dir was always 0755
 		untar := exec.Command("tar", "xf", archive, "-C", destDir)
 		untar.Stderr = os.Stderr
 		if err := untar.Run(); err != nil {
-			os.RemoveAll(destDir)
-			output.Fail("push", output.NewError("PUSH_FAILED",
+			fail(output.NewError("PUSH_FAILED",
 				"Failed to extract tar: "+err.Error(), "Pipe a tar stream: tar cf - --exclude='node_modules' --exclude='.git' ./app | ssh vd-server \"vd push myapp\""))
 		}
+		os.Remove(archive)
+		archive = ""
 
 		// Check if tar extracted into a subdirectory (tar cf - ./app creates app/ inside)
 		// Filter out macOS resource forks (._*) and hidden files
@@ -75,13 +95,6 @@ var pushCmd = &cobra.Command{
 		}
 
 		// Move to the standard push location.
-		finalDir := state.PushDir(name)
-		if err := os.MkdirAll(filepath.Dir(finalDir), 0755); err != nil {
-			os.RemoveAll(destDir)
-			output.Fail("push", output.NewError("PUSH_FAILED",
-				"Failed to create push directory: "+err.Error(),
-				"Ensure the vd-user owns "+filepath.Dir(finalDir)+" and that the SSH session runs as vd-user via the agent key."))
-		}
 		if err := os.RemoveAll(finalDir); err != nil {
 			os.RemoveAll(destDir)
 			output.Fail("push", output.NewError("PUSH_FAILED",
@@ -106,20 +119,27 @@ var pushCmd = &cobra.Command{
 	},
 }
 
-func saveStdin(path string) error {
-	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
-	if err != nil {
-		return err
+// maxPush bounds a push: the stream is stored, then extracted, on a disk
+// every app shares.
+const maxPush = 4 << 30
+
+// sourceHint is what to do about a refused entry in a push or a deploy source.
+const sourceHint = "Push real files and directories only: replace links with what they point to (tar -h stores the targets) or exclude them, and push again"
+
+func saveStream(f *os.File, r io.Reader) error {
+	n, err := io.Copy(f, io.LimitReader(r, maxPush+1))
+	if cerr := f.Close(); err == nil {
+		err = cerr
 	}
-	if _, err := io.Copy(f, os.Stdin); err != nil {
-		f.Close()
-		return err
+	if err == nil && n > maxPush {
+		err = fmt.Errorf("the push is larger than %d GiB", maxPush>>30)
 	}
-	return f.Close()
+	return err
 }
 
-// checkTar refuses an archive with a symbolic or hard link in it: vd never
-// follows links, so a link to a host file can't end up in an app's image.
+// checkTar accepts regular files and directories only. A link could put a
+// host file in the image or write outside the push; a FIFO would hang the
+// deploy that reads it (holding the app lock); devices have no business here.
 func checkTar(path string) error {
 	f, err := os.Open(path)
 	if err != nil {
@@ -135,8 +155,12 @@ func checkTar(path string) error {
 		if err != nil {
 			return fmt.Errorf("not a readable tar stream: %w", err)
 		}
-		if h.Typeflag == tar.TypeSymlink || h.Typeflag == tar.TypeLink {
+		switch h.Typeflag {
+		case tar.TypeReg, tar.TypeDir:
+		case tar.TypeSymlink, tar.TypeLink:
 			return fmt.Errorf("%s is a link (to %s): vd does not take links in a push", h.Name, h.Linkname)
+		default:
+			return fmt.Errorf("%s is not a regular file or directory (tar type %q)", h.Name, h.Typeflag)
 		}
 	}
 }
