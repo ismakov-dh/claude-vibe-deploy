@@ -535,7 +535,7 @@ func (c *Client) bindingsFor(target string) ([]binding, error) {
 // bindingRefused is the error for a binding vd may not change: vd holds change
 // and delete only on bindings it created, and never works around that.
 func bindingRefused(verb, app, group, pk string) error {
-	return fmt.Errorf("Authentik refused to %s binding %s (application %s, group %s): vd may change only bindings it created — %s it in Authentik admin, then retry",
+	return fmt.Errorf("Authentik refused to %s binding %s (application %s, group %s): vd may change only bindings it created — %s it in Authentik admin",
 		verb, pk, app, group, verb)
 }
 
@@ -562,7 +562,7 @@ func (c *Client) ensureBinding(app *application, groupPK, groupName string) erro
 		code, err := c.do("PATCH", "/policies/bindings/"+weak.PK+"/",
 			binding{Target: appPK, Group: groupPK, Order: weak.Order, Enabled: &on, Negate: &off}, nil)
 		if code == http.StatusForbidden {
-			return bindingRefused("enable", app.Slug, groupName, weak.PK)
+			return bindingRefused("enable (and un-negate)", app.Slug, groupName, weak.PK)
 		}
 		if err != nil {
 			return fmt.Errorf("re-enable group binding: %w", err)

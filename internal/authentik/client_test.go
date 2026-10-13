@@ -925,18 +925,22 @@ func fakeUser(pk int, e string) map[string]any {
 // binding next to it.
 func TestBindingVdMayNotChangeFailsClosed(t *testing.T) {
 	f, c := setup(t)
-	if _, err := c.Ensure(spec()); err != nil {
+	res, err := c.Ensure(spec())
+	if err != nil {
 		t.Fatal(err)
 	}
 	pk := f.bindings[0]["pk"].(string)
 	f.bindings[0]["enabled"] = false
 	f.forbidBindings = map[string]bool{pk: true}
 	f.calls = nil
-	_, err := c.Ensure(spec())
+	_, err = c.Ensure(spec())
 	if err == nil || !strings.Contains(err.Error(), pk) || !strings.Contains(err.Error(), "Authentik admin") {
 		t.Fatalf("want a named refusal, got %v", err)
 	}
 	if f.count("PATCH /policies/bindings/") != 1 || f.count("POST /policies/bindings/") != 0 {
 		t.Fatalf("retried or worked around: %v", f.calls)
+	}
+	if slices.Contains(f.outpost, res.ProviderPK) {
+		t.Fatal("unguarded app left on the outpost")
 	}
 }
