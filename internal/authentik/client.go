@@ -231,7 +231,7 @@ func (c *Client) Ensure(s Spec) (*Result, error) {
 	if err != nil {
 		return nil, err
 	}
-	if err := c.ensureBinding(app.PK, groupPK); err != nil {
+	if err := c.ensureBinding(app, groupPK, group); err != nil {
 		// An Authentik application without a group binding is open to anyone who
 		// can sign in — and the prod pool has invited accounts with no groups at
 		// all. Fail closed: take the provider off the outpost so the host answers
@@ -289,15 +289,7 @@ func (c *Client) Remove(app string) error {
 	case err != nil && code != http.StatusNotFound:
 		return err
 	case code == http.StatusOK:
-		bs, err := c.bindingsFor(a.PK)
-		if err != nil {
-			return err
-		}
-		for _, b := range bs {
-			if _, err := c.do("DELETE", "/policies/bindings/"+b.PK+"/", nil, nil); err != nil {
-				return err
-			}
-		}
+		// Its bindings go with it (target cascades): vd needs no right on them.
 		if _, err := c.do("DELETE", "/core/applications/"+group+"/", nil, nil); err != nil {
 			return err
 		}
@@ -540,7 +532,15 @@ func (c *Client) bindingsFor(target string) ([]binding, error) {
 	return out, err
 }
 
-func (c *Client) ensureBinding(appPK, groupPK string) error {
+// bindingRefused is the error for a binding vd may not change: vd holds change
+// and delete only on bindings it created, and never works around that.
+func bindingRefused(verb, app, group, pk string) error {
+	return fmt.Errorf("Authentik refused to %s binding %s (application %s, group %s): vd may change only bindings it created — %s it in Authentik admin, then retry",
+		verb, pk, app, group, verb)
+}
+
+func (c *Client) ensureBinding(app *application, groupPK, groupName string) error {
+	appPK := app.PK
 	bs, err := c.bindingsFor(appPK)
 	if err != nil {
 		return err
@@ -557,9 +557,14 @@ func (c *Client) ensureBinding(appPK, groupPK string) error {
 	on, off := true, false
 	if weak != nil {
 		// A group binding exists but is disabled or negated: repair it rather than
-		// add a second one next to it.
-		if _, err := c.do("PATCH", "/policies/bindings/"+weak.PK+"/",
-			map[string]any{"enabled": true, "negate": false}, nil); err != nil {
+		// add a second one next to it. The whole body: 2026.8.2 answers a PATCH
+		// without target with a 500.
+		code, err := c.do("PATCH", "/policies/bindings/"+weak.PK+"/",
+			binding{Target: appPK, Group: groupPK, Order: weak.Order, Enabled: &on, Negate: &off}, nil)
+		if code == http.StatusForbidden {
+			return bindingRefused("enable", app.Slug, groupName, weak.PK)
+		}
+		if err != nil {
 			return fmt.Errorf("re-enable group binding: %w", err)
 		}
 	} else if _, err := c.do("POST", "/policies/bindings/",

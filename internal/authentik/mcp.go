@@ -167,15 +167,15 @@ func (c *Client) EnsureMCP(s MCPSpec) (*MCPResult, error) {
 		if err := c.setPolicyEngineMode(name, "all"); err != nil {
 			return nil, err
 		}
-		if err := c.ensureBinding(app.PK, appGroupPK); err != nil {
+		if err := c.ensureBinding(app, appGroupPK, s.AppGroup); err != nil {
 			return nil, fmt.Errorf("bind %s to %s: %w", name, s.AppGroup, err)
 		}
-	} else if err := c.dropAppGroupBinding(app.PK, s.App); err != nil {
+	} else if err := c.dropAppGroupBinding(app, s.App); err != nil {
 		return nil, err
 	} else if err := c.setPolicyEngineMode(name, "any"); err != nil {
 		return nil, err
 	}
-	if err := c.ensureBinding(app.PK, groupPK); err != nil {
+	if err := c.ensureBinding(app, groupPK, name); err != nil {
 		// Unbound means open to any signed-in account. There is no outpost here —
 		// the gateway route is written only after success — so the undo is the
 		// application this run created.
@@ -531,7 +531,7 @@ func (c *Client) setPolicyEngineMode(slug, mode string) error {
 // dropAppGroupBinding removes the binding to the app's login group that a
 // strict MCP had: under "any" it would be a way in on its own. Bindings an
 // admin added are left alone.
-func (c *Client) dropAppGroupBinding(appPK, app string) error {
+func (c *Client) dropAppGroupBinding(mcpApp *application, app string) error {
 	name, err := GroupName(app)
 	if err != nil {
 		return err
@@ -540,13 +540,17 @@ func (c *Client) dropAppGroupBinding(appPK, app string) error {
 	if err != nil || groupPK == "" {
 		return err
 	}
-	bs, err := c.bindingsFor(appPK)
+	bs, err := c.bindingsFor(mcpApp.PK)
 	if err != nil {
 		return err
 	}
 	for _, b := range bs {
 		if b.Group == groupPK {
-			if _, err := c.do("DELETE", "/policies/bindings/"+b.PK+"/", nil, nil); err != nil {
+			code, err := c.do("DELETE", "/policies/bindings/"+b.PK+"/", nil, nil)
+			if code == http.StatusForbidden {
+				return bindingRefused("remove", mcpApp.Slug, name, b.PK)
+			}
+			if err != nil {
 				return fmt.Errorf("remove binding %s: %w", b.PK, err)
 			}
 		}

@@ -359,3 +359,31 @@ func TestEnsureMCPStrictNeedsBothGroups(t *testing.T) {
 		t.Fatal("strict MCP without the app's group")
 	}
 }
+
+// Loosening a strict MCP removes the app-group binding; one vd may not delete
+// stops it with the binding named, and the mode stays "all".
+func TestDropAppGroupBindingVdMayNotDeleteFailsClosed(t *testing.T) {
+	f, c := setup(t)
+	f.groups["vibe-demo"] = "g-app"
+	s := mcpSpec()
+	s.AppGroup = "vibe-demo"
+	if _, err := c.EnsureMCP(s); err != nil {
+		t.Fatal(err)
+	}
+	f.forbidBindings = map[string]bool{}
+	pk := ""
+	for _, b := range f.bindings {
+		if b["group"] == "g-app" {
+			pk = b["pk"].(string)
+			f.forbidBindings[pk] = true
+		}
+	}
+	f.calls = nil
+	_, err := c.EnsureMCP(mcpSpec())
+	if err == nil || !strings.Contains(err.Error(), pk) || !strings.Contains(err.Error(), "Authentik admin") {
+		t.Fatalf("want a named refusal, got %v", err)
+	}
+	if f.count("DELETE /policies/bindings/") != 1 || f.apps["mcp-vibe-demo"]["policy_engine_mode"] != "all" {
+		t.Fatalf("retried, or loosened anyway: mode %v calls %v", f.apps["mcp-vibe-demo"]["policy_engine_mode"], f.calls)
+	}
+}
