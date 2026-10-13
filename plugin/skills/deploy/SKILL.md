@@ -224,7 +224,7 @@ Receive app files via tar stream on stdin. Use before deploy. **Always exclude b
 ```bash
 tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./my-app | $SSH_CMD "vd push <app-name> --json"
 ```
-Files stored at `/opt/vibe-deploy/push/<app-name>`, replacing the previous push. `vd deploy` builds exactly that tree: a file not in the push is gone from the app (nothing from earlier pushes lingers), so always push the whole project, never a part of it.
+Files stored at `/opt/vibe-deploy/push/<app-name>`, replacing the previous push. `vd deploy` builds exactly that tree: a file not in the push is gone from the app (nothing from earlier pushes lingers), so always push the whole project, never a part of it. Links (symbolic or hard) are refused with `INVALID_SOURCE`: replace them with the files themselves, or exclude them.
 
 ### `vd deploy <source-dir>`
 

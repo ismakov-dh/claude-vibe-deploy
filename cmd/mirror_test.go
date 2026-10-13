@@ -3,6 +3,7 @@ package cmd
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -60,5 +61,28 @@ func TestMirrorDirRefusesOverlap(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(src, "app.py")); err != nil {
 		t.Fatal("source deleted")
+	}
+}
+
+// A link in the source is refused before src is touched: following it would
+// copy a host file into the image, and a half-emptied src breaks rollback.
+func TestMirrorDirRefusesLinksAndKeepsSrc(t *testing.T) {
+	root := t.TempDir()
+	push, src := filepath.Join(root, "push"), filepath.Join(root, "apps", "x", "src")
+	os.MkdirAll(filepath.Join(push, "conf"), 0755)
+	os.MkdirAll(src, 0755)
+	os.WriteFile(filepath.Join(push, "app.py"), []byte("new"), 0644)
+	os.WriteFile(filepath.Join(root, "secret"), []byte("host file"), 0600)
+	if err := os.Symlink(filepath.Join(root, "secret"), filepath.Join(push, "conf", "key")); err != nil {
+		t.Fatal(err)
+	}
+	os.WriteFile(filepath.Join(src, "Dockerfile.vd"), []byte("keep"), 0644)
+
+	err := mirrorDir(push, src)
+	if err == nil || !strings.Contains(err.Error(), "conf/key is a link") {
+		t.Fatalf("want a refusal naming the link, got %v", err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(src, "Dockerfile.vd")); string(b) != "keep" {
+		t.Fatal("src changed although the source was refused")
 	}
 }

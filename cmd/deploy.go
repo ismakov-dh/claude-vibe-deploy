@@ -669,6 +669,10 @@ func mirrorDir(src, dst string) error {
 	if within(a, b) || within(b, a) {
 		return fmt.Errorf("source %s and the app's src %s overlap; deploy from a pushed directory", src, dst)
 	}
+	// Before anything in dst goes: a refused source must leave the app's src as it was.
+	if err := noLinks(src); err != nil {
+		return err
+	}
 	entries, err := os.ReadDir(dst)
 	if err != nil {
 		return err
@@ -683,11 +687,31 @@ func mirrorDir(src, dst string) error {
 	return copyDir(src, dst)
 }
 
+// noLinks walks dir as copyDir does and refuses the first symbolic link.
+func noLinks(dir string) error {
+	return filepath.Walk(dir, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		if info.IsDir() && skippedDirs[info.Name()] {
+			return filepath.SkipDir
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			rel, _ := filepath.Rel(dir, path)
+			return fmt.Errorf("%s is a link: vd does not follow links in the source; push real files", rel)
+		}
+		return nil
+	})
+}
+
 // within reports whether path is dir or inside it.
 func within(path, dir string) bool {
 	rel, err := filepath.Rel(dir, path)
 	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
+
+// skippedDirs are never copied: rebuilt inside Docker, or not the app's.
+var skippedDirs = map[string]bool{"node_modules": true, ".git": true, "__pycache__": true, ".venv": true, "venv": true}
 
 // copyDir copies the contents of src into dst using rsync-like behavior.
 func copyDir(src, dst string) error {
@@ -695,14 +719,17 @@ func copyDir(src, dst string) error {
 		if err != nil {
 			return err
 		}
-		// Skip node_modules, .git, __pycache__, .venv
-		base := filepath.Base(path)
-		if info.IsDir() && (base == "node_modules" || base == ".git" || base == "__pycache__" || base == ".venv" || base == "venv") {
+		if info.IsDir() && skippedDirs[filepath.Base(path)] {
 			return filepath.SkipDir
 		}
 
 		relPath, _ := filepath.Rel(src, path)
 		dstPath := filepath.Join(dst, relPath)
+		// Walk does not follow links, ReadFile would: a link to a host file
+		// would put that file in the image.
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("%s is a link: vd does not follow links in the source; push real files", relPath)
+		}
 
 		if info.IsDir() {
 			return os.MkdirAll(dstPath, info.Mode())

@@ -1,6 +1,9 @@
 package cmd
 
 import (
+	"archive/tar"
+	"errors"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -23,6 +26,23 @@ var pushCmd = &cobra.Command{
 	Args:  cobra.ExactArgs(1),
 	Run: func(cmd *cobra.Command, args []string) {
 		name := args[0]
+		// The name becomes a path that is emptied below: "../apps/x" would wipe another app.
+		if !nameRegex.MatchString(name) {
+			output.Fail("push", output.NewError("INVALID_NAME", "Invalid app name: "+name,
+				"Lowercase letters, digits and hyphens, 2-63 chars, starting with a letter"))
+		}
+
+		// The stream goes to a file first: its links are refused before tar
+		// writes anything, since extracting through one writes outside the push.
+		archive := "/tmp/vd-push-" + name + ".tar"
+		defer os.Remove(archive)
+		if err := saveStdin(archive); err != nil {
+			output.Fail("push", output.NewError("PUSH_FAILED", "Failed to receive the tar stream: "+err.Error(), ""))
+		}
+		if err := checkTar(archive); err != nil {
+			output.Fail("push", output.NewError("INVALID_SOURCE", err.Error(),
+				"Push real files: replace links with what they point to (or exclude them) and push again"))
+		}
 
 		destDir := "/tmp/vd-push-" + name
 		os.RemoveAll(destDir)
@@ -32,10 +52,9 @@ var pushCmd = &cobra.Command{
 		}
 
 		// Extract tar from stdin
-		tar := exec.Command("tar", "xf", "-", "-C", destDir)
-		tar.Stdin = io.Reader(os.Stdin)
-		tar.Stderr = os.Stderr
-		if err := tar.Run(); err != nil {
+		untar := exec.Command("tar", "xf", archive, "-C", destDir)
+		untar.Stderr = os.Stderr
+		if err := untar.Run(); err != nil {
 			os.RemoveAll(destDir)
 			output.Fail("push", output.NewError("PUSH_FAILED",
 				"Failed to extract tar: "+err.Error(), "Pipe a tar stream: tar cf - --exclude='node_modules' --exclude='.git' ./app | ssh vd-server \"vd push myapp\""))
@@ -85,4 +104,39 @@ var pushCmd = &cobra.Command{
 			"path": finalDir,
 		})
 	},
+}
+
+func saveStdin(path string) error {
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	if err != nil {
+		return err
+	}
+	if _, err := io.Copy(f, os.Stdin); err != nil {
+		f.Close()
+		return err
+	}
+	return f.Close()
+}
+
+// checkTar refuses an archive with a symbolic or hard link in it: vd never
+// follows links, so a link to a host file can't end up in an app's image.
+func checkTar(path string) error {
+	f, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	tr := tar.NewReader(f)
+	for {
+		h, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("not a readable tar stream: %w", err)
+		}
+		if h.Typeflag == tar.TypeSymlink || h.Typeflag == tar.TypeLink {
+			return fmt.Errorf("%s is a link (to %s): vd does not take links in a push", h.Name, h.Linkname)
+		}
+	}
 }
