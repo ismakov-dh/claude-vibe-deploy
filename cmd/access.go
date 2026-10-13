@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vibe-deploy/vd/internal/authentik"
@@ -21,7 +22,7 @@ func init() {
 // themselves. The group is never typed: it is derived from the app name, so
 // the command reaches only groups vd made for its own apps.
 var accessCmd = &cobra.Command{
-	Use:   "access <app-name> list|add|remove [email]",
+	Use:   "access <app-name> list|add|remove [email|service-account]",
 	Short: "List, grant or revoke access to an app (or, with --mcp, to its database MCP)",
 	Args:  cobra.RangeArgs(2, 3),
 	Run: func(cmd *cobra.Command, args []string) {
@@ -33,9 +34,15 @@ var accessCmd = &cobra.Command{
 			email = args[2]
 		default:
 			output.Fail("access", output.NewError("INVALID_ARGS",
-				"Usage: vd access <app> list | add <email> | remove <email> [--mcp]", ""))
+				"Usage: vd access <app> list | add <email|service-account> | remove <email|service-account> [--mcp]", ""))
 		}
 
+		// A service account (named by username) never reaches a database MCP:
+		// that would be SELECT on the whole database behind a password only.
+		if accessMCP && email != "" && !strings.Contains(email, "@") {
+			output.Fail("access", output.NewError("INVALID_ARGS",
+				"The database MCP is for people: give their platform email, not a service account", ""))
+		}
 		group, ttl, ttlSeconds := accessGroup(name, accessMCP)
 		cfg, cerr := state.LoadConfig()
 		if cerr != nil {
@@ -66,7 +73,11 @@ var accessCmd = &cobra.Command{
 				if !m.Active {
 					st = "inactive"
 				}
-				output.Info("%s  %s  (%s)", m.Email, m.Name, st)
+				who := m.Email
+				if who == "" {
+					who = m.Username
+				}
+				output.Info("%s  %s  (%s)", who, m.Name, st)
 			}
 			if len(ms) == 0 {
 				output.Info("%s has no members", group)
@@ -159,7 +170,8 @@ func failAccess(group string, err error) {
 	switch {
 	case errors.Is(err, authentik.ErrNoAccount):
 		output.Fail("access", output.NewError("NO_ACCOUNT",
-			"No platform account with that email", "The person must accept a platform invitation first; a platform admin sends it"))
+			"No platform account with that email, nor service account with that username",
+			"A person must accept a platform invitation first; a service account is created by a platform admin"))
 	case errors.Is(err, authentik.ErrNoGroup):
 		output.Fail("access", output.NewError("NOT_FOUND",
 			"Group "+group+" not found in Authentik (missing, or not visible to vd)",

@@ -122,3 +122,30 @@ func TestAccessFailsClosedOnIncompleteAnswers(t *testing.T) {
 		t.Fatalf("members with a missing account: %+v %d %v", ms, unreadable, err)
 	}
 }
+
+// A service account has no email: vd access names it by username. A person's
+// username is not accepted, nor Authentik's own service accounts.
+func TestAccessServiceAccountByUsername(t *testing.T) {
+	f, c := accessSetup(t)
+	f.users[20] = "svc-digest"
+	f.users[21] = "svc-digest-old"
+	f.users[22] = "outpost:ak-outpost-x"
+	if changed, err := c.AddMember("vibe-demo", "svc-digest"); err != nil || !changed {
+		t.Fatalf("add SA: %v %v", changed, err)
+	}
+	if got := f.groupUsers["vibe-demo"]; len(got) != 1 || got[0] != 20 {
+		t.Fatalf("added the wrong account: %v", got)
+	}
+	ms, _, err := c.Members("vibe-demo")
+	if err != nil || len(ms) != 1 || ms[0].Username != "svc-digest" || ms[0].Email != "" {
+		t.Fatalf("list: %+v %v", ms, err)
+	}
+	for _, who := range []string{"user7", "svc-dig", "SVC-DIGEST", "", "ak-outpost-x"} {
+		if _, err := c.AddMember("vibe-demo", who); !errors.Is(err, ErrNoAccount) {
+			t.Errorf("%q: %v", who, err)
+		}
+	}
+	if changed, err := c.RemoveMember("vibe-demo", "svc-digest"); err != nil || !changed {
+		t.Fatalf("remove SA: %v %v", changed, err)
+	}
+}

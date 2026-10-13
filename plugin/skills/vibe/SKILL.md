@@ -67,6 +67,7 @@ For each issue found, explain what needs to change and why. Then propose a plan 
 - If the user's idea needs **login / accounts / per-user data**, stop here and load the **`/auth`** skill — it has the header contract, copy-paste Python/Node guards, and a fallback for servers without `--auth`. **Do not** write login code of your own.
 - Requires **subdomain routing** (the default). `vd deploy --auth` creates everything; the app's owner decides who may use it, and you grant and revoke on their word with `vd access <name> add|remove <email>` — no platform admin involved.
 - **Roles inside the app** (`admin`, `tasks-admin`, …) are yours to build in the app's own database — the platform has exactly one group per app and no roles. `/auth` §7b has the pattern.
+- **Scripts calling the app** use a service account — an ordinary member of the app's group, read-only when in the platform group `readonly` (`/auth` §8). So every `--auth` app with a write route installs `/auth`'s `readonly` middleware, and no `GET` route has side effects.
 
 ## What You CANNOT Use
 

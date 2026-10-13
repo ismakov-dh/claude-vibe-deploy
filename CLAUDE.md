@@ -177,7 +177,7 @@ Deploy or redeploy an app. Auto-provisions database if `--db` is set. Backs up b
 | `--allow-external` | false | Silence warnings about unsupported external services (Supabase, Firebase, etc.) |
 | `--auth` | false | Put the app behind platform login (Authentik forward auth). Sticky; subdomain routing only. Needs `vd init --authentik-url … --authentik-internal …` on the server |
 | `--auth-ttl` | `hours=1` | Sign-in lifetime before Authentik is asked again; over a day warns |
-| `--auth-bearer` | false | With `--auth`: outpost also accepts Bearer (this provider's client_credentials tokens) and Basic from group members; the app restricts service accounts' routes. Sticky; `=false` turns off |
+| `--auth-bearer` | false | With `--auth`: outpost also accepts Bearer (this provider's client_credentials tokens) and Basic from group members. A service account is an ordinary member; read-only when in the platform group `readonly`, which the app enforces (`/auth`). Warns with `--db prod-ro`. Sticky; `=false` turns off |
 | `--mcp-owner` | none | Email added to `mcp-vibe-<name>`, the database MCP's group (with `--db postgres`) |
 
 **Policy scan**: on every deploy, vd scans the source for hardcoded secrets and unsupported external services. Hardcoded credentials (AWS/OpenAI/Anthropic/GitHub/Google/Slack/Stripe keys, private keys, DB URLs with passwords) **block** the deploy with `POLICY_VIOLATION`. `.env` files are never scanned. Unsupported services (Supabase, Firebase, MongoDB, Redis, S3) produce warnings in the `warnings` field of the JSON response; `--allow-external` silences them. (A hardcoded JWT-shaped token in source also warns — it's there to catch pasted Supabase anon keys, not to flag the use of a JWT library.)
@@ -215,9 +215,9 @@ Stop container, remove app files.
 
 For `--auth` apps, destroy also removes the Authentik application and provider; the group `vibe-<app>` is kept. For apps with a database MCP, destroy removes the MCP application, provider and the group `mcp-vibe-<app>`, and vd's own permission rows on that group (if Authentik refuses, a warning: the rows grant nothing). It also works on the leftovers of a failed first deploy (no manifest): container, Authentik objects and files, including a `.env` with the prod DSN.
 
-#### `vd access <app-name> list|add|remove [email]`
+#### `vd access <app-name> list|add|remove [email|service-account]`
 
-The app's owner grants and revokes access without a platform admin: membership of `vibe-<app>` (an `--auth` app) or, with `--mcp`, `mcp-vibe-<app>` (every `--db postgres` app). The group is derived from the app name — no free group names. `add`/`remove` are idempotent (`changed`); `remove` reports `takes_effect` (the app's `auth_ttl`, or 5 minutes for the MCP). `add` for an email without a platform account fails with `NO_ACCOUNT`; a group vd has no rights on fails with `ACCESS_FORBIDDEN`.
+The app's owner grants and revokes access without a platform admin: membership of `vibe-<app>` (an `--auth` app) or, with `--mcp`, `mcp-vibe-<app>` (every `--db postgres` app). The group is derived from the app name — no free group names. `add`/`remove` are idempotent (`changed`); `remove` reports `takes_effect` (the app's `auth_ttl`, or 5 minutes for the MCP). A service account (no email) is named by its exact username, never with `--mcp`; a person only by email. `add` for an email without a platform account, or a username of no service account, fails with `NO_ACCOUNT`; a group vd has no rights on fails with `ACCESS_FORBIDDEN`.
 
 | Flag | Default | Description |
 |------|---------|-------------|

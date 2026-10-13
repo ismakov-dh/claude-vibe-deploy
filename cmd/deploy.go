@@ -765,9 +765,13 @@ func resolveAuth(cfg *state.Config) *authPlan {
 	plan := &authPlan{group: res.Group, ttl: ttl, bearer: bearer}
 	if bearer {
 		output.Warn("--auth-bearer: the outpost also accepts Authorization headers (Bearer tokens of this provider, "+
-			"Basic) from members of %s. The app sees such a service account in the same X-authentik-* headers and "+
-			"must limit its routes itself. Any member can also create an Authentik app password and use it as Basic, "+
-			"skipping the login page (and MFA, if enabled).", res.Group)
+			"Basic) from members of %s. A service account in the group is an ordinary member; in the global "+
+			"group readonly it may only read, which the app enforces (/auth: 403 on writes). Any member can also "+
+			"create an Authentik app password and use it as Basic, skipping the login page (and MFA, if enabled).", res.Group)
+		if deployProdRO {
+			output.Warn("--auth-bearer on an app that reads production (patient data): scripts with a password reach it " +
+				"without the login page or MFA. Keep it off unless a script really needs it; --auth-bearer=false turns it off.")
+		}
 	}
 	if authentik.TTLSeconds(ttl) > 86400 {
 		output.Warn("Sign-in lifetime %s is longer than a day: removing someone from %s takes up to that long "+
