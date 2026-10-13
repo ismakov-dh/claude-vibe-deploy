@@ -230,6 +230,36 @@ func runDeploy(srcPath string) {
 			"Failed to copy source: "+err.Error(), "Check permissions and disk space"))
 	}
 
+	// Right after the copy, before anything below can fail: a rollback
+	// rebuilds from src, and src without these would not build (or would bake
+	// .env into the image).
+	// Generate Dockerfile from template
+	if appType != app.Custom {
+		tmplPath := appType.DockerfileTemplate()
+		tmplContent, err := fs.ReadFile(templatesFS, tmplPath)
+		if err != nil {
+			output.Fail("deploy", output.NewError("TEMPLATE_ERROR",
+				"Failed to read Dockerfile template for "+string(appType), "This is a bug"))
+		}
+		if err := os.WriteFile(filepath.Join(appSrcDir, "Dockerfile.vd"), tmplContent, 0644); err != nil {
+			output.Fail("deploy", output.NewError("WRITE_FAILED",
+				"Failed to write Dockerfile.vd", "Check permissions"))
+		}
+		output.Info("Generated Dockerfile for %s", appType)
+	} else {
+		// Copy existing Dockerfile as Dockerfile.vd
+		data, _ := os.ReadFile(filepath.Join(appSrcDir, "Dockerfile"))
+		os.WriteFile(filepath.Join(appSrcDir, "Dockerfile.vd"), data, 0644)
+	}
+
+	// .env reaches the container through env_file, never through the image:
+	// every template does COPY . ., which would bake DATABASE_URL (the prod DSN
+	// for prod-ro) and the ingress secret into a layer.
+	if err := ensureDockerignore(appSrcDir); err != nil {
+		output.Fail("deploy", output.NewError("COPY_FAILED",
+			"Could not write .dockerignore: "+err.Error(), "Check permissions on "+appSrcDir))
+	}
+
 	// Copy env file if provided
 	hasEnvFile := false
 	if deployEnvFile != "" {
@@ -368,33 +398,6 @@ func runDeploy(srcPath string) {
 				"Could not write the ingress secret: "+err.Error(), "Check permissions"))
 		}
 		hasEnvFile = true
-	}
-
-	// Generate Dockerfile from template
-	if appType != app.Custom {
-		tmplPath := appType.DockerfileTemplate()
-		tmplContent, err := fs.ReadFile(templatesFS, tmplPath)
-		if err != nil {
-			output.Fail("deploy", output.NewError("TEMPLATE_ERROR",
-				"Failed to read Dockerfile template for "+string(appType), "This is a bug"))
-		}
-		if err := os.WriteFile(filepath.Join(appSrcDir, "Dockerfile.vd"), tmplContent, 0644); err != nil {
-			output.Fail("deploy", output.NewError("WRITE_FAILED",
-				"Failed to write Dockerfile.vd", "Check permissions"))
-		}
-		output.Info("Generated Dockerfile for %s", appType)
-	} else {
-		// Copy existing Dockerfile as Dockerfile.vd
-		data, _ := os.ReadFile(filepath.Join(appSrcDir, "Dockerfile"))
-		os.WriteFile(filepath.Join(appSrcDir, "Dockerfile.vd"), data, 0644)
-	}
-
-	// .env reaches the container through env_file, never through the image:
-	// every template does COPY . ., which would bake DATABASE_URL (the prod DSN
-	// for prod-ro) and the ingress secret into a layer.
-	if err := ensureDockerignore(appSrcDir); err != nil {
-		output.Fail("deploy", output.NewError("COPY_FAILED",
-			"Could not write .dockerignore: "+err.Error(), "Check permissions on "+appSrcDir))
 	}
 
 	// Generate docker-compose.vd.yml
