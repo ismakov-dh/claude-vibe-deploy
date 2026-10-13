@@ -129,6 +129,7 @@ func TestAccessServiceAccountByUsername(t *testing.T) {
 	f, c := accessSetup(t)
 	f.users[20] = "svc-digest"
 	f.users[21] = "svc-digest-old"
+	f.users[22] = "outpost:ak-outpost-x"
 	if changed, err := c.AddMember("vibe-demo", "svc-digest"); err != nil || !changed {
 		t.Fatalf("add SA: %v %v", changed, err)
 	}
@@ -139,7 +140,7 @@ func TestAccessServiceAccountByUsername(t *testing.T) {
 	if err != nil || len(ms) != 1 || ms[0].Username != "svc-digest" || ms[0].Email != "" {
 		t.Fatalf("list: %+v %v", ms, err)
 	}
-	for _, who := range []string{"user7", "svc-dig", "SVC-DIGEST", ""} {
+	for _, who := range []string{"user7", "svc-dig", "SVC-DIGEST", "", "ak-outpost-x"} {
 		if _, err := c.AddMember("vibe-demo", who); !errors.Is(err, ErrNoAccount) {
 			t.Errorf("%q: %v", who, err)
 		}

@@ -889,9 +889,12 @@ func TestEnsureBearerSetsAndClearsHeaderAuth(t *testing.T) {
 	}
 }
 
-// fakeUser is a person (username user<pk>) for an email, or a service account
-// (no email) for a bare username.
+// fakeUser is a person (username user<pk>) for an email, a service account
+// (no email) for a bare username, or Authentik's own for "outpost:<username>".
 func fakeUser(pk int, e string) map[string]any {
+	if u, ok := strings.CutPrefix(e, "outpost:"); ok {
+		return map[string]any{"pk": pk, "email": "", "username": u, "type": "internal_service_account"}
+	}
 	if !strings.Contains(e, "@") {
 		return map[string]any{"pk": pk, "email": "", "username": e, "type": "service_account"}
 	}

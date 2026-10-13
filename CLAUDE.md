@@ -217,7 +217,7 @@ For `--auth` apps, destroy also removes the Authentik application and provider; 
 
 #### `vd access <app-name> list|add|remove [email|service-account]`
 
-The app's owner grants and revokes access without a platform admin: membership of `vibe-<app>` (an `--auth` app) or, with `--mcp`, `mcp-vibe-<app>` (every `--db postgres` app). The group is derived from the app name — no free group names. `add`/`remove` are idempotent (`changed`); `remove` reports `takes_effect` (the app's `auth_ttl`, or 5 minutes for the MCP). A service account (no email) is named by its exact username; a person only by email. `add` for an email without a platform account, or a username of no service account, fails with `NO_ACCOUNT`; a group vd has no rights on fails with `ACCESS_FORBIDDEN`.
+The app's owner grants and revokes access without a platform admin: membership of `vibe-<app>` (an `--auth` app) or, with `--mcp`, `mcp-vibe-<app>` (every `--db postgres` app). The group is derived from the app name — no free group names. `add`/`remove` are idempotent (`changed`); `remove` reports `takes_effect` (the app's `auth_ttl`, or 5 minutes for the MCP). A service account (no email) is named by its exact username, never with `--mcp`; a person only by email. `add` for an email without a platform account, or a username of no service account, fails with `NO_ACCOUNT`; a group vd has no rights on fails with `ACCESS_FORBIDDEN`.
 
 | Flag | Default | Description |
 |------|---------|-------------|

@@ -68,7 +68,7 @@ ssh vd-server "vd access <name> remove person@example.com --json"
 # the app's database MCP (every --db postgres app): add --mcp; removal bites within 5 minutes
 ssh vd-server "vd access <name> add person@example.com --mcp --json"
 # a service account (a script, §8) has no email: name it by its username
-ssh vd-server "vd access <name> add svc-export --json"
+ssh vd-server "vd access <name> add svc-export --json"     # not with --mcp: the database MCP is for people
 ```
 
 Only ever for an address the user gave you. `NO_ACCOUNT` means the person has no platform
@@ -182,8 +182,11 @@ def index():
 
 **Read-only accounts** (hard rule 6) — in `main.py`, right after `app = FastAPI()`, in every app
 with a write route. The platform puts an account in its global group `readonly` when it may only
-read; the app is what enforces it. No ingress check here: a forged header can only make a request
-weaker, and `current_user` still rejects anything that skipped the login.
+read; the app is what enforces it. **No groups header at all is treated as read-only too**: every
+real member has at least `vibe-<name>` in it, and a script's Bearer token minted without the
+`profile` scope arrives with none. No ingress check here: a forged header can only make a request
+weaker, and `current_user` still rejects anything that skipped the login. `OPTIONS` passes, so no
+route may write on `OPTIONS` (no `app.all`/`app.options` handler that changes data).
 
 ```python
 from fastapi.responses import JSONResponse
@@ -193,8 +196,8 @@ READ_METHODS = {"GET", "HEAD", "OPTIONS"}
 
 @app.middleware("http")
 async def readonly_accounts(request, call_next):
-    groups = request.headers.get("x-authentik-groups", "").split("|")
-    if "readonly" in groups and request.method not in READ_METHODS:
+    groups = [g for g in request.headers.get("x-authentik-groups", "").split("|") if g]
+    if (not groups or "readonly" in groups) and request.method not in READ_METHODS:
         return JSONResponse({"error": "read_only_account"}, status_code=403)
     return await call_next(request)
 ```
@@ -243,11 +246,12 @@ import { requireUser } from './auth.js'
 const app = express()
 
 // Read-only accounts (hard rule 6): before every route, in every app with a write route.
-// The platform puts an account in its global group `readonly` when it may only read.
+// The platform puts an account in its global group `readonly` when it may only read; no
+// groups header at all counts as read-only too (see §4).
 const READ_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 app.use((req, res, next) => {
-  const groups = (req.get('x-authentik-groups') || '').split('|')
-  if (groups.includes('readonly') && !READ_METHODS.has(req.method)) {
+  const groups = (req.get('x-authentik-groups') || '').split('|').filter(Boolean)
+  if ((!groups.length || groups.includes('readonly')) && !READ_METHODS.has(req.method)) {
     return res.status(403).json({ error: 'read_only_account' })
   }
   next()
@@ -622,9 +626,11 @@ Only when a script, not a person, must call the app (an export job, a cron elsew
 **Cover these when an app will be called by scripts** — before the first script exists:
 
 ```bash
-# The call: Basic, no cookie jar, no redirects followed. 200 = in; 302 to auth.<platform> = rejected.
-curl -sS --max-redirs 0 -o out.json -w '%{http_code}\n' -u "svc-export:$SVC_PASSWORD" \
-  https://<name>.apps.<platform>/api/export
+# The call: Basic, no cookie jar, no redirects followed (curl follows none without -L).
+# 200 = in; 302 to auth.<platform> = rejected — fail on anything but 200.
+code=$(curl -sS -o out.json -w '%{http_code}' -u "svc-export:$SVC_PASSWORD" \
+  https://<name>.apps.<platform>/api/export)
+[ "$code" = 200 ] || { echo "export: HTTP $code" >&2; exit 1; }
 ```
 
 ```python
@@ -635,7 +641,7 @@ if r.status_code != 200:            # 302 means the credentials were rejected
 ```
 
 - [ ] Wrong password → `302` to `auth.<platform>`, and the script fails on it.
-- [ ] An account in `readonly`: `GET` works, `POST`/`PUT`/`PATCH`/`DELETE` → `403 read_only_account`.
+- [ ] An account in `readonly`: `GET` works, `POST`/`PUT`/`PATCH`/`DELETE` → `403 read_only_account`; the same for a request with no `X-authentik-groups`.
 - [ ] No `GET` route writes, sends or triggers anything (a refresh/sync endpoint is a `POST`).
 - [ ] The script keeps no cookies between calls.
 

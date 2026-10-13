@@ -3,6 +3,7 @@ package cmd
 import (
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 	"github.com/vibe-deploy/vd/internal/authentik"
@@ -36,6 +37,12 @@ var accessCmd = &cobra.Command{
 				"Usage: vd access <app> list | add <email|service-account> | remove <email|service-account> [--mcp]", ""))
 		}
 
+		// A service account (named by username) never reaches a database MCP:
+		// that would be SELECT on the whole database behind a password only.
+		if accessMCP && email != "" && !strings.Contains(email, "@") {
+			output.Fail("access", output.NewError("INVALID_ARGS",
+				"The database MCP is for people: give their platform email, not a service account", ""))
+		}
 		group, ttl, ttlSeconds := accessGroup(name, accessMCP)
 		cfg, cerr := state.LoadConfig()
 		if cerr != nil {
@@ -68,7 +75,7 @@ var accessCmd = &cobra.Command{
 				}
 				who := m.Email
 				if who == "" {
-					who = m.Username + " (service account)"
+					who = m.Username
 				}
 				output.Info("%s  %s  (%s)", who, m.Name, st)
 			}

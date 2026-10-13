@@ -269,7 +269,7 @@ Who may use an `--auth` app (group `vibe-<app>`), or with `--mcp` its database M
 `remove` are safe to repeat (`changed: false`); `remove` returns `takes_effect` — the app's
 sign-in lifetime, or 5 minutes for the MCP. Only for emails the user gave you. A service account
 (a script, `/auth` §8) has no email: give its username (`vd access <app> add svc-export`); a
-person is always named by email. Errors:
+person is always named by email. Not with `--mcp`: the database MCP is for people. Errors:
 `ACCESS_NOT_ENABLED` (no `--auth` / no MCP behind sign-in yet), `NO_ACCOUNT` (no platform account — an admin
 invites first; no service account with that username — an admin creates it), `ACCESS_FORBIDDEN` (vd has no rights on that group — older apps; an admin
 grants them), `INVALID_ARGS`, `ACCESS_FAILED`.
