@@ -222,11 +222,42 @@ func runDeploy(srcPath string) {
 	appSrcDir := state.AppSrcDir(deployName)
 	os.MkdirAll(appSrcDir, 0755)
 
-	// Copy source files
+	// Copy source files: src becomes exactly the pushed tree, so nothing a
+	// previous push had (scripts with passwords, dumps, logs) is built in again.
 	output.Info("Copying source files...")
-	if err := copyDir(srcPath, appSrcDir); err != nil {
+	if err := mirrorDir(srcPath, appSrcDir); err != nil {
 		output.Fail("deploy", output.NewError("COPY_FAILED",
 			"Failed to copy source: "+err.Error(), "Check permissions and disk space"))
+	}
+
+	// Right after the copy, before anything below can fail: a rollback
+	// rebuilds from src, and src without these would not build (or would bake
+	// .env into the image).
+	// Generate Dockerfile from template
+	if appType != app.Custom {
+		tmplPath := appType.DockerfileTemplate()
+		tmplContent, err := fs.ReadFile(templatesFS, tmplPath)
+		if err != nil {
+			output.Fail("deploy", output.NewError("TEMPLATE_ERROR",
+				"Failed to read Dockerfile template for "+string(appType), "This is a bug"))
+		}
+		if err := os.WriteFile(filepath.Join(appSrcDir, "Dockerfile.vd"), tmplContent, 0644); err != nil {
+			output.Fail("deploy", output.NewError("WRITE_FAILED",
+				"Failed to write Dockerfile.vd", "Check permissions"))
+		}
+		output.Info("Generated Dockerfile for %s", appType)
+	} else {
+		// Copy existing Dockerfile as Dockerfile.vd
+		data, _ := os.ReadFile(filepath.Join(appSrcDir, "Dockerfile"))
+		os.WriteFile(filepath.Join(appSrcDir, "Dockerfile.vd"), data, 0644)
+	}
+
+	// .env reaches the container through env_file, never through the image:
+	// every template does COPY . ., which would bake DATABASE_URL (the prod DSN
+	// for prod-ro) and the ingress secret into a layer.
+	if err := ensureDockerignore(appSrcDir); err != nil {
+		output.Fail("deploy", output.NewError("COPY_FAILED",
+			"Could not write .dockerignore: "+err.Error(), "Check permissions on "+appSrcDir))
 	}
 
 	// Copy env file if provided
@@ -367,33 +398,6 @@ func runDeploy(srcPath string) {
 				"Could not write the ingress secret: "+err.Error(), "Check permissions"))
 		}
 		hasEnvFile = true
-	}
-
-	// Generate Dockerfile from template
-	if appType != app.Custom {
-		tmplPath := appType.DockerfileTemplate()
-		tmplContent, err := fs.ReadFile(templatesFS, tmplPath)
-		if err != nil {
-			output.Fail("deploy", output.NewError("TEMPLATE_ERROR",
-				"Failed to read Dockerfile template for "+string(appType), "This is a bug"))
-		}
-		if err := os.WriteFile(filepath.Join(appSrcDir, "Dockerfile.vd"), tmplContent, 0644); err != nil {
-			output.Fail("deploy", output.NewError("WRITE_FAILED",
-				"Failed to write Dockerfile.vd", "Check permissions"))
-		}
-		output.Info("Generated Dockerfile for %s", appType)
-	} else {
-		// Copy existing Dockerfile as Dockerfile.vd
-		data, _ := os.ReadFile(filepath.Join(appSrcDir, "Dockerfile"))
-		os.WriteFile(filepath.Join(appSrcDir, "Dockerfile.vd"), data, 0644)
-	}
-
-	// .env reaches the container through env_file, never through the image:
-	// every template does COPY . ., which would bake DATABASE_URL (the prod DSN
-	// for prod-ro) and the ingress secret into a layer.
-	if err := ensureDockerignore(appSrcDir); err != nil {
-		output.Fail("deploy", output.NewError("COPY_FAILED",
-			"Could not write .dockerignore: "+err.Error(), "Check permissions on "+appSrcDir))
 	}
 
 	// Generate docker-compose.vd.yml
@@ -641,6 +645,46 @@ func buildDomain(name, baseDomain, routing string) string {
 		return baseDomain + "/" + name
 	}
 	return name + "." + baseDomain
+}
+
+// keptInSrc are vd's own files in the app's src: the app's .env (DATABASE_URL,
+// the ingress secret) is written by vd, not pushed. Dockerfile.vd and
+// .dockerignore are rewritten after the copy on every deploy.
+var keptInSrc = map[string]bool{".env": true}
+
+// mirrorDir makes dst hold exactly src's tree (minus copyDir's skipped
+// directories), keeping only keptInSrc. It refuses when one directory holds
+// the other: deploying from the app's own src would delete the source.
+func mirrorDir(src, dst string) error {
+	a, err := filepath.EvalSymlinks(src)
+	if err != nil {
+		return err
+	}
+	b, err := filepath.EvalSymlinks(dst)
+	if err != nil {
+		return err
+	}
+	if within(a, b) || within(b, a) {
+		return fmt.Errorf("source %s and the app's src %s overlap; deploy from a pushed directory", src, dst)
+	}
+	entries, err := os.ReadDir(dst)
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !keptInSrc[e.Name()] {
+			if err := os.RemoveAll(filepath.Join(dst, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	return copyDir(src, dst)
+}
+
+// within reports whether path is dir or inside it.
+func within(path, dir string) bool {
+	rel, err := filepath.Rel(dir, path)
+	return err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator))
 }
 
 // copyDir copies the contents of src into dst using rsync-like behavior.

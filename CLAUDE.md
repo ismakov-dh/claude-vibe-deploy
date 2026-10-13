@@ -159,7 +159,7 @@ Receive app files via tar stream on stdin. Use before deploy.
 tar cf - --exclude='node_modules' --exclude='.git' --exclude='__pycache__' --exclude='.venv' --exclude='venv' --exclude='.next' ./my-app | ssh vd-server "vd push myapp --json"
 ```
 
-Files stored at `/opt/vibe-deploy/push/<app-name>`. Always exclude build artifacts — they are rebuilt inside Docker.
+Files stored at `/opt/vibe-deploy/push/<app-name>`, replacing the previous push. Always exclude build artifacts — they are rebuilt inside Docker. `vd deploy` builds exactly the pushed tree: a file left out of the push is gone from the app, so push the whole project every time, never a part of it.
 
 #### `vd deploy <source-dir>`
 
