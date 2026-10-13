@@ -1,6 +1,8 @@
 package cron
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -63,5 +65,22 @@ func TestJobLinesMatchExactly(t *testing.T) {
 	}
 	if Remove("") == nil {
 		t.Fatal("an empty app name would match every vd job")
+	}
+}
+
+// The job's redirect needs the log directory; cron-set must create it.
+func TestSetCreatesLogDir(t *testing.T) {
+	home, bin := t.TempDir(), t.TempDir()
+	t.Setenv("VD_HOME", home)
+	// A crontab that lists nothing and swallows what it is given.
+	if err := os.WriteFile(filepath.Join(bin, "crontab"), []byte("#!/bin/sh\n[ \"$1\" = - ] && cat >/dev/null\nexit 0\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	if err := Set("ops-dash", "0 2,14 * * *", "python refresh.py"); err != nil {
+		t.Fatal(err)
+	}
+	if fi, err := os.Stat(filepath.Join(home, "logs", "ops-dash")); err != nil || !fi.IsDir() {
+		t.Fatalf("log directory not created: %v", err)
 	}
 }
