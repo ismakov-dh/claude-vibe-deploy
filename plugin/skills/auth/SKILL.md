@@ -34,8 +34,12 @@ live at `https://auth-demo.apps.platform.acuradai.com`. Copy from it when in dou
 3. **Trust the identity headers only together with the ingress secret** (§3). Every app on the
    platform shares one network and can reach yours directly, skipping the login — the secret is
    what proves a request came through it.
-4. **Key your data on `X-authentik-uid`**, never on email. Email and name are never a key or a
-   permission; at most a display cache refreshed on every request (§7b).
+4. **Identity is `X-authentik-uid`, nothing else.** Never authorize, and never find or link an
+   account, by email (or name, or username): Authentik admins and onboarding scripts change
+   emails, and whoever is given an address next would inherit what was granted to it. The uid
+   never changes and is never reused. Name and email are display fields, refreshed from the
+   headers on every request (§7b) — never a key, never a permission. That includes the first
+   admins: `APP_ADMINS` holds uids.
 5. **One container** serves UI and API, as for every vibe-deploy app.
 6. **Read-only accounts stay read-only.** An app with **any** write route (anything but
    `GET`/`HEAD`/`OPTIONS`) installs the `readonly` middleware from §4/§5, and its `GET` routes
@@ -100,7 +104,7 @@ is alive: a page load just goes round and comes back, and an SPA's API calls ren
 |---|---|---|
 | `X-Vibe-Ingress` | secret set by the platform on every request that passed login | **must equal `VIBE_INGRESS_SECRET`**, else answer `401` |
 | `X-authentik-uid` | stable user id (64 hex chars) | your tables' user key |
-| `X-authentik-email` | email | display, and `APP_ADMINS` (§7b) — never a key |
+| `X-authentik-email` | email | display only — never a key, never a permission, never used to link accounts |
 | `X-authentik-name` | full name | display only — never a key |
 | `X-authentik-username` | username | display only |
 | `X-authentik-groups` | `\|`-separated group names | **only** for `readonly` (the middleware in §4/§5) — never for your app's roles (§7b) |
@@ -391,11 +395,18 @@ ALTER TABLE app_users DROP COLUMN last_email, DROP COLUMN last_name, DROP COLUMN
 ```
 
 **The first admins** come from `APP_ADMINS` in the app's `.env` — comma-separated platform
-emails, e.g. `APP_ADMINS=anna@example.com,boris@example.com`, passed with `--env-file`. They are
-compared case-insensitively against `X-authentik-email` on each request; nothing about them is
-stored. That is safe as config because people cannot change their own email on this platform.
+**uids**, e.g. `APP_ADMINS=3f2a…c91e,8b07…12d4`, passed with `--env-file`. They are compared
+against `X-authentik-uid` on each request; nothing about them is stored. **Never emails:** an
+email can be changed by Authentik admins and onboarding scripts, and the next account given that
+address would become admin. To get someone's uid, ask them to open
+`https://<name>.<apps-domain>/api/me` once (signed in) and send you the `uid` it shows — or, if
+they have opened the app before, read it from `app_users` next to their `last_email` (a lookup
+by a human, not an authorization). The uid differs between the test and production platforms.
 `APP_ADMINS` are always admins, so the app cannot lock itself out. An admin passes every role
 check. Keep the list of roles in code; reject any other name.
+
+An app built from an older version of this skill compares `APP_ADMINS` with `X-authentik-email`:
+replace the emails in its `.env` with uids and the check with the one below, then redeploy.
 
 **Python (FastAPI, psycopg):**
 
@@ -407,7 +418,7 @@ from fastapi import Depends, HTTPException
 from auth import current_user
 
 ROLES = {"admin", "tasks-admin"}          # every role the app knows
-ADMINS = {e.strip().lower() for e in os.environ.get("APP_ADMINS", "").split(",") if e.strip()}
+ADMINS = {x.strip() for x in os.environ.get("APP_ADMINS", "").split(",") if x.strip()}  # uids, never emails
 DB = os.environ["DATABASE_URL"]
 
 
@@ -430,7 +441,7 @@ def user(u: dict = Depends(current_user)) -> dict:
 
 def has_role(u: dict, role: str) -> bool:
     """Admins (APP_ADMINS or the admin role) pass every check."""
-    return u["email"].lower() in ADMINS or bool(
+    return u["uid"] in ADMINS or bool(
         q("SELECT 1 FROM app_roles WHERE uid = %s AND role IN ('admin', %s)", (u["uid"], role)))
 
 
@@ -495,7 +506,7 @@ import pg from 'pg'
 import { requireUser } from './auth.js'
 
 export const ROLES = new Set(['admin', 'tasks-admin'])   // every role the app knows
-const ADMINS = new Set((process.env.APP_ADMINS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean))
+const ADMINS = new Set((process.env.APP_ADMINS || '').split(',').map(s => s.trim()).filter(Boolean))   // uids, never emails
 export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
 
 // Express 4 does not catch errors of async handlers: wrap every one.
@@ -512,7 +523,7 @@ export const user = [requireUser, wrap(async (req, res, next) => {
 
 // Admins (APP_ADMINS or the admin role) pass every check.
 export async function hasRole(u, role) {
-  if (ADMINS.has(u.email.toLowerCase())) return true
+  if (ADMINS.has(u.uid)) return true
   const r = await pool.query(`SELECT 1 FROM app_roles WHERE uid = $1 AND role IN ('admin', $2)`, [u.uid, role])
   return r.rowCount > 0
 }
@@ -565,8 +576,8 @@ admin list. (Express 4: wrap every async handler with `wrap()`; Express 5 catche
 
 The `/admin` page itself: a table from `GET /api/admin/users`, a checkbox per role, each change a
 `POST /api/admin/roles` with `{uid, role, grant}` via `api()`. Someone who has never opened the
-app is not in the list — ask them to open it once, or add their email to `APP_ADMINS` if they
-are to be an admin. Revoking a role takes effect on their next request. Taking someone out of the
+app is not in the list — ask them to open it once, or add their uid (from `/api/me`) to
+`APP_ADMINS` if they are to be an admin. Revoking a role takes effect on their next request. Taking someone out of the
 app altogether is `vd access <name> remove <email>`, not a role.
 
 ---
@@ -656,6 +667,7 @@ right person; a second browser profile that is not in the group gets "access den
 - [ ] Every route that serves data uses the guard; the guard checks **`X-Vibe-Ingress`** first.
 - [ ] Constant-time comparison on **bytes** (`hmac.compare_digest(a.encode(...), b.encode())` / `timingSafeEqual`).
 - [ ] User rows keyed on `X-authentik-uid`; email/name at most as a refreshed display cache, never a key or a permission.
+- [ ] Nothing is granted, and no account found or linked, by email: `APP_ADMINS` holds uids, roles live on uid rows.
 - [ ] Roles, if any, live in the app's own `app_roles` (§7b) — none requested from the platform, none read from `X-authentik-groups`.
 - [ ] Any write route → the `readonly` middleware is installed (§4/§5); no `GET` route has side effects.
 - [ ] SPA uses `redirect: 'manual'`; **only** `opaqueredirect` navigates to `/outpost.goauthentik.io/start?rd=<full URL>`, a `401` is an error.
@@ -1080,6 +1092,8 @@ async function api(path, init) {
 Store per-user rows under the ID-token `sub`. **Do not copy `email`/`name` into your tables** —
 they change in Authentik and your copy goes stale; read them from the session (§F4/§F5), which is
 refreshed at every login.
+Never grant anything or link accounts by email either — admins, roles and ownership hang on
+`sub` only; a first-admin list is a list of `sub` values (hard rule 4 above).
 
 vibe-deploy requires a **migration tool** (Prisma for Node, Alembic for Python, Django's
 built-in), never raw `CREATE TABLE`, and the migration must be reversible:
