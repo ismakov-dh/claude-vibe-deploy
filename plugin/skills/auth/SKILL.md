@@ -395,13 +395,15 @@ ALTER TABLE app_users DROP COLUMN last_email, DROP COLUMN last_name, DROP COLUMN
 ```
 
 **The first admins** come from `APP_ADMINS` in the app's `.env` — comma-separated platform
-**uids**, e.g. `APP_ADMINS=3f2a…c91e,8b07…12d4`, passed with `--env-file`. They are compared
-against `X-authentik-uid` on each request; nothing about them is stored. **Never emails:** an
-email can be changed by Authentik admins and onboarding scripts, and the next account given that
-address would become admin. To get someone's uid, ask them to open
-`https://<name>.<apps-domain>/api/me` once (signed in) and send you the `uid` it shows — or, if
-they have opened the app before, read it from `app_users` next to their `last_email` (a lookup
-by a human, not an authorization). The uid differs between the test and production platforms.
+**uids** (64 hex characters each), e.g. `APP_ADMINS=3f2a…c91e,8b07…12d4`, passed with
+`--env-file`. They are compared against `X-authentik-uid` on each request; nothing about them is
+stored. **Never emails:** an email can be changed by Authentik admins and onboarding scripts, and
+the next account given that address would become admin. The one way to get someone's uid: once
+they have access (`vd access <name> add …`), they open `https://<name>.<apps-domain>/api/me`
+themselves and send you the `uid` it shows. Do not look a uid up by email — not in `app_users`,
+not through the database MCP: the display cache can hold the same address on two rows. And never
+build a feature that looks up, invites or matches people by email. The uid differs between the
+test and production platforms.
 `APP_ADMINS` are always admins, so the app cannot lock itself out. An admin passes every role
 check. Keep the list of roles in code; reject any other name.
 
@@ -418,7 +420,7 @@ from fastapi import Depends, HTTPException
 from auth import current_user
 
 ROLES = {"admin", "tasks-admin"}          # every role the app knows
-ADMINS = {x.strip() for x in os.environ.get("APP_ADMINS", "").split(",") if x.strip()}  # uids, never emails
+ADMINS = {x.strip().lower() for x in os.environ.get("APP_ADMINS", "").split(",") if x.strip()}  # uids, never emails
 DB = os.environ["DATABASE_URL"]
 
 
@@ -506,7 +508,7 @@ import pg from 'pg'
 import { requireUser } from './auth.js'
 
 export const ROLES = new Set(['admin', 'tasks-admin'])   // every role the app knows
-const ADMINS = new Set((process.env.APP_ADMINS || '').split(',').map(s => s.trim()).filter(Boolean))   // uids, never emails
+const ADMINS = new Set((process.env.APP_ADMINS || '').split(',').map(s => s.trim().toLowerCase()).filter(Boolean))   // uids, never emails
 export const pool = new pg.Pool({ connectionString: process.env.DATABASE_URL })
 
 // Express 4 does not catch errors of async handlers: wrap every one.
@@ -575,7 +577,9 @@ Use `...user` on the app's ordinary routes too, so everyone who opens the app ap
 admin list. (Express 4: wrap every async handler with `wrap()`; Express 5 catches them itself.)
 
 The `/admin` page itself: a table from `GET /api/admin/users`, a checkbox per role, each change a
-`POST /api/admin/roles` with `{uid, role, grant}` via `api()`. Someone who has never opened the
+`POST /api/admin/roles` with `{uid, role, grant}` via `api()`. Label each row with name, email,
+`last_seen` and the first characters of its uid — two rows can show the same email — and grant
+on the row's uid, never on an email typed in. Someone who has never opened the
 app is not in the list — ask them to open it once, or add their uid (from `/api/me`) to
 `APP_ADMINS` if they are to be an admin. Revoking a role takes effect on their next request. Taking someone out of the
 app altogether is `vd access <name> remove <email>`, not a role.
@@ -668,6 +672,7 @@ right person; a second browser profile that is not in the group gets "access den
 - [ ] Constant-time comparison on **bytes** (`hmac.compare_digest(a.encode(...), b.encode())` / `timingSafeEqual`).
 - [ ] User rows keyed on `X-authentik-uid`; email/name at most as a refreshed display cache, never a key or a permission.
 - [ ] Nothing is granted, and no account found or linked, by email: `APP_ADMINS` holds uids, roles live on uid rows.
+- [ ] `GET /api/me` returns the person's `uid` — it is how an owner learns the uid to put in `APP_ADMINS`.
 - [ ] Roles, if any, live in the app's own `app_roles` (§7b) — none requested from the platform, none read from `X-authentik-groups`.
 - [ ] Any write route → the `readonly` middleware is installed (§4/§5); no `GET` route has side effects.
 - [ ] SPA uses `redirect: 'manual'`; **only** `opaqueredirect` navigates to `/outpost.goauthentik.io/start?rd=<full URL>`, a `401` is an error.
@@ -1093,7 +1098,8 @@ Store per-user rows under the ID-token `sub`. **Do not copy `email`/`name` into 
 they change in Authentik and your copy goes stale; read them from the session (§F4/§F5), which is
 refreshed at every login.
 Never grant anything or link accounts by email either — admins, roles and ownership hang on
-`sub` only; a first-admin list is a list of `sub` values (hard rule 4 above).
+`sub` only (hard rule 4 above). A first-admin list here holds `sub` values, as shown by this
+app's own `/api/me`; they are not the `X-authentik-uid` values of a `--auth` app.
 
 vibe-deploy requires a **migration tool** (Prisma for Node, Alembic for Python, Django's
 built-in), never raw `CREATE TABLE`, and the migration must be reversible:
