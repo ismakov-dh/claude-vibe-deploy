@@ -19,7 +19,7 @@ import (
 // exception tears down the SSE stream for the whole session. 0.3.0 is still the
 // latest postgres-mcp release, so there is no upstream version to move to; see
 // images/postgres-mcp.Dockerfile in the dev-ops repo for the patch.
-const MCPImage = "registry.xaid.ai/radiology/devops/stacks/postgres-mcp:0.3.0-init-tolerant"
+const MCPImage = "registry.xaid.ai/radiology/devops/stacks/postgres-mcp:0.3.0-init-tolerant-1"
 
 // ComposeData holds the data for rendering the app compose template.
 type ComposeData struct {
