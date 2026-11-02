@@ -434,6 +434,10 @@ func TestMCPRedirects(t *testing.T) {
 		"http://127.0.0.1:123456/callback",
 		"http://127.0.0.1:1/callback?x=1",
 		"https://claude.ai/api/mcp/auth_callback/x",
+		"http://LOCALHOST:1/callback",
+		"http://localhost.:1/callback",
+		"http://[::1]:1/callback",
+		"http://127.0.0.1:1/oauth/callback/x",
 	} {
 		if allowedRedirect(u) {
 			t.Errorf("allowed %s", u)
