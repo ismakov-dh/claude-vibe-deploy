@@ -149,7 +149,9 @@ debugging instead of guessing. `vd deploy --json` and `vd status --json` return 
 ```
 
 Run the `add` command verbatim. On first use the client opens a browser for platform sign-in;
-there is no password. Access is membership in `mcp-vibe-<app-name>`: pass `--mcp-owner <email>`
+there is no password. Clients that can sign in: Claude Code, Codex and other CLIs (local
+loopback callback), Claude on the web and Claude Desktop — the same URL, the client's own
+"add MCP server" setting. Access is membership in `mcp-vibe-<app-name>`: pass `--mcp-owner <email>`
 on deploy for the person you are working with, and grant anyone else later with
 `vd access <app-name> add <email> --mcp` — only for emails the user gave you.
 

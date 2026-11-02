@@ -87,13 +87,16 @@ type redirectURI struct {
 	Type         string `json:"redirect_uri_type,omitempty"`
 }
 
-// mcpRedirects are the callbacks of MCP clients: local loopback for Claude Code
-// and other CLIs, claude.ai for the web and desktop apps. Never the upstream
-// tutorial's `.*` matcher.
+// mcpRedirects are the callbacks of MCP clients: local loopback for Claude Code,
+// Codex (/callback/<id>) and other CLIs; claude.ai for the web app; the claude://
+// scheme for Claude Desktop. The same list as stacks' mcp-db (!880, !1002).
+// Never the upstream tutorial's `.*` matcher: loopback hosts only, at most one
+// safe path segment after /callback.
 var mcpRedirects = []redirectURI{
-	{MatchingMode: "regex", URL: `^http://(127\.0\.0\.1|localhost):[0-9]{1,5}/(callback|oauth/callback)$`, Type: "authorization"},
+	{MatchingMode: "regex", URL: `^http://(127\.0\.0\.1|localhost):[0-9]{1,5}/(callback(/[A-Za-z0-9._~-]{1,128})?|oauth/callback)$`, Type: "authorization"},
 	{MatchingMode: "strict", URL: "https://claude.ai/api/mcp/auth_callback", Type: "authorization"},
 	{MatchingMode: "strict", URL: "https://claude.com/api/mcp/auth_callback", Type: "authorization"},
+	{MatchingMode: "strict", URL: "claude://claude.ai/mcp-auth-callback/sdk", Type: "authorization"},
 }
 
 // Issuer is the per-provider issuer URL agentgateway validates against.
