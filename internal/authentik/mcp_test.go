@@ -2,6 +2,7 @@ package authentik
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"testing"
 )
@@ -385,5 +386,57 @@ func TestDropAppGroupBindingVdMayNotDeleteFailsClosed(t *testing.T) {
 	}
 	if f.count("DELETE /policies/bindings/") != 1 || f.apps["mcp-vibe-demo"]["policy_engine_mode"] != "all" {
 		t.Fatalf("retried, or loosened anyway: mode %v calls %v", f.apps["mcp-vibe-demo"]["policy_engine_mode"], f.calls)
+	}
+}
+
+// allowedRedirect is Authentik's check: strict is an exact match, regex a full match.
+func allowedRedirect(u string) bool {
+	for _, r := range mcpRedirects {
+		switch r.MatchingMode {
+		case "strict":
+			if u == r.URL {
+				return true
+			}
+		case "regex":
+			if regexp.MustCompile(`^(?:` + r.URL + `)$`).MatchString(u) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// The clients that sign in to an MCP get back; nothing else does. Same list as
+// stacks' mcp-db.
+func TestMCPRedirects(t *testing.T) {
+	for _, u := range []string{
+		"http://127.0.0.1:33418/callback",             // Claude Code
+		"http://localhost:8976/oauth/callback",        // other CLIs
+		"http://127.0.0.1:1455/callback/a1B2-c3_d.e~", // Codex: /callback/<id>
+		"https://claude.ai/api/mcp/auth_callback",
+		"https://claude.com/api/mcp/auth_callback",
+		"claude://claude.ai/mcp-auth-callback/sdk", // Claude Desktop
+	} {
+		if !allowedRedirect(u) {
+			t.Errorf("refused %s", u)
+		}
+	}
+	for _, u := range []string{
+		"claude://evil/x",
+		"claude://claude.ai/mcp-auth-callback/sdk/x",
+		"http://127.0.0.1:1/callback/a/b",
+		"http://127.0.0.1:1/callback/",
+		"http://127.0.0.1:1/callback/" + strings.Repeat("a", 129),
+		"http://127.0.0.1:1/callback/%2e%2e",
+		"http://127.0.0.1.evil.com:1/callback",
+		"http://evil.com/callback",
+		"https://127.0.0.1:1/callback",
+		"http://127.0.0.1:123456/callback",
+		"http://127.0.0.1:1/callback?x=1",
+		"https://claude.ai/api/mcp/auth_callback/x",
+	} {
+		if allowedRedirect(u) {
+			t.Errorf("allowed %s", u)
+		}
 	}
 }
