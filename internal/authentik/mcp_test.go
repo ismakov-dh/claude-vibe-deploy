@@ -27,7 +27,8 @@ func TestEnsureMCPCreatesAPublicClientBoundToItsGroup(t *testing.T) {
 	}
 	for _, p := range f.oauth2 {
 		if p["client_type"] != "public" || p["client_id"] != "mcp-vibe-demo" || p["sub_mode"] != "user_uuid" ||
-			p["access_token_validity"] != "minutes=5" || p["signing_key"] != "k-self" {
+			p["access_token_validity"] != "minutes=5" || p["signing_key"] != "k-self" ||
+			p["refresh_token_validity"] != "days=30" || p["access_code_validity"] != "minutes=1" {
 			t.Fatalf("provider settings: %v", p)
 		}
 		if g, _ := p["grant_types"].([]any); len(g) != 2 || g[0] != "authorization_code" || g[1] != "refresh_token" {
@@ -136,7 +137,9 @@ func TestEnsureMCPBindsBeforeAttachingTheProvider(t *testing.T) {
 func TestEnsureMCPRejectsDroppedProviderField(t *testing.T) {
 	// grant_types: an Authentik API that stores [] leaves a provider on which
 	// every authorize request is invalid_request (found on prod, 2026-09-30).
-	for _, field := range []string{"sub_mode", "grant_types"} {
+	// The token lifetimes too: a provider left on the old 12-hour refresh token
+	// would log everyone out overnight with vd reporting success.
+	for _, field := range []string{"sub_mode", "grant_types", "refresh_token_validity", "access_code_validity"} {
 		f, c := setup(t)
 		f.dropOAuth2 = field
 		if _, err := c.EnsureMCP(mcpSpec()); err == nil || !strings.Contains(err.Error(), field) {
@@ -441,6 +444,26 @@ func TestMCPRedirects(t *testing.T) {
 	} {
 		if allowedRedirect(u) {
 			t.Errorf("allowed %s", u)
+		}
+	}
+}
+
+// An existing provider (made with the old 12-hour refresh token) is brought to
+// 30 days by the next EnsureMCP — that is how live apps get it, via vd mcp-oauth.
+func TestEnsureMCPUpdatesRefreshValidityOfExistingProvider(t *testing.T) {
+	f, c := setup(t)
+	if _, err := c.EnsureMCP(mcpSpec()); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range f.oauth2 {
+		p["refresh_token_validity"] = "hours=12"
+	}
+	if _, err := c.EnsureMCP(mcpSpec()); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range f.oauth2 {
+		if p["refresh_token_validity"] != "days=30" || p["access_token_validity"] != "minutes=5" {
+			t.Fatalf("not reconciled: %v", p)
 		}
 	}
 }

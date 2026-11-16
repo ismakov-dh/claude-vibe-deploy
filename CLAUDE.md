@@ -362,8 +362,10 @@ Every app's database MCP has one way in: vd-mcpgw, behind platform sign-in. An a
 once read, production has a **strict** MCP (`mcp_strict` in the manifest, set by the first deploy
 with prod-ro, kept by deploy and rollback): its Authentik application has `policy_engine_mode: all`
 and a second group binding, `vibe-<app>`. Authentik checks it when a token is issued from a
-sign-in, **not on refresh** (2026.8.2: the refresh grant runs no policy), so removing someone from
-`vibe-<app>` alone takes effect at their next sign-in; removing them from `mcp-vibe-<app>` takes
+sign-in, **not on refresh** (2026.8.2: the refresh grant runs no policy and does not check that the
+user is active). The refresh token lasts 30 days and slides (each refresh renews it), so a client in
+use never signs in again: removing someone from `vibe-<app>` alone, or deactivating their account,
+does not end MCP access; removing them from `mcp-vibe-<app>` takes
 effect within 5 minutes, as for every MCP (the gateway reads the groups in each token). So `vd access
 <app> remove <email>` on a strict app removes them from both groups. `--drop-strict` is refused
 over the SSH wrapper. There is no Basic

@@ -149,7 +149,9 @@ func (c *Client) EnsureMCP(s MCPSpec) (*MCPResult, error) {
 		PropertyMappings: []string{openid, offline, mcpMap}, RedirectURIs: mcpRedirects,
 		SubMode: "user_uuid", IncludeClaimsInToken: true, IssuerMode: "per_provider",
 		AccessTokenValidity: mcpTokenValidity, AccessCodeValidity: "minutes=1",
-		RefreshTokenValidity: "hours=12",
+		// Sliding (threshold 0: every refresh gets a full window), so only
+		// 30 idle days end it — like Notion, and as stacks' mcp-db (!1060).
+		RefreshTokenValidity: "days=30",
 		GrantTypes:           []string{"authorization_code", "refresh_token"},
 	}
 	prov, err := c.ensureOAuth2Provider(want)
@@ -415,6 +417,8 @@ func oauth2Drift(want, got oauth2Provider) string {
 	chk("signing_key", want.SigningKey, got.SigningKey)
 	chk("sub_mode", want.SubMode, got.SubMode)
 	chk("access_token_validity", want.AccessTokenValidity, got.AccessTokenValidity)
+	chk("access_code_validity", want.AccessCodeValidity, got.AccessCodeValidity)
+	chk("refresh_token_validity", want.RefreshTokenValidity, got.RefreshTokenValidity)
 	chk("issuer_mode", want.IssuerMode, got.IssuerMode)
 	if !sameSet(want.GrantTypes, got.GrantTypes) {
 		bad = append(bad, fmt.Sprintf("grant_types=%v (want %v)", got.GrantTypes, want.GrantTypes))
