@@ -28,7 +28,8 @@ func TestEnsureMCPCreatesAPublicClientBoundToItsGroup(t *testing.T) {
 	for _, p := range f.oauth2 {
 		if p["client_type"] != "public" || p["client_id"] != "mcp-vibe-demo" || p["sub_mode"] != "user_uuid" ||
 			p["access_token_validity"] != "minutes=5" || p["signing_key"] != "k-self" ||
-			p["refresh_token_validity"] != "days=30" || p["access_code_validity"] != "minutes=1" {
+			p["refresh_token_validity"] != "days=30" || p["access_code_validity"] != "minutes=1" ||
+			p["refresh_token_threshold"] != "seconds=0" {
 			t.Fatalf("provider settings: %v", p)
 		}
 		if g, _ := p["grant_types"].([]any); len(g) != 2 || g[0] != "authorization_code" || g[1] != "refresh_token" {
@@ -139,7 +140,7 @@ func TestEnsureMCPRejectsDroppedProviderField(t *testing.T) {
 	// every authorize request is invalid_request (found on prod, 2026-09-30).
 	// The token lifetimes too: a provider left on the old 12-hour refresh token
 	// would log everyone out overnight with vd reporting success.
-	for _, field := range []string{"sub_mode", "grant_types", "refresh_token_validity", "access_code_validity"} {
+	for _, field := range []string{"sub_mode", "grant_types", "refresh_token_validity", "access_code_validity", "refresh_token_threshold"} {
 		f, c := setup(t)
 		f.dropOAuth2 = field
 		if _, err := c.EnsureMCP(mcpSpec()); err == nil || !strings.Contains(err.Error(), field) {

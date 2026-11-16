@@ -75,7 +75,10 @@ type oauth2Provider struct {
 	AccessTokenValidity  string        `json:"access_token_validity"`
 	AccessCodeValidity   string        `json:"access_code_validity"`
 	RefreshTokenValidity string        `json:"refresh_token_validity"`
-	IssuerMode           string        `json:"issuer_mode"`
+	// RefreshTokenThreshold seconds=0: every refresh issues a new refresh token
+	// for a full window (sliding). Authentik's default, set so it can't drift.
+	RefreshTokenThreshold string `json:"refresh_token_threshold"`
+	IssuerMode            string `json:"issuer_mode"`
 	// GrantTypes must be sent: the API stores [] when it is omitted, and an
 	// empty list makes every authorize request invalid_request.
 	GrantTypes []string `json:"grant_types"`
@@ -151,8 +154,8 @@ func (c *Client) EnsureMCP(s MCPSpec) (*MCPResult, error) {
 		AccessTokenValidity: mcpTokenValidity, AccessCodeValidity: "minutes=1",
 		// Sliding (threshold 0: every refresh gets a full window), so only
 		// 30 idle days end it — like Notion, and as stacks' mcp-db (!1060).
-		RefreshTokenValidity: "days=30",
-		GrantTypes:           []string{"authorization_code", "refresh_token"},
+		RefreshTokenValidity: "days=30", RefreshTokenThreshold: "seconds=0",
+		GrantTypes: []string{"authorization_code", "refresh_token"},
 	}
 	prov, err := c.ensureOAuth2Provider(want)
 	if err != nil {
@@ -419,6 +422,7 @@ func oauth2Drift(want, got oauth2Provider) string {
 	chk("access_token_validity", want.AccessTokenValidity, got.AccessTokenValidity)
 	chk("access_code_validity", want.AccessCodeValidity, got.AccessCodeValidity)
 	chk("refresh_token_validity", want.RefreshTokenValidity, got.RefreshTokenValidity)
+	chk("refresh_token_threshold", want.RefreshTokenThreshold, got.RefreshTokenThreshold)
 	chk("issuer_mode", want.IssuerMode, got.IssuerMode)
 	if !sameSet(want.GrantTypes, got.GrantTypes) {
 		bad = append(bad, fmt.Sprintf("grant_types=%v (want %v)", got.GrantTypes, want.GrantTypes))

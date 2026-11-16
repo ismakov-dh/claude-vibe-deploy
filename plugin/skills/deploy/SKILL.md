@@ -169,8 +169,9 @@ tell the user.
   does the client open the browser again, normally without a password while the platform
   session is alive.
 - **Revoking:** `vd access <app> remove <email> --mcp` — effective within 5 minutes (the next
-  token is issued without the group). It is the way to cut someone off: deactivating their
-  platform account does not end MCP access while their client keeps renewing.
+  token is issued without the group). Signing out of the platform does not end it — a client
+  keeps renewing for up to 30 idle days — so if a laptop with an MCP client is lost, remove the
+  person with this command (or a platform admin deactivates the account).
 
 `--mcp-owner` matches the whole email, case-insensitively, and refuses if two accounts share it.
 That is safe only because users on this Authentik cannot change their own email (or username).
