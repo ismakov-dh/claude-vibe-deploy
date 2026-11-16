@@ -165,10 +165,13 @@ tell the user.
   anyone in `mcp-vibe-<app>` reads every row of every table. Do not grant the MCP to people who
   should only see their own data in the app — give them the app, not the MCP.
 - **Signing in:** after the browser sign-in, access tokens last 5 minutes and are renewed
-  silently; the renewal token lasts 12 hours — after 12 hours without use the client opens the
-  browser again, normally without a password while the platform session is alive.
+  silently; each renewal extends the renewal token to 30 days — only after 30 days without use
+  does the client open the browser again, normally without a password while the platform
+  session is alive.
 - **Revoking:** `vd access <app> remove <email> --mcp` — effective within 5 minutes (the next
-  token is issued without the group).
+  token is issued without the group). Signing out of the platform does not end it — a client
+  keeps renewing for up to 30 idle days — so if a laptop with an MCP client is lost, remove the
+  person with this command (or a platform admin deactivates the account).
 
 `--mcp-owner` matches the whole email, case-insensitively, and refuses if two accounts share it.
 That is safe only because users on this Authentik cannot change their own email (or username).

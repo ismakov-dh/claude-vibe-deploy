@@ -150,7 +150,7 @@ func accessGroup(name string, mcp bool) (group, takesEffect string, maxSeconds i
 		g, _ := authentik.MCPName(name)
 		// The gateway admits a token only if the group is in its groups claim.
 		// Access tokens live 5 minutes, and a refreshed one is issued with the
-		// claims as they are then — so the 12-hour refresh token cannot carry
+		// claims as they are then — so the 30-day refresh token cannot carry
 		// a removed membership past the next 5-minute token.
 		return g, "within 5 minutes, when their MCP token expires", 300
 	}
